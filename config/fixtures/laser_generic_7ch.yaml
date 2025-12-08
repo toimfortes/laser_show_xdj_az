@@ -1,0 +1,76 @@
+# Generic 7-Channel DMX Laser Profile
+# Common channel layout for budget/mid-range laser projectors
+
+name: "Generic 7-Channel Laser"
+manufacturer: "Generic"
+type: "laser"
+channels: 7
+
+channel_map:
+  1:
+    name: "mode"
+    type: "mode_select"
+    description: "Operating mode selection"
+    values:
+      blackout: [0, 63]
+      auto: [64, 127]
+      sound_active: [128, 191]
+      dmx_control: [192, 255]
+    default: 200  # DMX control mode
+
+  2:
+    name: "pattern"
+    type: "pattern_select"
+    description: "Pattern/gobo selection"
+    range: [0, 255]
+    patterns: 64
+    default: 0
+
+  3:
+    name: "zoom"
+    type: "continuous"
+    description: "Zoom/size control"
+    range: [0, 255]
+    modes:
+      fixed: [0, 127]
+      animate: [128, 255]
+    default: 64
+
+  4:
+    name: "x_roll"
+    type: "rotation"
+    description: "X-axis rotation/roll"
+    range: [0, 255]
+    default: 128
+
+  5:
+    name: "y_roll"
+    type: "rotation"
+    description: "Y-axis rotation/roll"
+    range: [0, 255]
+    safety_clamp: 100  # CRITICAL: Prevent crowd scanning
+    default: 64
+
+  6:
+    name: "movement_speed"
+    type: "speed"
+    description: "Pattern movement speed"
+    range: [0, 255]
+    modes:
+      slow: [0, 127]
+      fast: [128, 255]
+    safety_min: 30  # Minimum speed to prevent burns
+    default: 128
+
+  7:
+    name: "color"
+    type: "color_select"
+    description: "Color selection or cycle"
+    range: [0, 255]
+    default: 0
+
+# Safety requirements for this fixture type
+safety:
+  requires_minimum_movement: true
+  crowd_safe_tilt_max: 100
+  enable_delay_ms: 500

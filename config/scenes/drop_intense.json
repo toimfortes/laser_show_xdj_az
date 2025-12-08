@@ -1,0 +1,100 @@
+{
+  "name": "drop_intense",
+  "description": "High-energy drop scene with maximum impact",
+  "priority": 100,
+  "triggers": {
+    "structure": ["drop"],
+    "energy_threshold": 0.7,
+    "bass_threshold": 0.6
+  },
+  "fixtures": {
+    "lasers": {
+      "mode": "dmx_control",
+      "pattern": {
+        "mode": "random_switch",
+        "rate": "beat_sync",
+        "range": [0, 64]
+      },
+      "zoom": {
+        "mode": "oscillate",
+        "min": 0,
+        "max": 255,
+        "rate": "beat_sync"
+      },
+      "x_roll": {
+        "mode": "random",
+        "range": [0, 255]
+      },
+      "y_roll": {
+        "mode": "static",
+        "value": 64,
+        "max_clamp": 100
+      },
+      "movement_speed": {
+        "mode": "linked",
+        "source": "spectral_flux",
+        "min": 150,
+        "max": 255
+      },
+      "color": {
+        "mode": "cycle",
+        "rate": "bar_sync",
+        "palette": ["green", "red", "blue", "white"]
+      }
+    },
+    "moving_heads": {
+      "pan": {
+        "mode": "lissajous",
+        "frequency_x": 2.0,
+        "frequency_y": 1.0,
+        "scale": "bpm_linked"
+      },
+      "tilt": {
+        "mode": "beat_pulse",
+        "min": 100,
+        "max": 200,
+        "attack": 0.05,
+        "decay": 0.2
+      },
+      "dimmer": {
+        "mode": "linked",
+        "source": "rms_energy",
+        "min": 200,
+        "max": 255
+      },
+      "color": {
+        "mode": "static",
+        "value": "white"
+      },
+      "gobo": {
+        "mode": "static",
+        "value": "open"
+      },
+      "strobe": {
+        "mode": "beat_sync",
+        "on_beats": [1]
+      }
+    },
+    "panels": {
+      "mode": "strobe",
+      "rate": {
+        "mode": "beat_sync",
+        "multiplier": 1
+      },
+      "color": {
+        "mode": "flash",
+        "on_color": "white",
+        "off_color": "black"
+      },
+      "blinder": {
+        "enabled": true,
+        "duration": 0.5,
+        "on_drop_start": true
+      }
+    }
+  },
+  "transitions": {
+    "fade_in_time": 0.0,
+    "fade_out_time": 0.3
+  }
+}

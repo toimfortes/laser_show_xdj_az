@@ -1,0 +1,93 @@
+# Photonic Synesthesia Default Configuration
+# AI-Driven Laser Show Controller for XDJ-AZ
+
+# Audio capture settings
+audio:
+  device: null  # null = system default, or device name/index
+  sample_rate: 48000
+  block_size: 1024
+  channels: 2
+  buffer_seconds: 2.0
+  latency: "low"
+
+# MIDI input settings
+midi:
+  port_name: null  # null = auto-detect XDJ-AZ
+  auto_detect_patterns:
+    - "XDJ-AZ"
+    - "XDJ-XZ"
+    - "DDJ"
+    - "Pioneer"
+
+# Computer vision settings
+cv:
+  enabled: true
+  capture_rate_hz: 10.0
+  bpm_roi: null  # Set via calibration script
+  waveform_roi: null
+  lookahead_pixels: 50
+
+# DMX output settings
+dmx:
+  interface_type: "enttec_open"  # enttec_open, enttec_pro, artnet
+  ftdi_url: "ftdi://ftdi:232/1"  # For Enttec Open DMX USB
+  serial_port: null  # For Enttec Pro
+  refresh_rate_hz: 40.0
+  universe: 0
+
+# Beat tracking settings
+beat_tracking:
+  backend: "madmom"  # madmom, beatnet
+  online_mode: true
+  confidence_threshold: 0.5
+
+# Structure detection settings
+structure_detection:
+  drop_rms_multiplier: 2.0
+  buildup_slope_threshold: 0.01
+  gap_rms_threshold: 0.3
+  min_drop_interval_s: 10.0
+
+# Scene management
+scene:
+  scenes_dir: "config/scenes"
+  default_scene: "idle"
+  transition_time_s: 0.5
+
+# Safety settings - DO NOT DISABLE
+safety:
+  laser:
+    y_axis_max: 100  # Max tilt value (0-255) - prevents crowd scanning
+    min_scan_speed: 30  # Min galvo speed - prevents burns
+    max_intensity_no_movement: 50
+    enable_delay_ms: 500
+
+  strobe:
+    max_rate_hz: 10.0  # Seizure safety
+    max_duration_s: 5.0
+    cooldown_s: 2.0
+
+  moving_head:
+    max_pan_speed: 200
+    max_tilt_speed: 200
+    home_on_error: true
+
+  heartbeat_timeout_s: 1.0
+  analysis_timeout_s: 2.0
+  min_beat_confidence: 0.3
+  graceful_degradation: true
+
+# Fixture definitions
+fixtures: []
+  # Example laser:
+  # - id: "laser1"
+  #   name: "Main Laser"
+  #   type: "laser"
+  #   profile: "laser_generic_7ch"
+  #   start_address: 1
+  #   enabled: true
+
+# Debug settings
+debug: false
+profile: false
+log_level: "INFO"
