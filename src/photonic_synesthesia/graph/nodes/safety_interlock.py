@@ -127,6 +127,8 @@ class SafetyInterlockNode:
         self._strobe_start_time: float | None = None
         self._in_cooldown = False
         self._cooldown_end: float = 0.0
+        self._last_strobe_active = False
+        self._strobe_channels = self._derive_strobe_channels()
 
         # Emergency stop state
         self._emergency_stop = False
@@ -228,20 +230,13 @@ class SafetyInterlockNode:
                     universe[speed_channel] = min_speed
 
         # =================================================================
-        # Check 4: Strobe rate limiting
+        # Check 4: Strobe rate limiting and cooldown
         # =================================================================
-        # Detect if strobe-like patterns are occurring
-        # (This is a simplified check - could be expanded)
-
-        # Check if we're in cooldown
+        strobe_guard_reason = self._apply_strobe_guards(state, universe, current_time)
         if self._in_cooldown:
-            if current_time < self._cooldown_end:
-                # Still in cooldown - disable strobes
-                # This would require knowing which channels are strobes
-                pass
-            else:
-                self._in_cooldown = False
-                self._strobe_start_time = None
+            safety_ok = False
+            if error_state is None:
+                error_state = strobe_guard_reason or "strobe_cooldown_active"
 
         # =================================================================
         # Check 5: Beat confidence threshold
@@ -250,9 +245,13 @@ class SafetyInterlockNode:
         if beat_confidence < self.config.min_beat_confidence:
             # Low confidence - reduce intensity to prevent random flashing
             if self.config.graceful_degradation:
-                # Apply reduction to dimmer channels (simplified)
-                # In practice, would need fixture profile info
-                pass
+                scale = self._apply_graceful_degradation(state, universe, beat_confidence)
+                logger.debug(
+                    "Applied graceful degradation",
+                    beat_confidence=beat_confidence,
+                    threshold=self.config.min_beat_confidence,
+                    scale=scale,
+                )
 
         # =================================================================
         # Update state
@@ -275,6 +274,136 @@ class SafetyInterlockNode:
     def _emergency_blackout(self) -> bytearray:
         """Set all channels to zero."""
         return create_universe_buffer()
+
+    def _derive_strobe_channels(self) -> set[int]:
+        """
+        Derive known strobe channels from fixture types.
+
+        Current channel assumptions:
+        - moving head strobe at base + 6
+        - panel strobe at base + 4
+        """
+        channels: set[int] = set()
+        for fixture in self.fixtures:
+            if fixture.type == "moving_head":
+                channels.add(fixture.start_address + 6)
+            elif fixture.type == "panel":
+                channels.add(fixture.start_address + 4)
+        return channels
+
+    def _apply_strobe_guards(
+        self,
+        state: PhotonicState,
+        universe: bytearray,
+        current_time: float,
+    ) -> str | None:
+        """
+        Enforce strobe rate/duration limits and cooldown suppression.
+
+        Returns a reason string when a cooldown state is active/triggered.
+        """
+        if not self._strobe_channels:
+            self._last_strobe_active = False
+            return None
+
+        # Detect strobe activity from current command payload.
+        command_active = False
+        for cmd in state["fixture_commands"]:
+            for channel, value in cmd["channel_values"].items():
+                if channel in self._strobe_channels and value > 0:
+                    command_active = True
+                    break
+            if command_active:
+                break
+
+        # If no command this frame, fall back to last committed universe state.
+        universe_active = any(
+            is_valid_dmx_channel(channel) and universe[channel] > 0 for channel in self._strobe_channels
+        )
+        strobe_active = command_active or universe_active
+
+        if strobe_active and not self._last_strobe_active:
+            self._strobe_timestamps.append(current_time)
+
+        if strobe_active and self._strobe_start_time is None:
+            self._strobe_start_time = current_time
+        if not strobe_active:
+            self._strobe_start_time = None
+
+        # Keep only recent pulses in 1s window for rate estimates.
+        while self._strobe_timestamps and (current_time - self._strobe_timestamps[0]) > 1.0:
+            self._strobe_timestamps.popleft()
+
+        reason: str | None = None
+        if len(self._strobe_timestamps) > self.config.strobe.max_rate_hz:
+            self._in_cooldown = True
+            self._cooldown_end = current_time + self.config.strobe.cooldown_s
+            self._strobe_start_time = None
+            reason = "strobe_rate_limit_exceeded"
+        elif (
+            self._strobe_start_time is not None
+            and (current_time - self._strobe_start_time) > self.config.strobe.max_duration_s
+        ):
+            self._in_cooldown = True
+            self._cooldown_end = current_time + self.config.strobe.cooldown_s
+            self._strobe_start_time = None
+            reason = "strobe_duration_limit_exceeded"
+
+        if self._in_cooldown:
+            if current_time >= self._cooldown_end:
+                self._in_cooldown = False
+                self._strobe_timestamps.clear()
+                reason = None
+            else:
+                # Force strobe outputs off during cooldown.
+                for cmd in state["fixture_commands"]:
+                    for channel in self._strobe_channels:
+                        if channel in cmd["channel_values"]:
+                            cmd["channel_values"][channel] = 0
+                for channel in self._strobe_channels:
+                    if is_valid_dmx_channel(channel):
+                        universe[channel] = 0
+                if reason is None:
+                    reason = "strobe_cooldown_active"
+
+        self._last_strobe_active = strobe_active
+        return reason
+
+    def _apply_graceful_degradation(
+        self,
+        state: PhotonicState,
+        universe: bytearray,
+        beat_confidence: float,
+    ) -> float:
+        """
+        Reduce output intensity when beat confidence is low.
+
+        This dampens abrupt/random lighting transitions while preserving mode and
+        safety channels needed for stable fixture operation.
+        """
+        threshold = max(self.config.min_beat_confidence, 1e-6)
+        ratio = max(0.0, min(1.0, beat_confidence / threshold))
+        scale = max(0.35, ratio)
+        if scale >= 0.999:
+            return 1.0
+
+        # Keep laser mode channels untouched to avoid dropping out of DMX mode.
+        protected_channels = {fixture.start_address for fixture in self._laser_fixtures}
+
+        for cmd in state["fixture_commands"]:
+            for channel, value in list(cmd["channel_values"].items()):
+                if channel in protected_channels or value <= 0:
+                    continue
+                cmd["channel_values"][channel] = int(max(0, min(255, value * scale)))
+
+        for channel in range(1, len(universe)):
+            if channel in protected_channels:
+                continue
+            value = universe[channel]
+            if value > 0:
+                universe[channel] = int(max(0, min(255, value * scale)))
+
+        return scale
 
     def trigger_emergency_stop(self, source: str = "manual") -> None:
         """Trigger emergency stop - immediately blackout all fixtures."""

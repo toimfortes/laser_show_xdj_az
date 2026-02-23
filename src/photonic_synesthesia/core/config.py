@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import yaml
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AudioConfig(BaseModel):
@@ -75,7 +75,7 @@ class FixtureConfig(BaseModel):
     name: str
     type: str  # "laser", "moving_head", "panel"
     profile: str  # Reference to profile YAML
-    start_address: int
+    start_address: int = Field(ge=1, le=512)
     enabled: bool = True
 
 
@@ -177,16 +177,17 @@ class Settings(BaseSettings):
     profile: bool = False
     log_level: str = "INFO"
 
-    class Config:
-        env_prefix = "PHOTONIC_"
-        env_nested_delimiter = "__"
+    model_config = SettingsConfigDict(
+        env_prefix="PHOTONIC_",
+        env_nested_delimiter="__",
+    )
 
     @classmethod
     def from_yaml(cls, path: Path) -> Settings:
         """Load settings from a YAML file."""
         with open(path) as f:
             data = yaml.safe_load(f)
-        return cls(**data)
+        return cls(**(data or {}))
 
     def to_yaml(self, path: Path) -> None:
         """Save settings to a YAML file."""

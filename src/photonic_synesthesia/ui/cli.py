@@ -20,6 +20,51 @@ from photonic_synesthesia import __version__
 logger = structlog.get_logger()
 
 
+def _validate_startup_config(settings: object, mock: bool = False) -> None:
+    """
+    Validate startup configuration before wiring runtime nodes.
+
+    Fails fast on missing fixture profiles or obviously invalid address spans.
+    """
+    from photonic_synesthesia.core.config import Settings, load_fixture_profile
+    from photonic_synesthesia.core.exceptions import ConfigError, FixtureProfileError, SceneError
+
+    if not isinstance(settings, Settings):
+        raise ConfigError("Invalid settings object provided")
+
+    # Mock mode permits running without fixture inventory.
+    if not mock:
+        enabled_fixtures = [fixture for fixture in settings.fixtures if fixture.enabled]
+        if not enabled_fixtures:
+            raise ConfigError("No enabled fixtures configured for live mode")
+
+        for fixture in enabled_fixtures:
+            profile_path = settings.fixtures_dir / f"{fixture.profile}.yaml"
+            if not profile_path.exists():
+                raise FixtureProfileError(fixture.profile, f"Profile not found at {profile_path}")
+
+            profile = load_fixture_profile(profile_path)
+            channel_count = profile.get("channels")
+            if isinstance(channel_count, int) and channel_count > 0:
+                end_channel = fixture.start_address + channel_count - 1
+                if end_channel > 512:
+                    raise ConfigError(
+                        f"Fixture '{fixture.id}' exceeds DMX universe: "
+                        f"start={fixture.start_address}, channels={channel_count}, end={end_channel}"
+                    )
+
+    # Only require default scene file when a non-idle default is requested.
+    default_scene = settings.scene.default_scene
+    if default_scene != "idle":
+        scenes_dir = settings.scene.scenes_dir
+        has_default_scene = any(
+            (scenes_dir / f"{default_scene}{ext}").exists()
+            for ext in (".json", ".yaml", ".yml")
+        )
+        if not has_default_scene:
+            raise SceneError(default_scene, f"Default scene file not found in {scenes_dir}")
+
+
 @click.group()
 @click.version_option(version=__version__)
 @click.option("--debug", is_flag=True, help="Enable debug logging")
@@ -68,6 +113,7 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
         settings = Settings()
 
     settings.debug = ctx.obj["debug"]
+    _validate_startup_config(settings, mock=mock)
 
     click.echo(f"Mode: {'Mock' if mock else 'Live'}")
     click.echo(f"Target FPS: {fps}")

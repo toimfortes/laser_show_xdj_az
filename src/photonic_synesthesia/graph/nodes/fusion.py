@@ -88,19 +88,26 @@ class FusionNode:
         # When DJ uses high-pass filter, we should thin out the lighting
         # Average filter position (0.5 = neutral)
         avg_filter = sum(midi_state["filter_positions"]) / 4
+        low_band = float(state["audio_features"]["low_energy"])
+        mid_band = float(state["audio_features"]["mid_energy"])
+        high_band = float(state["audio_features"]["high_energy"])
         if avg_filter > 0.7:  # Heavy high-pass
-            # This could dim bass-related fixtures
-            pass
+            # High-pass: attenuate low and (slightly) mid content.
+            strength = min(1.0, (avg_filter - 0.7) / 0.3)
+            low_band *= 1.0 - (0.8 * strength)
+            mid_band *= 1.0 - (0.35 * strength)
         elif avg_filter < 0.3:  # Heavy low-pass
-            # This could dim high-frequency effects
-            pass
+            # Low-pass: attenuate high and (slightly) mid content.
+            strength = min(1.0, (0.3 - avg_filter) / 0.3)
+            high_band *= 1.0 - (0.8 * strength)
+            mid_band *= 1.0 - (0.25 * strength)
 
         # =================================================================
         # Dual-stream output (rule stream + ML stream)
         # =================================================================
-        state["rule_stream"]["low_band"] = float(state["audio_features"]["low_energy"])
-        state["rule_stream"]["mid_band"] = float(state["audio_features"]["mid_energy"])
-        state["rule_stream"]["high_band"] = float(state["audio_features"]["high_energy"])
+        state["rule_stream"]["low_band"] = max(0.0, min(1.0, low_band))
+        state["rule_stream"]["mid_band"] = max(0.0, min(1.0, mid_band))
+        state["rule_stream"]["high_band"] = max(0.0, min(1.0, high_band))
         state["rule_stream"]["transient"] = float(state["audio_features"]["spectral_flux"])
         state["rule_stream"]["beat_pulse"] = 1.0 if state["beat_info"]["beat_phase"] < 0.12 else 0.0
 
