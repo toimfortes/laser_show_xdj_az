@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import cast
+
 import numpy as np
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, CVState
 from photonic_synesthesia.core.config import CVConfig
+from photonic_synesthesia.core.state import CVState, PhotonicState
 
 logger = structlog.get_logger()
 
 try:
     import cv2
     import mss
+
     CV_AVAILABLE = True
 except ImportError:
     CV_AVAILABLE = False
@@ -46,7 +48,7 @@ class CVSenseNode:
             self._sct = mss.mss()
 
         # Digit templates for OCR
-        self._digit_templates: Dict[str, np.ndarray] = {}
+        self._digit_templates: dict[str, np.ndarray] = {}
 
         # Capture regions (to be configured)
         self._bpm_roi = config.bpm_roi  # {"x": 100, "y": 50, "width": 200, "height": 50}
@@ -57,8 +59,8 @@ class CVSenseNode:
         self._capture_interval: float = 1.0 / config.capture_rate_hz
 
         # Results cache
-        self._last_bpm: Optional[float] = None
-        self._last_lookahead: Tuple[float, float, float] = (0.5, 0.5, 0.5)
+        self._last_bpm: float | None = None
+        self._last_lookahead: tuple[float, float, float] = (0.5, 0.5, 0.5)
 
     def _load_digit_templates(self, template_dir: Path) -> None:
         """Load pre-rendered digit templates for template matching."""
@@ -127,7 +129,7 @@ class CVSenseNode:
 
         return state
 
-    def _capture_region(self, roi: Dict[str, int]) -> Optional[np.ndarray]:
+    def _capture_region(self, roi: dict[str, int]) -> np.ndarray | None:
         """Capture a screen region."""
         if not self._sct:
             return None
@@ -143,9 +145,10 @@ class CVSenseNode:
         img = np.array(screenshot)
 
         # Convert BGRA to BGR
-        return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        converted = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        return cast(np.ndarray, np.asarray(converted))
 
-    def _detect_bpm(self) -> Optional[float]:
+    def _detect_bpm(self) -> float | None:
         """Detect BPM from screen using template matching."""
         if not self._bpm_roi:
             return None
@@ -167,9 +170,8 @@ class CVSenseNode:
         # Fallback: Use Tesseract OCR if available
         try:
             import pytesseract
-            text = pytesseract.image_to_string(
-                thresh, config="--psm 7 digits"
-            ).strip()
+
+            text = pytesseract.image_to_string(thresh, config="--psm 7 digits").strip()
             # Parse BPM (format: "128.00" or "128")
             text = "".join(c for c in text if c.isdigit() or c == ".")
             if text:
@@ -179,7 +181,7 @@ class CVSenseNode:
 
         return None
 
-    def _match_digits(self, img: np.ndarray) -> Optional[float]:
+    def _match_digits(self, img: np.ndarray) -> float | None:
         """Match digit templates to extract BPM."""
         matches = []
 
@@ -204,7 +206,7 @@ class CVSenseNode:
         except ValueError:
             return None
 
-    def _analyze_waveform(self) -> Tuple[float, float, float]:
+    def _analyze_waveform(self) -> tuple[float, float, float]:
         """
         Analyze waveform colors ahead of playhead.
 
@@ -250,8 +252,8 @@ class CVSenseNode:
 
     def configure_regions(
         self,
-        bpm_roi: Optional[Dict[str, int]] = None,
-        waveform_roi: Optional[Dict[str, int]] = None,
+        bpm_roi: dict[str, int] | None = None,
+        waveform_roi: dict[str, int] | None = None,
     ) -> None:
         """Configure capture regions."""
         if bpm_roi:

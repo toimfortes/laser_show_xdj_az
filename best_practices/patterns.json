@@ -1,0 +1,119 @@
+{
+  "version": "1.0.0",
+  "description": "Photonic Synesthesia — project-specific coding patterns and safety constraints for the XDJ-AZ laser show controller.",
+  "patterns": [
+    {
+      "id": "PAT-S001",
+      "name": "No raw print() in production source",
+      "description": "Use structlog for all logging in production source code. Raw print() calls bypass structured logging and are invisible to the observability pipeline.",
+      "severity": "medium",
+      "category": "safety",
+      "check_type": "grep",
+      "pattern": "^\\s*print\\(",
+      "files": ["src/**/*.py"],
+      "exclude": ["tests/**", "scripts/**"],
+      "message": "Raw print() detected — use structlog.get_logger() instead.",
+      "remediation": "Replace print() with structlog logger calls: logger = structlog.get_logger(); logger.info(...)"
+    },
+    {
+      "id": "PAT-S002",
+      "name": "SafetyInterlockNode must be wired in graph builder",
+      "description": "The safety_interlock node must always appear in graph/builder.py. Its absence means no safety enforcement on DMX output — a physical harm risk.",
+      "severity": "high",
+      "category": "safety",
+      "check_type": "absent",
+      "pattern": "SafetyInterlockNode",
+      "files": ["src/**/graph/builder.py"],
+      "message": "SafetyInterlockNode not referenced in graph/builder.py — safety checks may be bypassed.",
+      "remediation": "Ensure graph/builder.py imports and wires SafetyInterlockNode as the final node before DMX output."
+    },
+    {
+      "id": "PAT-S003",
+      "name": "Emergency blackout must zero all 513 bytes",
+      "description": "DMX universe is 513 bytes (start code + 512 channels). _emergency_blackout must return bytearray(513), not bytearray(512), or channels 512 may be left non-zero.",
+      "severity": "high",
+      "category": "safety",
+      "check_type": "grep",
+      "pattern": "_emergency_blackout.*bytearray\\(512\\)|return bytearray\\(512\\)",
+      "files": ["src/**/*.py"],
+      "message": "Emergency blackout returning 512-byte buffer — must be 513 (start code + 512 DMX channels).",
+      "remediation": "Change bytearray(512) to bytearray(513) in _emergency_blackout."
+    },
+    {
+      "id": "PAT-C001",
+      "name": "No bare except clauses",
+      "description": "Bare except clauses swallow all exceptions including KeyboardInterrupt and SystemExit, making emergency stops harder.",
+      "severity": "medium",
+      "category": "correctness",
+      "check_type": "grep",
+      "pattern": "except\\s*:",
+      "files": ["src/**/*.py"],
+      "message": "Bare except clause detected. Catch specific exception types.",
+      "remediation": "Replace 'except:' with 'except Exception:' or a more specific exception type."
+    },
+    {
+      "id": "PAT-C002",
+      "name": "DMX universe buffer must be 513 bytes",
+      "description": "DMX512 requires a 513-byte buffer: byte[0] is the start code (0x00), bytes[1..512] are the DMX channels. Using bytes(512) / bytearray(512) silently drops the last DMX channel.",
+      "severity": "high",
+      "category": "correctness",
+      "check_type": "grep",
+      "pattern": "(?<![0-9])bytes\\(512\\)|(?<![0-9])bytearray\\(512\\)",
+      "files": ["src/**/*.py"],
+      "message": "DMX universe created as 512 bytes; should be 513 (start code + 512 channels).",
+      "remediation": "Use bytes(513) or bytearray(513) for DMX universe buffers."
+    },
+    {
+      "id": "PAT-C003",
+      "name": "Art-Net data length field must use correct byte order",
+      "description": "The Art-Net DMX data length field (bytes 16-17 of the OpDmx packet) is big-endian per the Art-Net specification. Little-endian writes corrupt the packet.",
+      "severity": "high",
+      "category": "correctness",
+      "check_type": "grep",
+      "pattern": "struct\\.pack\\(['\"]<H['\"].*len\\(",
+      "files": ["src/**/*.py"],
+      "message": "Art-Net length field packed as little-endian (<H); the Art-Net spec requires big-endian (>H or !H).",
+      "remediation": "Change struct.pack('<H', length) to struct.pack('>H', length) for the Art-Net data length field."
+    },
+    {
+      "id": "PAT-M001",
+      "name": "Magic DMX channel offsets must use named constants",
+      "description": "Hard-coded numeric offsets like (start_address + 4) for laser Y-axis are fragile when fixture profiles change. Named constants make intent clear and failures auditable.",
+      "severity": "low",
+      "category": "maintainability",
+      "check_type": "grep",
+      "pattern": "start_address\\s*\\+\\s*[0-9]+",
+      "files": ["src/**/*.py"],
+      "message": "Magic DMX channel offset detected. Define named constants for fixture channel layouts.",
+      "remediation": "Define constants such as LASER_Y_CHANNEL_OFFSET = 4 and reference them symbolically."
+    },
+    {
+      "id": "PAT-M002",
+      "name": "No unresolved TODO/FIXME in safety-critical files",
+      "description": "TODO/FIXME/HACK/XXX comments in safety-critical files (safety_interlock, dmx_output, artnet) indicate incomplete safety implementation. Must be resolved before production deployment.",
+      "severity": "medium",
+      "category": "safety",
+      "check_type": "grep",
+      "pattern": "#\\s*(TODO|FIXME|HACK|XXX)",
+      "files": [
+        "src/**/safety_interlock.py",
+        "src/**/dmx_output.py",
+        "src/**/artnet.py"
+      ],
+      "message": "TODO/FIXME/HACK in safety-critical file — resolve before production deployment.",
+      "remediation": "Implement the deferred logic or file a tracked issue, and remove the marker comment."
+    },
+    {
+      "id": "PAT-M003",
+      "name": "LangGraph nodes must not catch Exception without a variable",
+      "description": "Catching 'Exception' or 'BaseException' without binding to a variable ('except Exception:' vs 'except Exception as e:') makes it impossible to log the error detail, silencing faults from the safety monitor.",
+      "severity": "medium",
+      "category": "correctness",
+      "check_type": "grep",
+      "pattern": "except\\s+(?:Exception|BaseException)\\s*:",
+      "files": ["src/**/graph/nodes/*.py"],
+      "message": "Exception caught without variable binding — use 'except Exception as exc:' and log exc_info.",
+      "remediation": "Change 'except Exception:' to 'except Exception as exc:' and add logger.warning(..., exc_info=True)."
+    }
+  ]
+}

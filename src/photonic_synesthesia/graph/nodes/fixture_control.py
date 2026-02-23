@@ -7,17 +7,17 @@ logic that translates scene definitions and audio features into DMX values.
 
 from __future__ import annotations
 
-import time
 import math
-from typing import Dict, Any, List, Optional
+import time
+
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, FixtureCommand, MusicStructure
 from photonic_synesthesia.core.config import (
     FixtureConfig,
     LaserSafetyConfig,
     MovingHeadSafetyConfig,
 )
+from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
 
 logger = structlog.get_logger()
 
@@ -28,29 +28,29 @@ class LaserControlNode:
 
     Implements:
     - Pattern selection
+    - X/Y position movement
+    - Scan speed and pattern play speed modulation
     - Zoom modulation (pumping effect)
-    - Movement speed linked to energy
-    - Color cycling
     - Safety limits (Y-axis clamping)
     """
 
     def __init__(
         self,
-        fixtures: List[FixtureConfig],
+        fixtures: list[FixtureConfig],
         safety: LaserSafetyConfig,
     ):
         self.fixtures = [f for f in fixtures if f.type == "laser"]
         self.safety = safety
 
-        # Standard 7-channel laser map
+        # OEM 7-channel laser map (common 4-lens RGBY units)
         self.channel_map = {
             "mode": 0,
             "pattern": 1,
-            "zoom": 2,
-            "x_roll": 3,
-            "y_roll": 4,
-            "movement": 5,
-            "color": 6,
+            "x_pos": 2,
+            "y_pos": 3,
+            "scan_speed": 4,
+            "pattern_speed": 5,
+            "zoom": 6,
         }
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -101,9 +101,9 @@ class LaserControlNode:
     ) -> FixtureCommand:
         """Generate DMX values for a single laser fixture."""
         base = fixture.start_address
-        values: Dict[int, int] = {}
+        values: dict[int, int] = {}
 
-        # Mode: Always DMX control (192-255)
+        # Mode: force manual DMX range (commonly 200-255 for this fixture class)
         values[base + self.channel_map["mode"]] = 200
 
         # =================================================================
@@ -121,61 +121,46 @@ class LaserControlNode:
         values[base + self.channel_map["pattern"]] = pattern * 4
 
         # =================================================================
-        # Zoom modulation (pumping effect synced to beat)
+        # X/Y position movement
+        # =================================================================
+        x_pos = int(128 + 100 * math.sin(current_time * bpm / 60))
+        y_pos = int(64 + 30 * math.sin(current_time * bpm / 120))
+        y_pos = min(y_pos, self.safety.y_axis_max)  # SAFETY: audience-height clamp
+
+        values[base + self.channel_map["x_pos"]] = x_pos
+        values[base + self.channel_map["y_pos"]] = y_pos
+
+        # =================================================================
+        # Scan speed and pattern play speed
         # =================================================================
         if structure == MusicStructure.DROP:
-            # Aggressive pumping on beat
+            scan_speed = int(170 + 70 * energy)
+            pattern_speed = int(180 + 70 * energy)
+        elif structure == MusicStructure.BREAKDOWN:
+            scan_speed = self.safety.min_scan_speed
+            pattern_speed = 60
+        else:
+            scan_speed = int(100 + 100 * energy)
+            pattern_speed = int(80 + 120 * energy)
+
+        # SAFETY: enforce configured lower bound until a fixture-specific polarity
+        # check is completed during commissioning.
+        scan_speed = max(scan_speed, self.safety.min_scan_speed)
+
+        values[base + self.channel_map["scan_speed"]] = scan_speed
+        values[base + self.channel_map["pattern_speed"]] = pattern_speed
+
+        # =================================================================
+        # Zoom modulation (beat/energy linked)
+        # =================================================================
+        if structure == MusicStructure.DROP:
             zoom = int(128 + 127 * math.sin(beat_phase * math.pi * 2))
         elif structure == MusicStructure.BUILDUP:
-            # Increasing intensity
             zoom = int(64 + (128 * energy))
         else:
-            # Gentle oscillation
             zoom = int(64 + 32 * math.sin(current_time * 0.5))
 
         values[base + self.channel_map["zoom"]] = zoom
-
-        # =================================================================
-        # X/Y Roll - Movement patterns
-        # =================================================================
-        x_roll = int(128 + 100 * math.sin(current_time * bpm / 60))
-        y_roll = int(64 + 30 * math.sin(current_time * bpm / 120))
-
-        # SAFETY: Clamp Y-axis
-        y_roll = min(y_roll, self.safety.y_axis_max)
-
-        values[base + self.channel_map["x_roll"]] = x_roll
-        values[base + self.channel_map["y_roll"]] = y_roll
-
-        # =================================================================
-        # Movement speed linked to energy
-        # =================================================================
-        if structure == MusicStructure.DROP:
-            movement = int(180 + 75 * energy)
-        elif structure == MusicStructure.BREAKDOWN:
-            movement = self.safety.min_scan_speed
-        else:
-            movement = int(100 + 100 * energy)
-
-        # SAFETY: Ensure minimum scan speed
-        movement = max(movement, self.safety.min_scan_speed)
-
-        values[base + self.channel_map["movement"]] = movement
-
-        # =================================================================
-        # Color based on energy/structure
-        # =================================================================
-        if structure == MusicStructure.DROP:
-            # RGB strobe
-            color = int((current_time * 10) % 255)
-        elif structure == MusicStructure.BREAKDOWN:
-            # Cool colors (blue/cyan)
-            color = int(100 + 50 * math.sin(current_time * 0.2))
-        else:
-            # Warm colors (green/yellow)
-            color = int(50 + 50 * math.sin(current_time * 0.3))
-
-        values[base + self.channel_map["color"]] = color
 
         return FixtureCommand(
             fixture_id=fixture.id,
@@ -197,7 +182,7 @@ class MovingHeadControlNode:
 
     def __init__(
         self,
-        fixtures: List[FixtureConfig],
+        fixtures: list[FixtureConfig],
         safety: MovingHeadSafetyConfig,
     ):
         self.fixtures = [f for f in fixtures if f.type == "moving_head"]
@@ -275,7 +260,7 @@ class MovingHeadControlNode:
     ) -> FixtureCommand:
         """Generate DMX values for a single moving head."""
         base = fixture.start_address
-        values: Dict[int, int] = {}
+        values: dict[int, int] = {}
 
         # =================================================================
         # Pan/Tilt - Lissajous curves
@@ -339,8 +324,12 @@ class MovingHeadControlNode:
         else:
             phase = (current_time * 0.2) % 1
             values[base + self.channel_map["red"]] = int(128 + 127 * math.sin(phase * math.pi * 2))
-            values[base + self.channel_map["green"]] = int(128 + 127 * math.sin(phase * math.pi * 2 + 2))
-            values[base + self.channel_map["blue"]] = int(128 + 127 * math.sin(phase * math.pi * 2 + 4))
+            values[base + self.channel_map["green"]] = int(
+                128 + 127 * math.sin(phase * math.pi * 2 + 2)
+            )
+            values[base + self.channel_map["blue"]] = int(
+                128 + 127 * math.sin(phase * math.pi * 2 + 4)
+            )
 
         # =================================================================
         # Gobo
@@ -372,7 +361,7 @@ class PanelControlNode:
     - Blinder effects on drops
     """
 
-    def __init__(self, fixtures: List[FixtureConfig]):
+    def __init__(self, fixtures: list[FixtureConfig]):
         self.fixtures = [f for f in fixtures if f.type == "panel"]
 
         # Simple RGB panel map
@@ -426,7 +415,7 @@ class PanelControlNode:
     ) -> FixtureCommand:
         """Generate DMX values for a single LED panel."""
         base = fixture.start_address
-        values: Dict[int, int] = {}
+        values: dict[int, int] = {}
 
         # =================================================================
         # Blinder effect on drop
@@ -458,8 +447,10 @@ class PanelControlNode:
             phase = (current_time * 0.1) % 1
             values[base + self.channel_map["dimmer"]] = int(100 + 50 * energy)
             values[base + self.channel_map["red"]] = int(50 + 50 * math.sin(phase * math.pi * 2))
-            values[base + self.channel_map["green"]] = int(100)
-            values[base + self.channel_map["blue"]] = int(200 + 55 * math.sin(phase * math.pi * 2 + 1))
+            values[base + self.channel_map["green"]] = 100
+            values[base + self.channel_map["blue"]] = int(
+                200 + 55 * math.sin(phase * math.pi * 2 + 1)
+            )
             values[base + self.channel_map["strobe"]] = 0
 
         else:

@@ -8,22 +8,22 @@ low-latency operation. Maintains a ring buffer of recent samples.
 from __future__ import annotations
 
 import time
-import threading
 from collections import deque
-from typing import Optional, Deque
-import numpy as np
-from numpy.typing import NDArray
-import structlog
 
-from photonic_synesthesia.core.state import PhotonicState
+import numpy as np
+import structlog
+from numpy.typing import NDArray
+
 from photonic_synesthesia.core.config import AudioConfig
 from photonic_synesthesia.core.exceptions import AudioCaptureError, AudioDeviceNotFoundError
+from photonic_synesthesia.core.state import PhotonicState
 
 logger = structlog.get_logger()
 
 # Import sounddevice conditionally for testing
 try:
     import sounddevice as sd
+
     SOUNDDEVICE_AVAILABLE = True
 except ImportError:
     SOUNDDEVICE_AVAILABLE = False
@@ -45,12 +45,12 @@ class AudioSenseNode:
         self.buffer_size = int(config.buffer_seconds * config.sample_rate)
 
         # Ring buffer for samples (thread-safe via deque)
-        self._buffer: Deque[float] = deque(maxlen=self.buffer_size)
+        self._buffer: deque[float] = deque(maxlen=self.buffer_size)
 
         # Stream handle
-        self._stream: Optional[sd.InputStream] = None
+        self._stream: sd.InputStream | None = None
         self._running = False
-        self._error: Optional[str] = None
+        self._error: str | None = None
 
         # Stats
         self._callback_count = 0
@@ -59,8 +59,8 @@ class AudioSenseNode:
     def _audio_callback(
         self,
         indata: NDArray[np.float32],
-        frames: int,
-        time_info: dict,
+        _frames: int,
+        _time_info: dict,
         status: sd.CallbackFlags,
     ) -> None:
         """
@@ -110,7 +110,7 @@ class AudioSenseNode:
                             device_id = i
                             break
                     if device_id is None:
-                        raise AudioDeviceNotFoundError(self.config.device)
+                        raise AudioDeviceNotFoundError(self.config.device) from None
             else:
                 device_id = None  # Use default
 
@@ -130,7 +130,7 @@ class AudioSenseNode:
 
         except Exception as e:
             self._error = str(e)
-            raise AudioCaptureError(self.config.device, str(e))
+            raise AudioCaptureError(self.config.device, str(e)) from e
 
     def stop(self) -> None:
         """Stop audio capture stream."""

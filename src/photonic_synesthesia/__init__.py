@@ -9,8 +9,8 @@ to create structure-aware, music-reactive light shows.
 __version__ = "0.1.0"
 __author__ = "Photonic Synesthesia Team"
 
-from photonic_synesthesia.core.state import PhotonicState, MusicStructure
 from photonic_synesthesia.core.config import Settings
+from photonic_synesthesia.core.state import MusicStructure, PhotonicState
 
 __all__ = [
     "PhotonicState",

@@ -10,19 +10,92 @@ Implements multiple layers of software safety:
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
-from typing import List, Optional
-import structlog
+from collections.abc import Callable
+from typing import Protocol
 
+from photonic_synesthesia.core.config import FixtureConfig, SafetyConfig
 from photonic_synesthesia.core.state import PhotonicState, SafetyState
-from photonic_synesthesia.core.config import SafetyConfig, FixtureConfig
-from photonic_synesthesia.core.exceptions import (
-    SafetyInterlockError,
-    HeartbeatTimeoutError,
-)
+from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
-logger = structlog.get_logger()
+try:
+    import structlog
+
+    logger = structlog.get_logger()
+except ImportError:  # pragma: no cover - fallback for minimal test envs
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+
+class SupportsBlackout(Protocol):
+    """Minimal DMX output protocol needed by watchdogs."""
+
+    def blackout(self) -> None:
+        """Immediately zero output."""
+
+
+class SupportsBlackoutAndStats(SupportsBlackout, Protocol):
+    """DMX protocol needed for frame-stall monitoring."""
+
+    def get_stats(self) -> dict[str, int | float | bool]:
+        """Return DMX output stats."""
+
+
+class HeartbeatWatchdog:
+    """Independent watchdog that blackouts output if heartbeat stops."""
+
+    def __init__(
+        self,
+        on_timeout: Callable[[], None],
+        timeout_s: float,
+        check_interval_s: float = 0.1,
+    ) -> None:
+        self._on_timeout = on_timeout
+        self._timeout_s = max(timeout_s, 0.05)
+        self._check_interval_s = max(check_interval_s, 0.01)
+        self._last_heartbeat = time.monotonic()
+        self._timeout_triggered = False
+        self._running = False
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start watchdog loop."""
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._run_loop,
+            name="Heartbeat-Watchdog",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop watchdog loop."""
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+    def beat(self) -> None:
+        """Update heartbeat timestamp and clear prior timeout latch."""
+        self._last_heartbeat = time.monotonic()
+        self._timeout_triggered = False
+
+    def _run_loop(self) -> None:
+        while self._running:
+            time.sleep(self._check_interval_s)
+            elapsed = time.monotonic() - self._last_heartbeat
+            if elapsed > self._timeout_s and not self._timeout_triggered:
+                self._timeout_triggered = True
+                logger.critical(
+                    "Heartbeat watchdog timeout - triggering blackout (elapsed=%.3fs)",
+                    elapsed,
+                )
+                self._on_timeout()
 
 
 class SafetyInterlockNode:
@@ -37,8 +110,9 @@ class SafetyInterlockNode:
     def __init__(
         self,
         config: SafetyConfig,
-        fixtures: List[FixtureConfig],
-    ):
+        fixtures: list[FixtureConfig],
+        dmx_output: SupportsBlackout | None = None,
+    ) -> None:
         self.config = config
         self.fixtures = fixtures
 
@@ -50,12 +124,28 @@ class SafetyInterlockNode:
 
         # Strobe rate tracking
         self._strobe_timestamps: deque = deque(maxlen=100)
-        self._strobe_start_time: Optional[float] = None
+        self._strobe_start_time: float | None = None
         self._in_cooldown = False
         self._cooldown_end: float = 0.0
 
         # Emergency stop state
         self._emergency_stop = False
+        self._heartbeat_watchdog: HeartbeatWatchdog | None = None
+        if dmx_output is not None:
+            self._heartbeat_watchdog = HeartbeatWatchdog(
+                on_timeout=dmx_output.blackout,
+                timeout_s=self.config.heartbeat_timeout_s,
+            )
+
+    def start(self) -> None:
+        """Start independent watchdog thread when available."""
+        if self._heartbeat_watchdog is not None:
+            self._heartbeat_watchdog.start()
+
+    def stop(self) -> None:
+        """Stop independent watchdog thread when available."""
+        if self._heartbeat_watchdog is not None:
+            self._heartbeat_watchdog.stop()
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Apply safety checks to DMX universe."""
@@ -76,10 +166,12 @@ class SafetyInterlockNode:
             safety_ok = False
             error_state = f"heartbeat_timeout: {time_since_heartbeat:.2f}s"
             logger.warning("Heartbeat timeout", elapsed=time_since_heartbeat)
-            universe = self._emergency_blackout(universe)
+            universe = self._emergency_blackout()
 
         # Update heartbeat
         self._last_heartbeat = current_time
+        if self._heartbeat_watchdog is not None:
+            self._heartbeat_watchdog.beat()
 
         # =================================================================
         # Check 2: Emergency stop
@@ -87,19 +179,35 @@ class SafetyInterlockNode:
         if self._emergency_stop:
             safety_ok = False
             error_state = "emergency_stop_active"
-            universe = self._emergency_blackout(universe)
+            universe = self._emergency_blackout()
 
         # =================================================================
         # Check 3: Laser Y-axis clamping
+        # Applied to fixture_commands (current frame, before dmx_output) AND
+        # to dmx_universe (previous frame snapshot, for defence-in-depth).
         # =================================================================
         for fixture in self._laser_fixtures:
             if not fixture.enabled:
                 continue
 
-            # Standard laser: Y-roll is typically channel 5 (offset 4)
-            y_channel = fixture.start_address + 4  # Assuming standard 7-ch laser
+            y_channel = fixture.start_address + self.config.laser.y_channel_offset
+            speed_channel = fixture.start_address + self.config.laser.speed_channel_offset
 
-            if 1 <= y_channel <= 512:
+            # --- Clamp current-frame fixture_commands ---
+            for cmd in state["fixture_commands"]:
+                if cmd.get("fixture_id") != fixture.id:
+                    continue
+                ch_vals = cmd["channel_values"]
+                if y_channel in ch_vals and ch_vals[y_channel] > self.config.laser.y_axis_max:
+                    ch_vals[y_channel] = self.config.laser.y_axis_max
+                if (
+                    speed_channel in ch_vals
+                    and 0 < ch_vals[speed_channel] < self.config.laser.min_scan_speed
+                ):
+                    ch_vals[speed_channel] = self.config.laser.min_scan_speed
+
+            # --- Clamp previous-frame dmx_universe (defence-in-depth) ---
+            if is_valid_dmx_channel(y_channel):
                 current_y = universe[y_channel]
                 max_y = self.config.laser.y_axis_max
 
@@ -112,10 +220,7 @@ class SafetyInterlockNode:
                     )
                     universe[y_channel] = max_y
 
-            # Also check scan speed minimum
-            speed_channel = fixture.start_address + 5  # Movement speed
-
-            if 1 <= speed_channel <= 512:
+            if is_valid_dmx_channel(speed_channel):
                 current_speed = universe[speed_channel]
                 min_speed = self.config.laser.min_scan_speed
 
@@ -127,8 +232,6 @@ class SafetyInterlockNode:
         # =================================================================
         # Detect if strobe-like patterns are occurring
         # (This is a simplified check - could be expanded)
-        max_strobe_rate = self.config.strobe.max_rate_hz
-        max_strobe_duration = self.config.strobe.max_duration_s
 
         # Check if we're in cooldown
         if self._in_cooldown:
@@ -147,7 +250,6 @@ class SafetyInterlockNode:
         if beat_confidence < self.config.min_beat_confidence:
             # Low confidence - reduce intensity to prevent random flashing
             if self.config.graceful_degradation:
-                reduction_factor = beat_confidence / self.config.min_beat_confidence
                 # Apply reduction to dimmer channels (simplified)
                 # In practice, would need fixture profile info
                 pass
@@ -170,9 +272,9 @@ class SafetyInterlockNode:
 
         return state
 
-    def _emergency_blackout(self, universe: bytearray) -> bytearray:
+    def _emergency_blackout(self) -> bytearray:
         """Set all channels to zero."""
-        return bytearray(513)
+        return create_universe_buffer()
 
     def trigger_emergency_stop(self, source: str = "manual") -> None:
         """Trigger emergency stop - immediately blackout all fixtures."""
@@ -199,10 +301,10 @@ class SafetyMonitor:
 
     def __init__(
         self,
-        dmx_output,  # Reference to DMX output node
+        dmx_output: SupportsBlackoutAndStats,
         check_interval: float = 0.1,
         max_silence: float = 1.0,
-    ):
+    ) -> None:
         self.dmx_output = dmx_output
         self.check_interval = check_interval
         self.max_silence = max_silence
@@ -210,10 +312,12 @@ class SafetyMonitor:
         self._last_frame_count = 0
         self._last_check_time = time.time()
         self._running = False
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start safety monitoring."""
-        import threading
+        if self._running:
+            return
 
         self._running = True
         self._thread = threading.Thread(
@@ -226,6 +330,9 @@ class SafetyMonitor:
     def stop(self) -> None:
         """Stop safety monitoring."""
         self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
 
     def _monitor_loop(self) -> None:
         """Monitor DMX output health."""
@@ -233,7 +340,10 @@ class SafetyMonitor:
             time.sleep(self.check_interval)
 
             stats = self.dmx_output.get_stats()
-            current_frames = stats["frames_sent"]
+            current_frames_raw = stats.get("frames_sent", 0)
+            current_frames = (
+                current_frames_raw if isinstance(current_frames_raw, int) else self._last_frame_count
+            )
             current_time = time.time()
 
             if current_frames == self._last_frame_count:

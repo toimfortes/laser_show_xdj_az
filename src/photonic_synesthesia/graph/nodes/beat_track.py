@@ -9,13 +9,13 @@ Supports multiple backends:
 from __future__ import annotations
 
 import time
-from typing import Optional
 from collections import deque
+
 import numpy as np
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, BeatInfo
 from photonic_synesthesia.core.config import BeatTrackingConfig
+from photonic_synesthesia.core.state import BeatInfo, PhotonicState
 
 logger = structlog.get_logger()
 
@@ -25,13 +25,14 @@ MADMOM_AVAILABLE = False
 
 try:
     from BeatNet.BeatNet import BeatNet
+
     BEATNET_AVAILABLE = True
 except ImportError:
     pass
 
 try:
-    import madmom
-    from madmom.features.beats import RNNBeatProcessor, DBNBeatTrackingProcessor
+    from madmom.features.beats import RNNBeatProcessor
+
     MADMOM_AVAILABLE = True
 except ImportError:
     pass
@@ -54,6 +55,7 @@ class BeatTrackNode:
         self._last_beat_time: float = 0.0
         self._current_bpm: float = 128.0  # Default EDM tempo
         self._bar_position: int = 1
+        self._rms_history: deque[float] = deque(maxlen=50)
 
         # Initialize backend
         self._processor = None
@@ -66,8 +68,8 @@ class BeatTrackNode:
             try:
                 self._processor = BeatNet(
                     1,  # Mode 1: streaming
-                    mode='online',
-                    inference_model='PF',  # Particle filtering
+                    mode="online",
+                    inference_model="PF",  # Particle filtering
                     plot=[],
                     thread=False,
                 )
@@ -80,6 +82,7 @@ class BeatTrackNode:
             try:
                 # Use online mode RNN processor
                 from madmom.models import BEATS_LSTM
+
                 self._processor = RNNBeatProcessor(
                     online=True,
                     nn_files=[BEATS_LSTM[0]],  # Single model for speed
@@ -108,14 +111,14 @@ class BeatTrackNode:
             # Process audio through beat detector
             y = np.array(audio_buffer[-4096:], dtype=np.float32)  # Last ~85ms at 48kHz
 
-            if BEATNET_AVAILABLE and hasattr(self._processor, 'process'):
+            if BEATNET_AVAILABLE and hasattr(self._processor, "process"):
                 # BeatNet returns (beat_time, downbeat_flag) or None
                 result = self._processor.process(y)
                 if result is not None:
                     beat_time, is_downbeat = result
                     self._on_beat_detected(current_time, is_downbeat)
 
-            elif MADMOM_AVAILABLE and hasattr(self._processor, '__call__'):
+            elif MADMOM_AVAILABLE and callable(self._processor):
                 # madmom returns beat activation function
                 activation = self._processor(y)
                 if len(activation) > 0 and np.max(activation) > self.config.confidence_threshold:
@@ -171,15 +174,13 @@ class BeatTrackNode:
             confidence=confidence,
         )
 
-    def _fallback_beat_tracking(
-        self, state: PhotonicState, current_time: float
-    ) -> PhotonicState:
+    def _fallback_beat_tracking(self, state: PhotonicState, current_time: float) -> PhotonicState:
         """Fallback beat tracking using assumed BPM."""
         # Use RMS peaks as rough beat indicator
         rms = state["audio_features"]["rms_energy"]
 
         # Simple peak detection
-        if not hasattr(self, '_rms_history'):
+        if not hasattr(self, "_rms_history"):
             self._rms_history = deque(maxlen=50)
 
         self._rms_history.append(rms)

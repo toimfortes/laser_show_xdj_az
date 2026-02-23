@@ -1,0 +1,96 @@
+# Pknight 4-port Art-Net/sACN -> DMX512 + single OEM 4-lens laser.
+# Current hardware scope: one laser only.
+
+audio:
+  device: null
+  sample_rate: 48000
+  block_size: 1024
+  channels: 2
+  buffer_seconds: 2.0
+  latency: "low"
+
+midi:
+  port_name: null
+  auto_detect_patterns:
+    - "XDJ-AZ"
+    - "XDJ-XZ"
+    - "DDJ"
+    - "Pioneer"
+
+pro_dj_link:
+  enabled: false
+  listen_host: "0.0.0.0"
+  keepalive_port: 50000
+  status_port: 50001
+  beat_port: 50002
+
+cv:
+  enabled: true
+  capture_rate_hz: 10.0
+  bpm_roi: null
+  waveform_roi: null
+  lookahead_pixels: 50
+
+dmx:
+  interface_type: "artnet"
+  ftdi_url: "ftdi://ftdi:232/1"
+  serial_port: null
+  refresh_rate_hz: 40.0
+  universe: 0
+  # Replace with your node IP for unicast (recommended):
+  # artnet_host: "192.168.1.50"
+  artnet_host: "255.255.255.255"
+  artnet_port: 6454
+  # Set false after artnet_host is set to your Pknight IP.
+  artnet_broadcast: true
+  artnet_net: 0
+  artnet_subnet: 0
+
+beat_tracking:
+  backend: "madmom"
+  online_mode: true
+  confidence_threshold: 0.5
+
+structure_detection:
+  drop_rms_multiplier: 2.0
+  buildup_slope_threshold: 0.01
+  gap_rms_threshold: 0.3
+  min_drop_interval_s: 10.0
+
+scene:
+  scenes_dir: "config/scenes"
+  default_scene: "idle"
+  transition_time_s: 0.5
+
+safety:
+  laser:
+    y_axis_max: 100
+    min_scan_speed: 30
+    y_channel_offset: 3   # CH4
+    speed_channel_offset: 4  # CH5
+    max_intensity_no_movement: 50
+    enable_delay_ms: 500
+  strobe:
+    max_rate_hz: 10.0
+    max_duration_s: 5.0
+    cooldown_s: 2.0
+  moving_head:
+    max_pan_speed: 200
+    max_tilt_speed: 200
+    home_on_error: true
+  heartbeat_timeout_s: 1.0
+  analysis_timeout_s: 2.0
+  min_beat_confidence: 0.3
+  graceful_degradation: true
+
+fixtures:
+  - id: "laser1"
+    name: "OEM 4-Lens Laser"
+    type: "laser"
+    profile: "laser_generic_7ch"
+    start_address: 1
+    enabled: true
+
+debug: false
+profile: false
+log_level: "INFO"

@@ -1,0 +1,113 @@
+{
+  "$schema": "../schemas/critique_spec.schema.json",
+  "version": "2.1.0",
+  "plan_file": "IMPLEMENTATION_PLAN.md",
+  "scope": {
+    "primary": [
+      "IMPLEMENTATION_PLAN.md",
+      "src/photonic_synesthesia/core/state.py"
+    ],
+    "secondary": [
+      "src/photonic_synesthesia/core/config.py",
+      "src/photonic_synesthesia/graph/builder.py",
+      "src/photonic_synesthesia/director/engine.py"
+    ],
+    "tertiary": [
+      "schemas/critique_spec.json"
+    ]
+  },
+  "vector_file_matrix": {
+    "_doc": "Every listed vector maps all scoped files for parity checks (R13).",
+    "V83": {
+      "IMPLEMENTATION_PLAN.md": { "status": "required" },
+      "src/photonic_synesthesia/core/state.py": { "status": "required" },
+      "src/photonic_synesthesia/core/config.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "src/photonic_synesthesia/director/engine.py": { "status": "required" },
+      "schemas/critique_spec.json": { "status": "n/a", "justification": "Manifest file" }
+    },
+    "V84": {
+      "IMPLEMENTATION_PLAN.md": { "status": "n/a", "justification": "Plan text" },
+      "src/photonic_synesthesia/core/state.py": { "status": "required" },
+      "src/photonic_synesthesia/core/config.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "src/photonic_synesthesia/director/engine.py": { "status": "required" },
+      "schemas/critique_spec.json": { "status": "n/a", "justification": "Manifest file" }
+    },
+    "V100": {
+      "IMPLEMENTATION_PLAN.md": { "status": "required" },
+      "src/photonic_synesthesia/core/state.py": { "status": "required" },
+      "src/photonic_synesthesia/core/config.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "src/photonic_synesthesia/director/engine.py": { "status": "required" },
+      "schemas/critique_spec.json": { "status": "required" }
+    }
+  },
+  "rules": [
+    {
+      "id": "R02",
+      "title": "Numeric Methodology Disclosure",
+      "enforcement": "soft-mandatory",
+      "check_type": "deterministic",
+      "verify": {
+        "type": "regex_scan",
+        "pattern": "\\b\\d+(?:\\.\\d+)?%?\\b",
+        "target": "IMPLEMENTATION_PLAN.md",
+        "pass_condition": "All scoped numeric claims include a methodology/source marker.",
+        "claim_keywords": [
+          "kHz",
+          "bit",
+          "Hz",
+          "ms",
+          "cores",
+          "GB"
+        ],
+        "methodology_markers": [
+          "specification",
+          "target",
+          "approx",
+          "benchmark",
+          "default",
+          "estimate",
+          "~"
+        ],
+        "exclude_in_code_fences": true,
+        "exclude_line_patterns": [
+          "^##\\s+Phase\\s+\\d+.*$",
+          "^\\|\\s+Task\\s+\\|.*$"
+        ]
+      }
+    },
+    {
+      "id": "R15",
+      "title": "AST vs Regex Exception Parity",
+      "enforcement": "hard-mandatory",
+      "check_type": "ast_crosscheck",
+      "verify": {
+        "type": "count_comparison",
+        "target": "V84 required files",
+        "source": "matter_map exceptions + rg -n \"raise HTTPException\"",
+        "pass_condition": "delta_pct <= 10",
+        "max_divergence_pct": 10
+      }
+    }
+  ],
+  "concordance_graph": {
+    "edges": [
+      {
+        "from": "§1:langgraph_state_machine",
+        "to": "§3:langgraph_node_spec",
+        "type": "risk_mitigation",
+        "anchor_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "agent_assignments": {
+    "agent_1": {
+      "name": "Scope and Inventory Auditor",
+      "vectors": ["V83"],
+      "sections": ["§1 System Architecture", "§3 Software Architecture"],
+      "rules": ["R02"]
+    }
+  }
+}

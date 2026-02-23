@@ -70,6 +70,9 @@ photonic run
 
 # Test DMX output
 photonic dmx-test -c 1 -v 255  # Channel 1 to full
+
+# Run with Pknight Art-Net + single OEM 7CH laser profile
+photonic run --config config/pknight_single_laser.yaml
 ```
 
 ## Configuration

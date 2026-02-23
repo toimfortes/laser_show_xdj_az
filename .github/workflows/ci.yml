@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Lint & Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Install only the dependencies needed for unit tests.
+      # Heavy optional extras (beatnet, ml) require native libs not available
+      # in vanilla GH runners; they are excluded here intentionally.
+      - name: Install core dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            pydantic pydantic-settings pyyaml \
+            structlog click \
+            numpy \
+            langgraph langchain-core \
+            ruff mypy \
+            pytest pytest-cov
+
+      - name: Install package (editable, no extras)
+        run: pip install -e . --no-deps
+
+      # -----------------------------------------------------------------------
+      # Linting
+      # -----------------------------------------------------------------------
+      - name: ruff check
+        run: ruff check src tests
+
+      # -----------------------------------------------------------------------
+      # Type checking (pragmatic: ignore missing stubs for optional deps)
+      # -----------------------------------------------------------------------
+      - name: mypy
+        run: |
+          mypy src \
+            --ignore-missing-imports \
+            --no-error-summary \
+            --exclude 'src/photonic_synesthesia/ui/web_panel\.py'
+        # web_panel may depend on fastapi which is not installed here
+
+      # -----------------------------------------------------------------------
+      # Unit tests
+      # -----------------------------------------------------------------------
+      - name: pytest
+        run: |
+          pytest tests/ -v \
+            --tb=short \
+            --ignore=tests/integration \
+            -p no:asyncio
+        env:
+          # Prevent sounddevice / ALSA from emitting noise on headless runners
+          SDL_AUDIODRIVER: dummy

@@ -7,20 +7,20 @@ to understand DJ intent and enable manual lighting overrides.
 
 from __future__ import annotations
 
-import time
 import queue
-import threading
-from typing import Optional, List, Dict
+import time
+from typing import cast
+
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, MidiState
 from photonic_synesthesia.core.config import MidiConfig
-from photonic_synesthesia.core.exceptions import MidiPortNotFoundError
+from photonic_synesthesia.core.state import MidiState, PhotonicState
 
 logger = structlog.get_logger()
 
 try:
     import mido
+
     MIDO_AVAILABLE = True
 except ImportError:
     MIDO_AVAILABLE = False
@@ -84,17 +84,17 @@ class MidiSenseNode:
         self._running = False
 
         # Current state cache
-        self._fader_values: Dict[int, float] = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
-        self._filter_values: Dict[int, float] = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5}
+        self._fader_values: dict[int, float] = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
+        self._filter_values: dict[int, float] = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5}
         self._crossfader: float = 0.0
-        self._recent_pads: List[int] = []
+        self._recent_pads: list[int] = []
 
-    def _find_port(self) -> Optional[str]:
+    def _find_port(self) -> str | None:
         """Find XDJ-AZ MIDI port by name pattern."""
         if not MIDO_AVAILABLE:
             return None
 
-        available = mido.get_input_names()
+        available = cast(list[str], mido.get_input_names())
         logger.debug("Available MIDI ports", ports=available)
 
         # Try explicit port name first
@@ -109,7 +109,7 @@ class MidiSenseNode:
 
         return None
 
-    def _on_message(self, msg: "mido.Message") -> None:
+    def _on_message(self, msg: mido.Message) -> None:
         """Callback for incoming MIDI messages."""
         try:
             self._message_queue.put_nowait(msg)
@@ -183,7 +183,7 @@ class MidiSenseNode:
 
         return state
 
-    def _process_message(self, msg: "mido.Message") -> None:
+    def _process_message(self, msg: mido.Message) -> None:
         """Process a single MIDI message."""
         if msg.type == "control_change":
             self._handle_cc(msg.control, msg.value)
@@ -214,9 +214,6 @@ class MidiSenseNode:
     def _handle_note_on(self, note: int, velocity: int) -> None:
         """Handle Note On message (pad triggers)."""
         # Check if it's a performance pad
-        if (
-            note in self.midi_map.PAD_NOTES_CH1
-            or note in self.midi_map.PAD_NOTES_CH2
-        ):
+        if note in self.midi_map.PAD_NOTES_CH1 or note in self.midi_map.PAD_NOTES_CH2:
             self._recent_pads.append(note)
             logger.debug("Pad triggered", note=note, velocity=velocity)

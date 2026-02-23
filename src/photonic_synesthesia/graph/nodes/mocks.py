@@ -7,20 +7,21 @@ testing the graph without real hardware.
 
 from __future__ import annotations
 
-import time
 import math
 import random
-from typing import List
+import time
+
 import structlog
 
 from photonic_synesthesia.core.state import (
-    PhotonicState,
     AudioFeatures,
     BeatInfo,
-    MidiState,
     CVState,
+    MidiState,
     MusicStructure,
+    PhotonicState,
 )
+from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
 logger = structlog.get_logger()
 
@@ -33,7 +34,7 @@ class MockAudioSenseNode:
     the analysis pipeline.
     """
 
-    def __init__(self, sample_rate: int = 48000):
+    def __init__(self, sample_rate: int = 48000) -> None:
         self.sample_rate = sample_rate
         self._time_offset = 0.0
         self._simulated_bpm = 128.0
@@ -116,7 +117,7 @@ class MockAudioSenseNode:
 class MockMidiSenseNode:
     """Mock MIDI input for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._fader_values = [1.0, 1.0, 1.0, 1.0]
         self._crossfader = 0.0
 
@@ -131,7 +132,7 @@ class MockMidiSenseNode:
             crossfader_position=self._crossfader,
             channel_faders=self._fader_values.copy(),
             filter_positions=[0.5, 0.5, 0.5, 0.5],
-            eq_positions={"hi": [0.5]*4, "mid": [0.5]*4, "lo": [0.5]*4},
+            eq_positions={"hi": [0.5] * 4, "mid": [0.5] * 4, "lo": [0.5] * 4},
             active_effects=[],
             pad_triggers=[],
             last_update=time.time(),
@@ -148,7 +149,7 @@ class MockMidiSenseNode:
 class MockCVSenseNode:
     """Mock computer vision for testing."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._bpm = 128.0
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -171,8 +172,8 @@ class MockCVSenseNode:
 class MockDMXOutputNode:
     """Mock DMX output for testing without hardware."""
 
-    def __init__(self):
-        self._universe = bytearray(513)
+    def __init__(self) -> None:
+        self._universe: bytearray = create_universe_buffer()
         self._frames_sent = 0
         self._running = False
 
@@ -188,7 +189,7 @@ class MockDMXOutputNode:
         # Apply fixture commands
         for cmd in state["fixture_commands"]:
             for channel, value in cmd["channel_values"].items():
-                if 1 <= channel <= 512:
+                if is_valid_dmx_channel(channel):
                     self._universe[channel] = max(0, min(255, value))
 
         state["dmx_universe"] = bytes(self._universe)
@@ -199,11 +200,11 @@ class MockDMXOutputNode:
 
     def get_channel(self, channel: int) -> int:
         """Get current value of a channel."""
-        if 1 <= channel <= 512:
-            return self._universe[channel]
+        if is_valid_dmx_channel(channel):
+            return int(self._universe[channel])
         return 0
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, int | bool]:
         return {
             "running": self._running,
             "frames_sent": self._frames_sent,
@@ -211,7 +212,7 @@ class MockDMXOutputNode:
         }
 
     def blackout(self) -> None:
-        self._universe = bytearray(513)
+        self._universe = create_universe_buffer()
 
 
 class StructureSimulator:
@@ -221,12 +222,12 @@ class StructureSimulator:
     Cycles through: INTRO -> BUILDUP -> DROP -> BREAKDOWN -> BUILDUP -> DROP...
     """
 
-    def __init__(self, cycle_time: float = 32.0):
+    def __init__(self, cycle_time: float = 32.0) -> None:
         self.cycle_time = cycle_time
         self._start_time = time.time()
 
         # Structure timeline (fraction of cycle)
-        self._structure_timeline = [
+        self._structure_timeline: list[tuple[float, MusicStructure]] = [
             (0.0, MusicStructure.INTRO),
             (0.15, MusicStructure.VERSE),
             (0.3, MusicStructure.BUILDUP),

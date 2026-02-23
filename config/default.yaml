@@ -19,6 +19,14 @@ midi:
     - "DDJ"
     - "Pioneer"
 
+# PRO DJ LINK telemetry (DJM/CDJ network data)
+pro_dj_link:
+  enabled: false
+  listen_host: "0.0.0.0"
+  keepalive_port: 50000
+  status_port: 50001
+  beat_port: 50002
+
 # Computer vision settings
 cv:
   enabled: true
@@ -29,11 +37,16 @@ cv:
 
 # DMX output settings
 dmx:
-  interface_type: "enttec_open"  # enttec_open, enttec_pro, artnet
+  interface_type: "artnet"  # enttec_open, enttec_pro, artnet
   ftdi_url: "ftdi://ftdi:232/1"  # For Enttec Open DMX USB
   serial_port: null  # For Enttec Pro
   refresh_rate_hz: 40.0
   universe: 0
+  artnet_host: "255.255.255.255"  # Set to Pknight IP for unicast once known
+  artnet_port: 6454
+  artnet_broadcast: true
+  artnet_net: 0
+  artnet_subnet: 0
 
 # Beat tracking settings
 beat_tracking:
@@ -59,6 +72,8 @@ safety:
   laser:
     y_axis_max: 100  # Max tilt value (0-255) - prevents crowd scanning
     min_scan_speed: 30  # Min galvo speed - prevents burns
+    y_channel_offset: 3  # CH4 in OEM 7CH profile (base + 3)
+    speed_channel_offset: 4  # CH5 in OEM 7CH profile (base + 4)
     max_intensity_no_movement: 50
     enable_delay_ms: 500
 
@@ -78,14 +93,13 @@ safety:
   graceful_degradation: true
 
 # Fixture definitions
-fixtures: []
-  # Example laser:
-  # - id: "laser1"
-  #   name: "Main Laser"
-  #   type: "laser"
-  #   profile: "laser_generic_7ch"
-  #   start_address: 1
-  #   enabled: true
+fixtures:
+  - id: "laser1"
+    name: "OEM 4-Lens Laser"
+    type: "laser"
+    profile: "laser_generic_7ch"  # DIP#10 ON for DMX mode
+    start_address: 1
+    enabled: true
 
 # Debug settings
 debug: false

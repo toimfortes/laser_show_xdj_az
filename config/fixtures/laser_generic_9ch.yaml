@@ -1,0 +1,82 @@
+# Generic OEM 9-Channel DMX Laser Profile
+# Variant firmware seen on similar 4-lens RGBY fixtures.
+
+name: "Generic OEM 4-Lens Laser (9CH Variant)"
+manufacturer: "Generic"
+type: "laser"
+channels: 9
+
+channel_map:
+  1:
+    name: "mode"
+    type: "mode_select"
+    description: "Operating mode selection"
+    values:
+      blackout: [0, 49]
+      static_patterns: [50, 99]
+      dynamic_patterns: [100, 149]
+      sound_active: [150, 199]
+      dmx_manual: [200, 255]
+    default: 220
+
+  2:
+    name: "pattern"
+    type: "pattern_select"
+    description: "Built-in pattern selection"
+    range: [0, 255]
+    default: 0
+
+  3:
+    name: "x_position"
+    type: "position"
+    description: "Horizontal position / movement phase"
+    range: [0, 255]
+    default: 128
+
+  4:
+    name: "y_position"
+    type: "position"
+    description: "Vertical position / movement phase"
+    range: [0, 255]
+    safety_clamp: 100
+    default: 64
+
+  5:
+    name: "x_roll"
+    type: "rotation"
+    description: "X-axis roll"
+    range: [0, 255]
+    default: 128
+
+  6:
+    name: "y_roll"
+    type: "rotation"
+    description: "Y-axis roll"
+    range: [0, 255]
+    default: 128
+
+  7:
+    name: "z_roll"
+    type: "rotation"
+    description: "Z-axis roll"
+    range: [0, 255]
+    default: 128
+
+  8:
+    name: "zoom"
+    type: "continuous"
+    description: "Pattern size / zoom"
+    range: [0, 255]
+    default: 96
+
+  9:
+    name: "pattern_play_speed"
+    type: "speed"
+    description: "Pattern playback speed"
+    range: [0, 255]
+    default: 160
+
+safety:
+  requires_minimum_movement: true
+  crowd_safe_tilt_max: 100
+  enable_delay_ms: 500

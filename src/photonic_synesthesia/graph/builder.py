@@ -7,26 +7,29 @@ sensor acquisition, analysis, and fixture control nodes.
 
 from __future__ import annotations
 
-from typing import Optional, Dict, Any, Callable
-import structlog
-from langgraph.graph import StateGraph, END
+from typing import Any
 
-from photonic_synesthesia.core.state import PhotonicState, create_initial_state
+import structlog
+from langgraph.graph import END, StateGraph
+
 from photonic_synesthesia.core.config import Settings
+from photonic_synesthesia.core.state import PhotonicState, create_initial_state
 from photonic_synesthesia.graph.nodes import (
     AudioSenseNode,
-    FeatureExtractNode,
     BeatTrackNode,
-    StructureDetectNode,
-    MidiSenseNode,
     CVSenseNode,
+    DirectorIntentNode,
+    DMXOutputNode,
+    FeatureExtractNode,
     FusionNode,
-    SceneSelectNode,
+    InterpreterNode,
     LaserControlNode,
+    MidiSenseNode,
     MovingHeadControlNode,
     PanelControlNode,
-    DMXOutputNode,
     SafetyInterlockNode,
+    SceneSelectNode,
+    StructureDetectNode,
 )
 
 logger = structlog.get_logger()
@@ -44,7 +47,7 @@ class PhotonicGraph:
         self,
         graph: Any,  # Compiled StateGraph
         settings: Settings,
-        nodes: Dict[str, Any],
+        nodes: dict[str, Any],
     ):
         self.graph = graph
         self.settings = settings
@@ -64,6 +67,8 @@ class PhotonicGraph:
             self.nodes["midi_sense"].start()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].start()
+        if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
+            self.nodes["safety_interlock"].start()
 
     def stop(self) -> None:
         """Stop all processing and clean up resources."""
@@ -75,6 +80,8 @@ class PhotonicGraph:
             self.nodes["audio_sense"].stop()
         if "midi_sense" in self.nodes:
             self.nodes["midi_sense"].stop()
+        if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
+            self.nodes["safety_interlock"].stop()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].stop()
 
@@ -89,8 +96,8 @@ class PhotonicGraph:
 
         frame_time = 1.0 / target_fps
 
-        self.start()
         try:
+            self.start()
             while self._running:
                 start = time.time()
                 self.step()
@@ -116,7 +123,7 @@ class PhotonicGraph:
 
 
 def build_photonic_graph(
-    settings: Optional[Settings] = None,
+    settings: Settings | None = None,
     mock_sensors: bool = False,
 ) -> PhotonicGraph:
     """
@@ -135,15 +142,16 @@ def build_photonic_graph(
     logger.info("Building photonic graph", mock_sensors=mock_sensors)
 
     # Initialize nodes
-    nodes: Dict[str, Any] = {}
+    nodes: dict[str, Any] = {}
 
     if mock_sensors:
         from photonic_synesthesia.graph.nodes.mocks import (
             MockAudioSenseNode,
-            MockMidiSenseNode,
             MockCVSenseNode,
             MockDMXOutputNode,
+            MockMidiSenseNode,
         )
+
         nodes["audio_sense"] = MockAudioSenseNode()
         nodes["midi_sense"] = MockMidiSenseNode()
         nodes["cv_sense"] = MockCVSenseNode()
@@ -159,6 +167,7 @@ def build_photonic_graph(
     nodes["beat_track"] = BeatTrackNode(settings.beat_tracking)
     nodes["structure_detect"] = StructureDetectNode(settings.structure_detection)
     nodes["fusion"] = FusionNode()
+    nodes["director_intent"] = DirectorIntentNode()
     nodes["scene_select"] = SceneSelectNode(settings.scene)
 
     # Fixture control nodes
@@ -167,9 +176,14 @@ def build_photonic_graph(
         settings.fixtures, settings.safety.moving_head
     )
     nodes["panel_control"] = PanelControlNode(settings.fixtures)
+    nodes["interpreter"] = InterpreterNode(settings.safety)
 
     # Safety node
-    nodes["safety_interlock"] = SafetyInterlockNode(settings.safety, settings.fixtures)
+    nodes["safety_interlock"] = SafetyInterlockNode(
+        settings.safety,
+        settings.fixtures,
+        dmx_output=nodes["dmx_output"],
+    )
 
     # Build graph
     graph = StateGraph(PhotonicState)
@@ -198,24 +212,28 @@ def build_photonic_graph(
     graph.add_edge("cv_sense", "fusion")
 
     # Scene selection after fusion
-    graph.add_edge("fusion", "scene_select")
+    graph.add_edge("fusion", "director_intent")
+    graph.add_edge("director_intent", "scene_select")
 
     # Parallel fixture control
     graph.add_edge("scene_select", "laser_control")
     graph.add_edge("scene_select", "moving_head_control")
     graph.add_edge("scene_select", "panel_control")
 
-    # Converge to DMX output
-    graph.add_edge("laser_control", "dmx_output")
-    graph.add_edge("moving_head_control", "dmx_output")
-    graph.add_edge("panel_control", "dmx_output")
+    # Converge through interpreter, then safety interlock, then DMX output
+    graph.add_edge("laser_control", "interpreter")
+    graph.add_edge("moving_head_control", "interpreter")
+    graph.add_edge("panel_control", "interpreter")
 
-    # Safety check
-    graph.add_edge("dmx_output", "safety_interlock")
+    # Safety check BEFORE committing to DMX universe
+    graph.add_edge("interpreter", "safety_interlock")
+
+    # DMX output after safety has validated/clamped commands
+    graph.add_edge("safety_interlock", "dmx_output")
 
     # Loop back for continuous operation
     # Note: In practice, we use run_loop() which handles the iteration
-    graph.add_edge("safety_interlock", END)
+    graph.add_edge("dmx_output", END)
 
     # Compile
     compiled = graph.compile()
@@ -223,7 +241,7 @@ def build_photonic_graph(
     return PhotonicGraph(compiled, settings, nodes)
 
 
-def build_minimal_graph(settings: Optional[Settings] = None) -> PhotonicGraph:
+def build_minimal_graph(settings: Settings | None = None) -> PhotonicGraph:
     """
     Build a minimal graph for testing DMX output only.
 
@@ -235,10 +253,15 @@ def build_minimal_graph(settings: Optional[Settings] = None) -> PhotonicGraph:
 
     from photonic_synesthesia.graph.nodes.mocks import MockAudioSenseNode
 
+    dmx_output = DMXOutputNode(settings.dmx)
     nodes = {
         "audio_sense": MockAudioSenseNode(),
-        "dmx_output": DMXOutputNode(settings.dmx),
-        "safety_interlock": SafetyInterlockNode(settings.safety, settings.fixtures),
+        "dmx_output": dmx_output,
+        "safety_interlock": SafetyInterlockNode(
+            settings.safety,
+            settings.fixtures,
+            dmx_output=dmx_output,
+        ),
     }
 
     graph = StateGraph(PhotonicState)
@@ -247,9 +270,9 @@ def build_minimal_graph(settings: Optional[Settings] = None) -> PhotonicGraph:
         graph.add_node(name, node)
 
     graph.set_entry_point("audio_sense")
-    graph.add_edge("audio_sense", "dmx_output")
-    graph.add_edge("dmx_output", "safety_interlock")
-    graph.add_edge("safety_interlock", END)
+    graph.add_edge("audio_sense", "safety_interlock")
+    graph.add_edge("safety_interlock", "dmx_output")
+    graph.add_edge("dmx_output", END)
 
     compiled = graph.compile()
     return PhotonicGraph(compiled, settings, nodes)

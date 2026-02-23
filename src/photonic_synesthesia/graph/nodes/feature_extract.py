@@ -8,19 +8,19 @@ band energies, and MFCCs from the audio buffer.
 from __future__ import annotations
 
 import time
-from typing import Optional, List
-import numpy as np
-from numpy.typing import NDArray
-import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, AudioFeatures
-from photonic_synesthesia.core.exceptions import AudioAnalysisError
+import numpy as np
+import structlog
+from numpy.typing import NDArray
+
+from photonic_synesthesia.core.state import AudioFeatures, PhotonicState
 
 logger = structlog.get_logger()
 
 # Import librosa conditionally
 try:
     import librosa
+
     LIBROSA_AVAILABLE = True
 except ImportError:
     LIBROSA_AVAILABLE = False
@@ -53,12 +53,12 @@ class FeatureExtractNode:
         self.n_mels = n_mels
 
         # Frequency band boundaries (Hz)
-        self.low_band = (20, 200)      # Sub-bass and bass
-        self.mid_band = (200, 2000)    # Vocals, instruments
-        self.high_band = (2000, 20000) # Cymbals, hi-hats, air
+        self.low_band = (20, 200)  # Sub-bass and bass
+        self.mid_band = (200, 2000)  # Vocals, instruments
+        self.high_band = (2000, 20000)  # Cymbals, hi-hats, air
 
         # Previous spectrum for flux calculation
-        self._prev_spectrum: Optional[NDArray] = None
+        self._prev_spectrum: NDArray | None = None
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Extract audio features and update state."""
@@ -124,8 +124,8 @@ class FeatureExtractNode:
 
         # Convert mel bins to approximate frequency bands
         # Mel scale is non-linear, so we use approximate bin ranges
-        low_bins = int(self.n_mels * 0.1)   # ~0-200 Hz
-        mid_bins = int(self.n_mels * 0.5)   # ~200-2000 Hz
+        low_bins = int(self.n_mels * 0.1)  # ~0-200 Hz
+        mid_bins = int(self.n_mels * 0.5)  # ~200-2000 Hz
         # Remaining bins are high
 
         low_energy = float(np.mean(mel[:low_bins, :]))

@@ -7,9 +7,10 @@ and calibrating sensors.
 
 from __future__ import annotations
 
+import logging
+import signal
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 import structlog
@@ -28,7 +29,7 @@ logger = structlog.get_logger()
     help="Path to configuration file",
 )
 @click.pass_context
-def cli(ctx: click.Context, debug: bool, config: Optional[str]) -> None:
+def cli(ctx: click.Context, debug: bool, config: str | None) -> None:
     """
     Photonic Synesthesia - AI-Driven Laser Show Controller for XDJ-AZ
 
@@ -39,11 +40,9 @@ def cli(ctx: click.Context, debug: bool, config: Optional[str]) -> None:
     ctx.ensure_object(dict)
 
     # Configure logging
-    log_level = "DEBUG" if debug else "INFO"
+    log_level = logging.DEBUG if debug else logging.INFO
     structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(structlog, log_level)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
     )
 
     ctx.obj["debug"] = debug
@@ -75,6 +74,16 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     click.echo()
 
     # Build and run graph
+    graph = None
+
+    def _shutdown(signum: int, frame: object) -> None:
+        """Signal handler: ask the graph to stop cleanly."""
+        if graph is not None:
+            graph.stop()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
     try:
         graph = build_photonic_graph(settings, mock_sensors=mock)
         click.echo("Graph built successfully. Starting...")
@@ -83,13 +92,16 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 
         graph.run_loop(target_fps=fps)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         click.echo("\nShutting down...")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         if ctx.obj["debug"]:
             raise
         sys.exit(1)
+    finally:
+        if graph is not None:
+            graph.stop()  # idempotent: stop() is safe to call multiple times
 
 
 @cli.command()
@@ -99,9 +111,10 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
     """Test DMX output by setting a single channel."""
     from photonic_synesthesia.core.config import Settings
+    from photonic_synesthesia.dmx.universe import is_valid_dmx_channel
     from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 
-    if not 1 <= channel <= 512:
+    if not is_valid_dmx_channel(channel):
         click.echo("Error: Channel must be 1-512", err=True)
         sys.exit(1)
 
@@ -120,11 +133,13 @@ def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
         click.echo("Press Ctrl+C to stop and blackout.")
 
         import time
+
         while True:
             time.sleep(1)
 
     except KeyboardInterrupt:
         click.echo("\nBlacking out...")
+    finally:
         dmx.blackout()
         dmx.stop()
 
@@ -135,6 +150,7 @@ def list_audio(ctx: click.Context) -> None:
     """List available audio input devices."""
     try:
         import sounddevice as sd
+
         devices = sd.query_devices()
 
         click.echo("Available audio devices:")
@@ -158,6 +174,7 @@ def list_midi(ctx: click.Context) -> None:
     """List available MIDI input ports."""
     try:
         import mido
+
         ports = mido.get_input_names()
 
         click.echo("Available MIDI input ports:")
@@ -180,11 +197,12 @@ def list_midi(ctx: click.Context) -> None:
 def analyze(ctx: click.Context, duration: float) -> None:
     """Run audio analysis and display detected features."""
     import time
+
     from photonic_synesthesia.core.config import Settings
     from photonic_synesthesia.core.state import create_initial_state
     from photonic_synesthesia.graph.nodes.audio_sense import AudioSenseNode
-    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
     from photonic_synesthesia.graph.nodes.beat_track import BeatTrackNode
+    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
     from photonic_synesthesia.graph.nodes.structure_detect import StructureDetectNode
 
     settings = Settings()
