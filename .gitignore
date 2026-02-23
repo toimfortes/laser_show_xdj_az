@@ -1,0 +1,6 @@
+.ai_orchestrator/
+data/audit/
+data/code_auditor/
+data/code_catalog.json
+data/critique/soak_300s.log
+data/matter_map.json
