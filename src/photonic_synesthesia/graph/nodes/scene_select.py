@@ -6,14 +6,14 @@ Maps musical structure, energy levels, and DJ intent to lighting scenes.
 
 from __future__ import annotations
 
-import time
-from pathlib import Path
-from typing import Dict, Any, Optional, List
 import json
+import time
+from typing import Any
+
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, MusicStructure, SceneState
 from photonic_synesthesia.core.config import SceneConfig
+from photonic_synesthesia.core.state import MusicStructure, PhotonicState, SceneState
 
 logger = structlog.get_logger()
 
@@ -31,8 +31,8 @@ class SceneSelectNode:
 
     def __init__(self, config: SceneConfig):
         self.config = config
-        self.scenes: Dict[str, Any] = {}
-        self.pad_overrides: Dict[int, str] = {}
+        self.scenes: dict[str, Any] = {}
+        self.pad_overrides: dict[int, str] = {}
 
         # Load scene definitions
         self._load_scenes()
@@ -94,7 +94,14 @@ class SceneSelectNode:
         # Priority 2: Drop Detection
         # =================================================================
         if pending_scene is None:
-            if state["current_structure"] == MusicStructure.DROP:
+            director = state.get("director_state")
+            if director:
+                target_scene = director["target_scene"]
+                if director["allow_scene_transition"] or target_scene == current_scene:
+                    pending_scene = target_scene
+                else:
+                    pending_scene = current_scene
+            elif state["current_structure"] == MusicStructure.DROP:
                 pending_scene = "drop_intense"
             elif state["drop_probability"] > 0.9:
                 # Pre-load drop scene
@@ -162,10 +169,10 @@ class SceneSelectNode:
 
         return state
 
-    def get_scene_data(self, scene_name: str) -> Optional[Dict[str, Any]]:
+    def get_scene_data(self, scene_name: str) -> dict[str, Any] | None:
         """Get full scene definition by name."""
         return self.scenes.get(scene_name)
 
-    def list_scenes(self) -> List[str]:
+    def list_scenes(self) -> list[str]:
         """List all available scene names."""
         return list(self.scenes.keys())

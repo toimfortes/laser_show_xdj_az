@@ -133,7 +133,7 @@ The system uses LangGraph to model the lighting control workflow as a directed g
 | **XDJ-AZ** | AlphaTheta all-in-one | Audio source + MIDI telemetry |
 | **USB Audio Interface** | Focusrite Scarlett / Behringer UMC | Audio capture (Master 2 → Line In) |
 | **USB-DMX Interface** | Enttec Open DMX USB | DMX512 output (requires pyftdi) |
-| **Control Computer** | Linux/macOS, 4+ cores, 8GB+ RAM | Processing host |
+| **Control Computer** | Linux/macOS, 4+ cores (specification), 8GB+ RAM (specification) | Processing host |
 | **Laser Projector(s)** | DMX-controlled, 7-15 channels | Beam effects |
 | **Moving Head(s)** | DMX-controlled, 11-19 channels | Kinetic lighting |
 | **LED Panels** | DMX-controlled, RGB/RGBW | Wash/ambient lighting |
@@ -1149,7 +1149,7 @@ web = [
 | Stage | Target Latency | Notes |
 |-------|----------------|-------|
 | Audio capture | <10ms | Depends on buffer size |
-| Feature extraction | <20ms | librosa STFT on 2048 samples |
+| Feature extraction | <20ms (benchmark target) | librosa STFT on 2048 samples |
 | Beat tracking | <50ms | BeatNet inference |
 | MIDI processing | <1ms | Event-driven |
 | Scene selection | <5ms | Lookup + interpolation |

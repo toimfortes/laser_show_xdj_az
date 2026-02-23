@@ -7,20 +7,20 @@ to understand DJ intent and enable manual lighting overrides.
 
 from __future__ import annotations
 
-import time
 import queue
-import threading
-from typing import Optional, List, Dict
+import time
+from typing import cast
+
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, MidiState
 from photonic_synesthesia.core.config import MidiConfig
-from photonic_synesthesia.core.exceptions import MidiPortNotFoundError
+from photonic_synesthesia.core.state import MidiState, PhotonicState
 
 logger = structlog.get_logger()
 
 try:
     import mido
+
     MIDO_AVAILABLE = True
 except ImportError:
     MIDO_AVAILABLE = False
@@ -84,17 +84,22 @@ class MidiSenseNode:
         self._running = False
 
         # Current state cache
-        self._fader_values: Dict[int, float] = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
-        self._filter_values: Dict[int, float] = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5}
+        self._fader_values: dict[int, float] = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
+        self._filter_values: dict[int, float] = {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5}
+        self._eq_values: dict[str, dict[int, float]] = {
+            "hi": {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5},
+            "mid": {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5},
+            "lo": {1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5},
+        }
         self._crossfader: float = 0.0
-        self._recent_pads: List[int] = []
+        self._recent_pads: list[int] = []
 
-    def _find_port(self) -> Optional[str]:
+    def _find_port(self) -> str | None:
         """Find XDJ-AZ MIDI port by name pattern."""
         if not MIDO_AVAILABLE:
             return None
 
-        available = mido.get_input_names()
+        available = cast(list[str], mido.get_input_names())
         logger.debug("Available MIDI ports", ports=available)
 
         # Try explicit port name first
@@ -109,7 +114,7 @@ class MidiSenseNode:
 
         return None
 
-    def _on_message(self, msg: "mido.Message") -> None:
+    def _on_message(self, msg: mido.Message) -> None:
         """Callback for incoming MIDI messages."""
         try:
             self._message_queue.put_nowait(msg)
@@ -158,16 +163,17 @@ class MidiSenseNode:
                 break
 
         # Build state update
+        active_effects = self._infer_active_effects()
         state["midi_state"] = MidiState(
             crossfader_position=self._crossfader,
             channel_faders=list(self._fader_values.values()),
             filter_positions=list(self._filter_values.values()),
             eq_positions={
-                "hi": [0.5, 0.5, 0.5, 0.5],  # TODO: track EQ
-                "mid": [0.5, 0.5, 0.5, 0.5],
-                "lo": [0.5, 0.5, 0.5, 0.5],
+                "hi": [self._eq_values["hi"][1], self._eq_values["hi"][2], self._eq_values["hi"][3], self._eq_values["hi"][4]],
+                "mid": [self._eq_values["mid"][1], self._eq_values["mid"][2], self._eq_values["mid"][3], self._eq_values["mid"][4]],
+                "lo": [self._eq_values["lo"][1], self._eq_values["lo"][2], self._eq_values["lo"][3], self._eq_values["lo"][4]],
             },
-            active_effects=[],  # TODO: detect effects
+            active_effects=active_effects,
             pad_triggers=self._recent_pads.copy(),
             last_update=current_time,
         )
@@ -183,7 +189,7 @@ class MidiSenseNode:
 
         return state
 
-    def _process_message(self, msg: "mido.Message") -> None:
+    def _process_message(self, msg: mido.Message) -> None:
         """Process a single MIDI message."""
         if msg.type == "control_change":
             self._handle_cc(msg.control, msg.value)
@@ -211,12 +217,39 @@ class MidiSenseNode:
                 self._filter_values[ch] = normalized
                 return
 
+        # EQ knobs
+        for ch, eq_cc in self.midi_map.EQ_HI.items():
+            if cc == eq_cc:
+                self._eq_values["hi"][ch] = normalized
+                return
+        for ch, eq_cc in self.midi_map.EQ_MID.items():
+            if cc == eq_cc:
+                self._eq_values["mid"][ch] = normalized
+                return
+        for ch, eq_cc in self.midi_map.EQ_LO.items():
+            if cc == eq_cc:
+                self._eq_values["lo"][ch] = normalized
+                return
+
     def _handle_note_on(self, note: int, velocity: int) -> None:
         """Handle Note On message (pad triggers)."""
         # Check if it's a performance pad
-        if (
-            note in self.midi_map.PAD_NOTES_CH1
-            or note in self.midi_map.PAD_NOTES_CH2
-        ):
+        if note in self.midi_map.PAD_NOTES_CH1 or note in self.midi_map.PAD_NOTES_CH2:
             self._recent_pads.append(note)
             logger.debug("Pad triggered", note=note, velocity=velocity)
+
+    def _infer_active_effects(self) -> list[str]:
+        """Infer coarse FX intents from current control positions."""
+        effects: set[str] = set()
+        avg_filter = sum(self._filter_values.values()) / max(1, len(self._filter_values))
+        if avg_filter > 0.7:
+            effects.add("high_pass_sweep")
+        elif avg_filter < 0.3:
+            effects.add("low_pass_sweep")
+
+        if any(value > 0.9 for value in self._eq_values["hi"].values()):
+            effects.add("hi_boost")
+        if any(value < 0.1 for value in self._eq_values["lo"].values()):
+            effects.add("bass_cut")
+
+        return sorted(effects)

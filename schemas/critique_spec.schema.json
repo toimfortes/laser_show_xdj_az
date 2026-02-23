@@ -1,0 +1,566 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uk-family-law-ai.local/schemas/critique_spec.schema.json",
+  "title": "Critique Specification Manifest",
+  "description": "Machine-readable encoding of critique rules, vectors, scope, and concordance graph. Validated before every audit run (R20).",
+  "type": "object",
+  "required": [
+    "version",
+    "plan_file",
+    "scope",
+    "vector_file_matrix",
+    "rules",
+    "concordance_graph",
+    "agent_assignments"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Reference to this schema file"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semver version of this manifest"
+    },
+    "plan_file": {
+      "type": "string",
+      "pattern": "^.+\\.md$",
+      "description": "Relative path to the plan being audited"
+    },
+    "scope": {
+      "type": "object",
+      "required": [
+        "primary"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "primary": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Primary target files (must have full vector coverage)"
+        },
+        "secondary": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Secondary verification targets (must appear in vector_file_matrix)"
+        },
+        "tertiary": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "Tertiary targets (coverage required only where explicitly marked)"
+        }
+      }
+    },
+    "vector_file_matrix": {
+      "type": "object",
+      "description": "For each per-file vector, maps full file paths to coverage metadata.",
+      "minProperties": 1,
+      "properties": {
+        "_doc": {
+          "type": "string"
+        }
+      },
+      "patternProperties": {
+        "^V\\d+$": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "required",
+                  "n/a",
+                  "missing"
+                ]
+              },
+              "justification": {
+                "type": "string",
+                "minLength": 1
+              },
+              "evidence_ref": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "n/a"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ]
+                },
+                "then": {
+                  "required": [
+                    "justification"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "enforcement",
+          "check_type",
+          "verify"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^R\\d{1,2}$",
+            "description": "Rule identifier (R01-R99)"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable rule name"
+          },
+          "enforcement": {
+            "type": "string",
+            "enum": [
+              "hard-mandatory",
+              "soft-mandatory",
+              "advisory"
+            ],
+            "description": "hard-mandatory: must pass for GO. soft-mandatory: can be overridden with justification. advisory: warning only."
+          },
+          "check_type": {
+            "type": "string",
+            "enum": [
+              "deterministic",
+              "ast_crosscheck",
+              "matrix_completeness",
+              "dual_method",
+              "attestation",
+              "semantic",
+              "graph_traversal"
+            ],
+            "description": "How this rule is verified. deterministic/ast_crosscheck/matrix_completeness run in preflight. semantic requires LLM."
+          },
+          "description": {
+            "type": "string"
+          },
+          "verify": {
+            "type": "object",
+            "description": "Machine-executable verification specification",
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "regex_scan",
+                  "matrix_check",
+                  "count_comparison",
+                  "evidence_check",
+                  "graph_check",
+                  "command"
+                ]
+              },
+              "pattern": {
+                "type": "string",
+                "format": "regex"
+              },
+              "target": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "pass_condition": {
+                "type": "string"
+              },
+              "max_divergence_pct": {
+                "type": "number"
+              },
+              "note": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
+              "claim_keywords": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              "methodology_markers": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1
+              },
+              "exclude_in_code_fences": {
+                "type": "boolean"
+              },
+              "exclude_line_patterns": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "regex"
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "deterministic"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "regex_scan",
+                        "matrix_check",
+                        "count_comparison",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "ast_crosscheck"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "count_comparison",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "matrix_completeness"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "matrix_check",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "dual_method"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "count_comparison",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "attestation"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "evidence_check",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "graph_traversal"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "graph_check",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "check_type": {
+                  "const": "semantic"
+                }
+              },
+              "required": [
+                "check_type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "evidence_check",
+                        "command"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "enforcement": {
+                  "const": "hard-mandatory"
+                }
+              },
+              "required": [
+                "enforcement"
+              ]
+            },
+            "then": {
+              "properties": {
+                "verify": {
+                  "required": [
+                    "pass_condition"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    "concordance_graph": {
+      "type": "object",
+      "required": [
+        "edges"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "_doc": {
+          "type": "string"
+        },
+        "edges": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "from",
+              "to",
+              "type",
+              "anchor_hash"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "pattern": "^§\\d+:.+",
+                "description": "Source anchor: section_id:item_id"
+              },
+              "to": {
+                "type": "string",
+                "pattern": "^§\\d+:.+",
+                "description": "Target anchor: section_id:item_id"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "blocking_question",
+                  "stop_go_gate",
+                  "end_of_plan",
+                  "remediation_phase",
+                  "risk_mitigation"
+                ],
+                "description": "Edge type for semantic validation"
+              },
+              "anchor_hash": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$",
+                "description": "SHA256 hash of normalized target content."
+              }
+            }
+          }
+        }
+      }
+    },
+    "agent_assignments": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "patternProperties": {
+        "^agent_[a-zA-Z0-9_]+$": {
+          "type": "object",
+          "required": [
+            "name",
+            "vectors",
+            "sections",
+            "rules"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "vectors": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^V\\d+$"
+              }
+            },
+            "sections": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^§\\d+.*$"
+              }
+            },
+            "rules": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^R\\d{1,2}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

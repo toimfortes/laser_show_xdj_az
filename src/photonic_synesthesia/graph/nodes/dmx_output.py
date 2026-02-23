@@ -7,19 +7,32 @@ in the Enttec Open DMX USB interface.
 
 from __future__ import annotations
 
-import time
+import math
 import threading
-from typing import Optional
-import structlog
+import time
 
-from photonic_synesthesia.core.state import PhotonicState
 from photonic_synesthesia.core.config import DMXConfig
-from photonic_synesthesia.core.exceptions import DMXConnectionError, DMXTransmissionError
+from photonic_synesthesia.core.exceptions import DMXConnectionError
+from photonic_synesthesia.core.state import PhotonicState
+from photonic_synesthesia.dmx.artnet import ArtNetTransmitter
+from photonic_synesthesia.dmx.universe import (
+    create_universe_buffer,
+    extract_channel_payload,
+    is_valid_dmx_channel,
+)
 
-logger = structlog.get_logger()
+try:
+    import structlog
+
+    logger = structlog.get_logger()
+except ImportError:  # pragma: no cover - fallback for minimal test envs
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 try:
     from pyftdi.serialext import serial_for_url
+
     PYFTDI_AVAILABLE = True
 except ImportError:
     PYFTDI_AVAILABLE = False
@@ -48,16 +61,17 @@ class DMXOutputNode:
         self.refresh_rate = config.refresh_rate_hz
 
         # Universe buffer (start code + 512 channels)
-        self._universe = bytearray(513)
-        self._universe[0] = 0x00  # Start code
+        self._universe = create_universe_buffer()
 
         # Thread synchronization
         self._lock = threading.Lock()
         self._running = False
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
         # Serial connection
         self._serial = None
+        self._artnet: ArtNetTransmitter | None = None
+        self._artnet_sequence: int = 0
 
         # Stats
         self._frames_sent = 0
@@ -65,28 +79,46 @@ class DMXOutputNode:
 
     def start(self) -> None:
         """Start DMX transmission thread."""
-        if not PYFTDI_AVAILABLE:
+        if self.config.interface_type != "artnet" and not PYFTDI_AVAILABLE:
             logger.warning("pyftdi not available, DMX output disabled")
             return
 
         if self._running:
             return
 
-        logger.info("Starting DMX output", url=self.ftdi_url)
+        logger.info("Starting DMX output", interface=self.config.interface_type)
 
         try:
-            # Open FTDI serial connection
-            # DMX uses 250kbaud, 8N2 (2 stop bits)
-            self._serial = serial_for_url(
-                self.ftdi_url,
-                baudrate=250000,
-                bytesize=8,
-                stopbits=2,
-            )
-            logger.info("DMX serial opened")
+            if self.config.interface_type == "artnet":
+                self._artnet = ArtNetTransmitter(
+                    host=self.config.artnet_host,
+                    port=self.config.artnet_port,
+                    broadcast=self.config.artnet_broadcast,
+                )
+                self._artnet.open()
+                logger.info(
+                    "Art-Net output ready",
+                    host=self.config.artnet_host,
+                    port=self.config.artnet_port,
+                )
+            else:
+                # Open FTDI serial connection
+                # DMX uses 250kbaud, 8N2 (2 stop bits)
+                self._serial = serial_for_url(
+                    self.ftdi_url,
+                    baudrate=250000,
+                    bytesize=8,
+                    stopbits=2,
+                )
+                logger.info("DMX serial opened")
 
         except Exception as e:
-            raise DMXConnectionError(self.ftdi_url, str(e))
+            target = (
+                f"{self.config.artnet_host}:{self.config.artnet_port}"
+                if self.config.interface_type == "artnet"
+                else self.ftdi_url
+            )
+            raise DMXConnectionError(target, str(e)) from e
 
         # Start transmission thread
         self._running = True
@@ -106,13 +138,30 @@ class DMXOutputNode:
             self._thread = None
 
         if self._serial:
-            # Send blackout before closing
-            with self._lock:
-                self._universe = bytearray(513)
-            time.sleep(0.05)  # Send one blackout frame
-
+            # Transmit thread is stopped; send one blackout frame directly.
+            blackout = bytes(create_universe_buffer())
+            try:
+                self._serial.send_break(duration=0.0001)
+                time.sleep(0.000012)
+                self._serial.write(blackout)
+            except Exception:
+                pass
             self._serial.close()
             self._serial = None
+
+        if self._artnet:
+            # Transmit thread is stopped; send one blackout packet directly.
+            blackout_data = bytes(512)
+            try:
+                self._artnet.send_dmx(
+                    universe=self._artnet_universe_address(),
+                    dmx_data=blackout_data,
+                    sequence=self._artnet_sequence,
+                )
+            except Exception:
+                pass
+            self._artnet.close()
+            self._artnet = None
 
         logger.info(
             "DMX output stopped",
@@ -147,12 +196,25 @@ class DMXOutputNode:
 
     def _send_frame(self) -> None:
         """Send a single DMX512 frame."""
-        if not self._serial:
-            return
-
         # Get current universe state
         with self._lock:
             data = bytes(self._universe)
+
+        if self.config.interface_type == "artnet":
+            if not self._artnet:
+                return
+            # ArtDMX data excludes DMX start code.
+            universe_data = extract_channel_payload(data)
+            self._artnet.send_dmx(
+                universe=self._artnet_universe_address(),
+                dmx_data=universe_data,
+                sequence=self._artnet_sequence,
+            )
+            self._artnet_sequence = (self._artnet_sequence + 1) % 256
+            return
+
+        if not self._serial:
+            return
 
         # Send break (hold line low)
         # The send_break method holds the line low for the specified duration
@@ -164,6 +226,21 @@ class DMXOutputNode:
         # Send data (start code + 512 channels)
         self._serial.write(data)
 
+    def _artnet_universe_address(self) -> int:
+        """
+        Build Art-Net Port-Address field.
+
+        Bits:
+        - 0..3  universe
+        - 4..7  subnet
+        - 8..14 net
+        """
+        return (
+            ((self.config.artnet_net & 0x7F) << 8)
+            | ((self.config.artnet_subnet & 0x0F) << 4)
+            | (self.config.universe & 0x0F)
+        )
+
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Apply fixture commands to DMX universe."""
         start_time = time.time()
@@ -172,9 +249,13 @@ class DMXOutputNode:
             # Apply all fixture commands
             for cmd in state["fixture_commands"]:
                 for channel, value in cmd["channel_values"].items():
-                    if 1 <= channel <= 512:
+                    if is_valid_dmx_channel(channel):
+                        fval = float(value)
+                        if not math.isfinite(fval):
+                            # Reject NaN/Inf silently – never write garbage to hardware
+                            continue
                         # Clamp value to valid range
-                        self._universe[channel] = max(0, min(255, value))
+                        self._universe[channel] = max(0, min(255, int(fval)))
 
             # Copy to state
             state["dmx_universe"] = bytes(self._universe)
@@ -189,14 +270,14 @@ class DMXOutputNode:
 
     def set_channel(self, channel: int, value: int) -> None:
         """Directly set a DMX channel value."""
-        if 1 <= channel <= 512:
+        if is_valid_dmx_channel(channel):
             with self._lock:
                 self._universe[channel] = max(0, min(255, value))
 
     def blackout(self) -> None:
         """Set all channels to zero."""
         with self._lock:
-            self._universe = bytearray(513)
+            self._universe = create_universe_buffer()
 
     def get_stats(self) -> dict:
         """Get transmission statistics."""

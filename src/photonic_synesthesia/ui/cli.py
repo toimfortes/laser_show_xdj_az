@@ -7,9 +7,10 @@ and calibrating sensors.
 
 from __future__ import annotations
 
+import logging
+import signal
 import sys
 from pathlib import Path
-from typing import Optional
 
 import click
 import structlog
@@ -17,6 +18,51 @@ import structlog
 from photonic_synesthesia import __version__
 
 logger = structlog.get_logger()
+
+
+def _validate_startup_config(settings: object, mock: bool = False) -> None:
+    """
+    Validate startup configuration before wiring runtime nodes.
+
+    Fails fast on missing fixture profiles or obviously invalid address spans.
+    """
+    from photonic_synesthesia.core.config import Settings, load_fixture_profile
+    from photonic_synesthesia.core.exceptions import ConfigError, FixtureProfileError, SceneError
+
+    if not isinstance(settings, Settings):
+        raise ConfigError("Invalid settings object provided")
+
+    # Mock mode permits running without fixture inventory.
+    if not mock:
+        enabled_fixtures = [fixture for fixture in settings.fixtures if fixture.enabled]
+        if not enabled_fixtures:
+            raise ConfigError("No enabled fixtures configured for live mode")
+
+        for fixture in enabled_fixtures:
+            profile_path = settings.fixtures_dir / f"{fixture.profile}.yaml"
+            if not profile_path.exists():
+                raise FixtureProfileError(fixture.profile, f"Profile not found at {profile_path}")
+
+            profile = load_fixture_profile(profile_path)
+            channel_count = profile.get("channels")
+            if isinstance(channel_count, int) and channel_count > 0:
+                end_channel = fixture.start_address + channel_count - 1
+                if end_channel > 512:
+                    raise ConfigError(
+                        f"Fixture '{fixture.id}' exceeds DMX universe: "
+                        f"start={fixture.start_address}, channels={channel_count}, end={end_channel}"
+                    )
+
+    # Only require default scene file when a non-idle default is requested.
+    default_scene = settings.scene.default_scene
+    if default_scene != "idle":
+        scenes_dir = settings.scene.scenes_dir
+        has_default_scene = any(
+            (scenes_dir / f"{default_scene}{ext}").exists()
+            for ext in (".json", ".yaml", ".yml")
+        )
+        if not has_default_scene:
+            raise SceneError(default_scene, f"Default scene file not found in {scenes_dir}")
 
 
 @click.group()
@@ -28,7 +74,7 @@ logger = structlog.get_logger()
     help="Path to configuration file",
 )
 @click.pass_context
-def cli(ctx: click.Context, debug: bool, config: Optional[str]) -> None:
+def cli(ctx: click.Context, debug: bool, config: str | None) -> None:
     """
     Photonic Synesthesia - AI-Driven Laser Show Controller for XDJ-AZ
 
@@ -39,11 +85,9 @@ def cli(ctx: click.Context, debug: bool, config: Optional[str]) -> None:
     ctx.ensure_object(dict)
 
     # Configure logging
-    log_level = "DEBUG" if debug else "INFO"
+    log_level = logging.DEBUG if debug else logging.INFO
     structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(
-            getattr(structlog, log_level)
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
     )
 
     ctx.obj["debug"] = debug
@@ -69,12 +113,23 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
         settings = Settings()
 
     settings.debug = ctx.obj["debug"]
+    _validate_startup_config(settings, mock=mock)
 
     click.echo(f"Mode: {'Mock' if mock else 'Live'}")
     click.echo(f"Target FPS: {fps}")
     click.echo()
 
     # Build and run graph
+    graph = None
+
+    def _shutdown(signum: int, frame: object) -> None:
+        """Signal handler: ask the graph to stop cleanly."""
+        if graph is not None:
+            graph.stop()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
     try:
         graph = build_photonic_graph(settings, mock_sensors=mock)
         click.echo("Graph built successfully. Starting...")
@@ -83,13 +138,16 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 
         graph.run_loop(target_fps=fps)
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         click.echo("\nShutting down...")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         if ctx.obj["debug"]:
             raise
         sys.exit(1)
+    finally:
+        if graph is not None:
+            graph.stop()  # idempotent: stop() is safe to call multiple times
 
 
 @cli.command()
@@ -99,9 +157,10 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
     """Test DMX output by setting a single channel."""
     from photonic_synesthesia.core.config import Settings
+    from photonic_synesthesia.dmx.universe import is_valid_dmx_channel
     from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 
-    if not 1 <= channel <= 512:
+    if not is_valid_dmx_channel(channel):
         click.echo("Error: Channel must be 1-512", err=True)
         sys.exit(1)
 
@@ -120,11 +179,13 @@ def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
         click.echo("Press Ctrl+C to stop and blackout.")
 
         import time
+
         while True:
             time.sleep(1)
 
     except KeyboardInterrupt:
         click.echo("\nBlacking out...")
+    finally:
         dmx.blackout()
         dmx.stop()
 
@@ -135,6 +196,7 @@ def list_audio(ctx: click.Context) -> None:
     """List available audio input devices."""
     try:
         import sounddevice as sd
+
         devices = sd.query_devices()
 
         click.echo("Available audio devices:")
@@ -158,6 +220,7 @@ def list_midi(ctx: click.Context) -> None:
     """List available MIDI input ports."""
     try:
         import mido
+
         ports = mido.get_input_names()
 
         click.echo("Available MIDI input ports:")
@@ -180,11 +243,12 @@ def list_midi(ctx: click.Context) -> None:
 def analyze(ctx: click.Context, duration: float) -> None:
     """Run audio analysis and display detected features."""
     import time
+
     from photonic_synesthesia.core.config import Settings
     from photonic_synesthesia.core.state import create_initial_state
     from photonic_synesthesia.graph.nodes.audio_sense import AudioSenseNode
-    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
     from photonic_synesthesia.graph.nodes.beat_track import BeatTrackNode
+    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
     from photonic_synesthesia.graph.nodes.structure_detect import StructureDetectNode
 
     settings = Settings()

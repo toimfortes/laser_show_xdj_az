@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Optional, List
+from typing import cast
+
 import numpy as np
 import structlog
 
-from photonic_synesthesia.core.state import PhotonicState, MusicStructure
 from photonic_synesthesia.core.config import StructureDetectionConfig
+from photonic_synesthesia.core.state import MusicStructure, PhotonicState
 
 logger = structlog.get_logger()
 
@@ -67,9 +68,7 @@ class StructureDetectNode:
         self._low_energy_history.append(low_energy)
 
         # Detect structure
-        new_structure, drop_prob = self._detect_structure(
-            rms, centroid, low_energy, current_time
-        )
+        new_structure, drop_prob = self._detect_structure(rms, centroid, low_energy, current_time)
 
         # Update state
         if new_structure != self._current_structure:
@@ -192,7 +191,7 @@ class StructureDetectNode:
 
         return self._current_structure, drop_prob
 
-    def _calculate_slope(self, values: List[float]) -> float:
+    def _calculate_slope(self, values: list[float]) -> float:
         """Calculate linear slope of values."""
         if len(values) < 10:
             return 0.0
@@ -216,4 +215,4 @@ class StructureDetectNode:
         else:
             confidence = 0.5
 
-        return confidence
+        return cast(float, confidence)
