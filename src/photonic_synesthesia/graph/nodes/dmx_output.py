@@ -13,7 +13,7 @@ import time
 
 from photonic_synesthesia.core.config import DMXConfig
 from photonic_synesthesia.core.exceptions import DMXConnectionError
-from photonic_synesthesia.core.state import PhotonicState
+from photonic_synesthesia.core.state import FixtureCommand, PhotonicState
 from photonic_synesthesia.dmx.artnet import ArtNetTransmitter
 from photonic_synesthesia.dmx.universe import (
     create_universe_buffer,
@@ -55,13 +55,15 @@ class DMXOutputNode:
     - Transmitted at 250 kbaud (4µs per bit)
     """
 
-    def __init__(self, config: DMXConfig):
+    def __init__(self, config: DMXConfig, dmx_double_buffer: bool = True):
         self.config = config
         self.ftdi_url = config.ftdi_url
         self.refresh_rate = config.refresh_rate_hz
+        self.dmx_double_buffer = dmx_double_buffer
 
         # Universe buffer (start code + 512 channels)
         self._universe = create_universe_buffer()
+        self._blackout_requested = threading.Event()
 
         # Thread synchronization
         self._lock = threading.Lock()
@@ -196,9 +198,12 @@ class DMXOutputNode:
 
     def _send_frame(self) -> None:
         """Send a single DMX512 frame."""
-        # Get current universe state
-        with self._lock:
-            data = bytes(self._universe)
+        if self._blackout_requested.is_set():
+            data = bytes(create_universe_buffer())
+        else:
+            # Get current universe state
+            with self._lock:
+                data = bytes(self._universe)
 
         if self.config.interface_type == "artnet":
             if not self._artnet:
@@ -244,21 +249,22 @@ class DMXOutputNode:
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Apply fixture commands to DMX universe."""
         start_time = time.time()
-
-        with self._lock:
-            # Apply all fixture commands
-            for cmd in state["fixture_commands"]:
-                for channel, value in cmd["channel_values"].items():
-                    if is_valid_dmx_channel(channel):
-                        fval = float(value)
-                        if not math.isfinite(fval):
-                            # Reject NaN/Inf silently – never write garbage to hardware
-                            continue
-                        # Clamp value to valid range
-                        self._universe[channel] = max(0, min(255, int(fval)))
-
-            # Copy to state
-            state["dmx_universe"] = bytes(self._universe)
+        if self._blackout_requested.is_set():
+            blackout = create_universe_buffer()
+            with self._lock:
+                self._universe = blackout
+            state["dmx_universe"] = bytes(blackout)
+        elif self.dmx_double_buffer:
+            with self._lock:
+                next_universe = bytearray(self._universe)
+            self._apply_fixture_commands(next_universe, state["fixture_commands"])
+            with self._lock:
+                self._universe = next_universe
+                state["dmx_universe"] = bytes(self._universe)
+        else:
+            with self._lock:
+                self._apply_fixture_commands(self._universe, state["fixture_commands"])
+                state["dmx_universe"] = bytes(self._universe)
 
         # Clear processed commands
         state["fixture_commands"] = []
@@ -273,11 +279,21 @@ class DMXOutputNode:
         if is_valid_dmx_channel(channel):
             with self._lock:
                 self._universe[channel] = max(0, min(255, value))
+            self._blackout_requested.clear()
+
+    def request_blackout(self) -> None:
+        """
+        Asynchronously request blackout without blocking on the universe lock.
+
+        The TX thread checks this latch before every frame send.
+        """
+        self._blackout_requested.set()
 
     def blackout(self) -> None:
         """Set all channels to zero."""
         with self._lock:
             self._universe = create_universe_buffer()
+        self._blackout_requested.set()
 
     def get_stats(self) -> dict:
         """Get transmission statistics."""
@@ -286,4 +302,19 @@ class DMXOutputNode:
             "frames_sent": self._frames_sent,
             "errors": self._errors,
             "error_rate": self._errors / max(1, self._frames_sent),
+            "blackout_requested": self._blackout_requested.is_set(),
+            "dmx_double_buffer": self.dmx_double_buffer,
         }
+
+    @staticmethod
+    def _apply_fixture_commands(universe: bytearray, commands: list[FixtureCommand]) -> None:
+        """Apply fixture command values into a mutable universe buffer."""
+        for cmd in commands:
+            for channel, value in cmd["channel_values"].items():
+                if not is_valid_dmx_channel(channel):
+                    continue
+                fval = float(value)
+                if not math.isfinite(fval):
+                    # Reject NaN/Inf silently – never write garbage to hardware.
+                    continue
+                universe[channel] = max(0, min(255, int(fval)))

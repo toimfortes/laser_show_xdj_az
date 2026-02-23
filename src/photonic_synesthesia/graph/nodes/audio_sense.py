@@ -7,6 +7,7 @@ low-latency operation. Maintains a ring buffer of recent samples.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections import deque
 
@@ -46,6 +47,7 @@ class AudioSenseNode:
 
         # Ring buffer for samples (thread-safe via deque)
         self._buffer: deque[float] = deque(maxlen=self.buffer_size)
+        self._buffer_lock = threading.Lock()
 
         # Stream handle
         self._stream: sd.InputStream | None = None
@@ -77,8 +79,10 @@ class AudioSenseNode:
         else:
             mono = indata.flatten()
 
-        # Append to ring buffer (deque is thread-safe for append)
-        self._buffer.extend(mono.tolist())
+        # Keep snapshot/append synchronized; iterating a deque while mutating it
+        # can raise RuntimeError in the main thread.
+        with self._buffer_lock:
+            self._buffer.extend(mono.tolist())
         self._callback_count += 1
 
     def start(self) -> None:
@@ -156,9 +160,12 @@ class AudioSenseNode:
         state["frame_number"] += 1
 
         # Copy current buffer contents
-        if self._buffer:
+        with self._buffer_lock:
+            has_samples = bool(self._buffer)
+            buffer_list = list(self._buffer) if has_samples else []
+
+        if has_samples:
             # Get last N samples for analysis
-            buffer_list = list(self._buffer)
             state["audio_buffer"] = buffer_list
             state["sample_rate"] = self.sample_rate
             state["sensor_status"]["audio"] = True

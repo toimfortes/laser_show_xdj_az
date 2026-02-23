@@ -54,6 +54,8 @@ class PhotonicGraph:
         self.nodes = nodes
         self._running = False
         self._state = create_initial_state()
+        self.hybrid_pacing = settings.runtime_flags.hybrid_pacing
+        self.dual_loop = settings.runtime_flags.dual_loop
 
     def start(self) -> None:
         """Start all sensor nodes and begin processing."""
@@ -65,6 +67,8 @@ class PhotonicGraph:
             self.nodes["audio_sense"].start()
         if "midi_sense" in self.nodes:
             self.nodes["midi_sense"].start()
+        if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "start"):
+            self.nodes["cv_sense"].start()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
@@ -80,6 +84,8 @@ class PhotonicGraph:
             self.nodes["audio_sense"].stop()
         if "midi_sense" in self.nodes:
             self.nodes["midi_sense"].stop()
+        if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "stop"):
+            self.nodes["cv_sense"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
         if "dmx_output" in self.nodes:
@@ -95,18 +101,25 @@ class PhotonicGraph:
         import time
 
         frame_time = 1.0 / target_fps
+        if self.dual_loop:
+            logger.warning(
+                "Dual-loop runtime flag is enabled, but single-loop execution path is active",
+            )
 
         try:
             self.start()
             while self._running:
-                start = time.time()
+                start = time.perf_counter()
                 self.step()
-                elapsed = time.time() - start
+                elapsed = time.perf_counter() - start
 
                 # Sleep to maintain target FPS
                 sleep_time = frame_time - elapsed
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    if self.hybrid_pacing:
+                        self._sleep_with_hybrid_pacing(sleep_time)
+                    else:
+                        time.sleep(sleep_time)
                 elif self.settings.debug:
                     logger.warning(
                         "Frame overrun",
@@ -115,6 +128,26 @@ class PhotonicGraph:
                     )
         finally:
             self.stop()
+
+    @staticmethod
+    def _sleep_with_hybrid_pacing(sleep_time: float) -> None:
+        """
+        Use coarse sleep plus a short spin/yield tail for tighter frame pacing.
+        """
+        import time
+
+        if sleep_time <= 0:
+            return
+        deadline = time.perf_counter() + sleep_time
+        coarse = sleep_time - 0.002
+        if coarse > 0:
+            time.sleep(coarse)
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            if remaining > 0.0005:
+                time.sleep(0)
 
     @property
     def state(self) -> PhotonicState:
@@ -159,11 +192,19 @@ def build_photonic_graph(
     else:
         nodes["audio_sense"] = AudioSenseNode(settings.audio)
         nodes["midi_sense"] = MidiSenseNode(settings.midi)
-        nodes["cv_sense"] = CVSenseNode(settings.cv)
-        nodes["dmx_output"] = DMXOutputNode(settings.dmx)
+        nodes["cv_sense"] = CVSenseNode(
+            settings.cv,
+            cv_threaded=settings.runtime_flags.cv_threaded,
+        )
+        nodes["dmx_output"] = DMXOutputNode(
+            settings.dmx,
+            dmx_double_buffer=settings.runtime_flags.dmx_double_buffer,
+        )
 
     # Analysis nodes (always real)
-    nodes["feature_extract"] = FeatureExtractNode()
+    nodes["feature_extract"] = FeatureExtractNode(
+        streaming_dsp=settings.runtime_flags.streaming_dsp
+    )
     nodes["beat_track"] = BeatTrackNode(settings.beat_tracking)
     nodes["structure_detect"] = StructureDetectNode(settings.structure_detection)
     nodes["fusion"] = FusionNode()
@@ -196,33 +237,25 @@ def build_photonic_graph(
     # Entry point: audio capture
     graph.set_entry_point("audio_sense")
 
-    # Parallel sensor acquisition
-    # Audio path
+    # Deterministic single-writer flow:
+    # LangGraph merge semantics reject concurrent writes to scalar keys
+    # (e.g. `timestamp`) unless reducers are explicitly configured.
+    # Keep one path per step so each key has a single writer.
     graph.add_edge("audio_sense", "feature_extract")
     graph.add_edge("feature_extract", "beat_track")
     graph.add_edge("beat_track", "structure_detect")
-    graph.add_edge("structure_detect", "fusion")
-
-    # MIDI path (parallel to audio)
-    graph.add_edge("audio_sense", "midi_sense")
-    graph.add_edge("midi_sense", "fusion")
-
-    # CV path (parallel to audio)
-    graph.add_edge("audio_sense", "cv_sense")
+    graph.add_edge("structure_detect", "midi_sense")
+    graph.add_edge("midi_sense", "cv_sense")
     graph.add_edge("cv_sense", "fusion")
 
     # Scene selection after fusion
     graph.add_edge("fusion", "director_intent")
     graph.add_edge("director_intent", "scene_select")
 
-    # Parallel fixture control
+    # Fixture control (sequential for the same reason as above)
     graph.add_edge("scene_select", "laser_control")
-    graph.add_edge("scene_select", "moving_head_control")
-    graph.add_edge("scene_select", "panel_control")
-
-    # Converge through interpreter, then safety interlock, then DMX output
-    graph.add_edge("laser_control", "interpreter")
-    graph.add_edge("moving_head_control", "interpreter")
+    graph.add_edge("laser_control", "moving_head_control")
+    graph.add_edge("moving_head_control", "panel_control")
     graph.add_edge("panel_control", "interpreter")
 
     # Safety check BEFORE committing to DMX universe
@@ -253,7 +286,10 @@ def build_minimal_graph(settings: Settings | None = None) -> PhotonicGraph:
 
     from photonic_synesthesia.graph.nodes.mocks import MockAudioSenseNode
 
-    dmx_output = DMXOutputNode(settings.dmx)
+    dmx_output = DMXOutputNode(
+        settings.dmx,
+        dmx_double_buffer=settings.runtime_flags.dmx_double_buffer,
+    )
     nodes = {
         "audio_sense": MockAudioSenseNode(),
         "dmx_output": dmx_output,

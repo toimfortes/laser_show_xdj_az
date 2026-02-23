@@ -143,6 +143,16 @@ class SceneConfig(BaseModel):
     transition_time_s: float = 0.5
 
 
+class RuntimeFlagsConfig(BaseModel):
+    """Runtime feature flags for staged rollout of performance changes."""
+
+    cv_threaded: bool = True
+    dmx_double_buffer: bool = True
+    hybrid_pacing: bool = True
+    streaming_dsp: bool = False
+    dual_loop: bool = False
+
+
 class Settings(BaseSettings):
     """
     Main application settings.
@@ -168,6 +178,7 @@ class Settings(BaseSettings):
     beat_tracking: BeatTrackingConfig = Field(default_factory=BeatTrackingConfig)
     structure_detection: StructureDetectionConfig = Field(default_factory=StructureDetectionConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
+    runtime_flags: RuntimeFlagsConfig = Field(default_factory=RuntimeFlagsConfig)
 
     # Fixtures
     fixtures: list[FixtureConfig] = Field(default_factory=list)

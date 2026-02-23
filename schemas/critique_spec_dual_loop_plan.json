@@ -1,0 +1,121 @@
+{
+  "$schema": "../schemas/critique_spec.schema.json",
+  "version": "2.1.0",
+  "plan_file": "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md",
+  "scope": {
+    "primary": [
+      "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md",
+      "src/photonic_synesthesia/graph/nodes/audio_sense.py",
+      "src/photonic_synesthesia/graph/nodes/cv_sense.py"
+    ],
+    "secondary": [
+      "src/photonic_synesthesia/graph/nodes/dmx_output.py",
+      "src/photonic_synesthesia/graph/nodes/safety_interlock.py",
+      "src/photonic_synesthesia/graph/builder.py"
+    ],
+    "tertiary": [
+      "schemas/critique_spec_dual_loop_plan.json"
+    ]
+  },
+  "vector_file_matrix": {
+    "_doc": "Per-file vector mapping for this remediation plan critique scope.",
+    "V83": {
+      "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/audio_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/cv_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/dmx_output.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/safety_interlock.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "schemas/critique_spec_dual_loop_plan.json": { "status": "n/a", "justification": "Manifest file" }
+    },
+    "V84": {
+      "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md": { "status": "n/a", "justification": "Plan text" },
+      "src/photonic_synesthesia/graph/nodes/audio_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/cv_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/dmx_output.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/safety_interlock.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "schemas/critique_spec_dual_loop_plan.json": { "status": "n/a", "justification": "Manifest file" }
+    },
+    "V100": {
+      "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/audio_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/cv_sense.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/dmx_output.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/nodes/safety_interlock.py": { "status": "required" },
+      "src/photonic_synesthesia/graph/builder.py": { "status": "required" },
+      "schemas/critique_spec_dual_loop_plan.json": { "status": "required" }
+    }
+  },
+  "rules": [
+    {
+      "id": "R02",
+      "title": "Numeric Methodology Disclosure",
+      "enforcement": "soft-mandatory",
+      "check_type": "deterministic",
+      "verify": {
+        "type": "regex_scan",
+        "pattern": "\\b\\d+(?:\\.\\d+)?%?\\b",
+        "target": "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md",
+        "pass_condition": "All scoped numeric claims include a methodology/source marker.",
+        "claim_keywords": [
+          "hz",
+          "ms",
+          "days",
+          "weeks",
+          "seconds"
+        ],
+        "methodology_markers": [
+          "target",
+          "default",
+          "hard",
+          "soft",
+          "budget",
+          "sla",
+          "ms",
+          "hz",
+          "days",
+          "weeks",
+          "ttl_ms",
+          "p99"
+        ],
+        "exclude_in_code_fences": true,
+        "exclude_line_patterns": [
+          "^##\\s+Phase\\s+\\d+.*$",
+          "^\\|\\s+Gate\\s+\\|.*$"
+        ]
+      }
+    },
+    {
+      "id": "R15",
+      "title": "AST vs Regex Exception Parity",
+      "enforcement": "hard-mandatory",
+      "check_type": "ast_crosscheck",
+      "verify": {
+        "type": "count_comparison",
+        "target": "V84 required files",
+        "source": "matter_map exceptions + rg -n \"raise HTTPException\"",
+        "pass_condition": "delta_pct <= 10",
+        "max_divergence_pct": 10
+      }
+    }
+  ],
+  "concordance_graph": {
+    "edges": [
+      {
+        "from": "§1:phase_1_stability",
+        "to": "§2:decision_gates",
+        "type": "risk_mitigation",
+        "anchor_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "agent_assignments": {
+    "agent_1": {
+      "name": "Dual-loop remediation auditor",
+      "vectors": ["V83", "V84", "V100"],
+      "sections": ["§1 Goals", "§2 Phases", "§3 Integration Contracts", "§4 Decision Gates"],
+      "rules": ["R02", "R15"]
+    }
+  }
+}
