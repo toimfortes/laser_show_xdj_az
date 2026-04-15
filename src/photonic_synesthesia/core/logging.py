@@ -5,10 +5,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+_structlog: Any = None
+
 try:  # pragma: no cover - exercised when structlog is installed
-    import structlog as _structlog
+    import structlog as _structlog_import
 except ImportError:  # pragma: no cover - exercised in minimal test envs
-    _structlog = None
+    pass
+else:  # pragma: no cover - exercised when structlog is installed
+    _structlog = _structlog_import
 
 
 class _CompatLogger:

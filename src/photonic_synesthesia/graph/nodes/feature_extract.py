@@ -21,11 +21,12 @@ logger = get_logger(__name__)
 # Import librosa conditionally
 _librosa: Any = None
 try:
-    import librosa as _librosa
-
-    LIBROSA_AVAILABLE = True
+    import librosa as _librosa_import
 except ImportError:
     LIBROSA_AVAILABLE = False
+else:
+    _librosa = _librosa_import
+    LIBROSA_AVAILABLE = True
 
 librosa: Any = _librosa
 
