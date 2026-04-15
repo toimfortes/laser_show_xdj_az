@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -156,6 +157,123 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     finally:
         if graph is not None:
             graph.stop()  # idempotent: stop() is safe to call multiple times
+        clear_shared_control_plane_service()
+
+
+@cli.command("run-file")
+@click.argument("audio_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--fps", default=50.0, help="Target graph frames per second")
+@click.option("--realtime/--offline", default=True, help="Sleep between chunks to mimic playback")
+@click.option("--speed", default=1.0, type=float, help="Playback speed multiplier in realtime mode")
+@click.pass_context
+def run_file(
+    ctx: click.Context,
+    audio_file: Path,
+    fps: float,
+    realtime: bool,
+    speed: float,
+) -> None:
+    """Run the graph against an audio file such as MP3 or WAV."""
+    from photonic_synesthesia.core.config import Settings
+    from photonic_synesthesia.graph import build_photonic_graph
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.platform import (
+        ControlPlaneStateService,
+        clear_shared_control_plane_service,
+        set_shared_control_plane_service,
+    )
+
+    if fps <= 0:
+        click.echo("Error: --fps must be greater than 0", err=True)
+        sys.exit(1)
+    if speed <= 0:
+        click.echo("Error: --speed must be greater than 0", err=True)
+        sys.exit(1)
+
+    click.echo(f"Photonic Synesthesia v{__version__}")
+    click.echo("=" * 50)
+
+    if ctx.obj["config_path"]:
+        settings = Settings.from_yaml(ctx.obj["config_path"])
+    else:
+        settings = Settings()
+
+    settings.debug = ctx.obj["debug"]
+    _validate_startup_config(settings, mock=True)
+
+    chunk_size = max(1, int(settings.audio.sample_rate / fps))
+    audio_node = AudioFileSenseNode(
+        audio_file,
+        sample_rate=settings.audio.sample_rate,
+        chunk_size=chunk_size,
+        buffer_seconds=settings.audio.buffer_seconds,
+    )
+
+    click.echo(f"Mode: File Playback ({'realtime' if realtime else 'offline'})")
+    click.echo(f"Audio File: {audio_file}")
+    click.echo(f"Target FPS: {fps}")
+    click.echo(f"Chunk Size: {chunk_size} samples")
+    click.echo()
+
+    graph = None
+    control_plane_service = set_shared_control_plane_service(ControlPlaneStateService())
+
+    def _shutdown(signum: int, frame: object) -> None:
+        if graph is not None:
+            graph.stop()
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
+    try:
+        graph = build_photonic_graph(
+            settings,
+            mock_sensors=True,
+            control_plane_service=control_plane_service,
+            node_overrides={"audio_sense": audio_node},
+        )
+        graph.start()
+        click.echo("Graph built successfully. Starting file playback...")
+        click.echo("Press Ctrl+C to stop.")
+        click.echo()
+
+        last_reported_second = -1
+        sleep_time = (1.0 / fps) / speed
+        while graph._running and not audio_node.finished:  # noqa: SLF001 - controlled CLI loop
+            frame_start = time.perf_counter()
+            state = graph.step()
+
+            playhead = int(audio_node.playhead_seconds)
+            if playhead != last_reported_second:
+                last_reported_second = playhead
+                click.echo(
+                    "t={playhead:5.1f}s / {duration:5.1f}s | scene={scene} | bpm={bpm:.1f}".format(
+                        playhead=audio_node.playhead_seconds,
+                        duration=audio_node.duration_seconds,
+                        scene=state["scene_state"]["current_scene"],
+                        bpm=state["beat_info"]["bpm"],
+                    )
+                )
+
+            if realtime:
+                elapsed = time.perf_counter() - frame_start
+                remaining = sleep_time - elapsed
+                if remaining > 0:
+                    time.sleep(remaining)
+
+        click.echo()
+        click.echo("File playback complete.")
+
+    except (KeyboardInterrupt, SystemExit):
+        click.echo("\nShutting down...")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        if ctx.obj["debug"]:
+            raise
+        sys.exit(1)
+    finally:
+        if graph is not None:
+            graph.stop()
         clear_shared_control_plane_service()
 
 

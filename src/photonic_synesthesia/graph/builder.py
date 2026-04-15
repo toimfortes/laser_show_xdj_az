@@ -211,6 +211,7 @@ def build_photonic_graph(
     settings: Settings | None = None,
     mock_sensors: bool = False,
     control_plane_service: ControlPlaneStateService | None = None,
+    node_overrides: dict[str, Any] | None = None,
 ) -> PhotonicGraph:
     """
     Build and compile the complete photonic synesthesia graph.
@@ -218,6 +219,7 @@ def build_photonic_graph(
     Args:
         settings: Configuration settings. Uses defaults if None.
         mock_sensors: If True, use mock sensor nodes for testing.
+        node_overrides: Optional node implementations keyed by graph node name.
 
     Returns:
         Compiled PhotonicGraph ready for execution.
@@ -278,6 +280,9 @@ def build_photonic_graph(
         settings.fixtures,
         dmx_output=nodes["dmx_output"],
     )
+
+    if node_overrides:
+        nodes.update(node_overrides)
 
     # Build graph
     graph = StateGraph(PhotonicState)

@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 import signal
 import unittest.mock as mock
+import wave
+from pathlib import Path
 
 import pytest
 
@@ -340,3 +342,53 @@ def test_sigterm_handler_calls_graph_stop() -> None:
         runner.invoke(cli, ["run", "--mock"])
 
     assert len(stop_calls) >= 1, "graph.stop() must be called when SIGTERM is received"
+
+
+def test_run_file_uses_audio_file_sensor_override(tmp_path: Path) -> None:
+    """run-file must inject the file-backed audio sensor into the graph builder."""
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.core.state import create_initial_state
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    captured: dict[str, object] = {}
+
+    class _FakeGraph:
+        def __init__(self, audio_node: AudioFileSenseNode) -> None:
+            self._running = True
+            self._audio_node = audio_node
+
+        def start(self) -> None:
+            self._audio_node.start()
+
+        def step(self):  # type: ignore[no-untyped-def]
+            state = create_initial_state()
+            state = self._audio_node(state)
+            if self._audio_node.finished:
+                self._running = False
+            return state
+
+        def stop(self) -> None:
+            self._running = False
+            self._audio_node.stop()
+
+    def _fake_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mock_sensors"] = kwargs["mock_sensors"]
+        captured["audio_node"] = kwargs["node_overrides"]["audio_sense"]
+        return _FakeGraph(captured["audio_node"])  # type: ignore[arg-type]
+
+    with mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["run-file", str(audio_path), "--offline", "--fps", "10"])
+
+    assert result.exit_code == 0
+    assert captured["mock_sensors"] is True
+    assert isinstance(captured["audio_node"], AudioFileSenseNode)

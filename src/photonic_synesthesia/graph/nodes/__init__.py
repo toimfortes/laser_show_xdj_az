@@ -7,6 +7,10 @@ from typing import Any
 
 _NODE_IMPORTS = {
     "AudioSenseNode": ("photonic_synesthesia.graph.nodes.audio_sense", "AudioSenseNode"),
+    "AudioFileSenseNode": (
+        "photonic_synesthesia.graph.nodes.audio_file_sense",
+        "AudioFileSenseNode",
+    ),
     "FeatureExtractNode": (
         "photonic_synesthesia.graph.nodes.feature_extract",
         "FeatureExtractNode",
