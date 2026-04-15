@@ -8,6 +8,7 @@ band energies, and MFCCs from the audio buffer.
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -18,13 +19,15 @@ from photonic_synesthesia.core.state import AudioFeatures, PhotonicState
 logger = get_logger(__name__)
 
 # Import librosa conditionally
+_librosa: Any = None
 try:
-    import librosa
+    import librosa as _librosa
 
     LIBROSA_AVAILABLE = True
 except ImportError:
     LIBROSA_AVAILABLE = False
-    librosa = None
+
+librosa: Any = _librosa
 
 
 class FeatureExtractNode:

@@ -31,8 +31,8 @@ from photonic_synesthesia.graph.nodes import (
     SceneSelectNode,
     StructureDetectNode,
 )
-from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 from photonic_synesthesia.platform import CommandType, OperatorCommand
+from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
 

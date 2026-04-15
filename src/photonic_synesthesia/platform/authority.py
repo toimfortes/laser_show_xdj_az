@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 
 from photonic_synesthesia.platform.contracts import (
@@ -43,7 +43,7 @@ class ControlAuthorityService:
                     message="Only operator or admin roles may hold the control lease",
                 )
 
-            expires_at = datetime.now(UTC) + timedelta(seconds=request.ttl_seconds)
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=request.ttl_seconds)
             self._lease = ControlLease(
                 issuer_id=request.issuer_id,
                 session_id=request.session_id,
@@ -72,5 +72,5 @@ class ControlAuthorityService:
             return self._lease is not None and self._lease.session_id == session_id
 
     def _expire_if_needed(self) -> None:
-        if self._lease and self._lease.expires_at <= datetime.now(UTC):
+        if self._lease and self._lease.expires_at <= datetime.now(timezone.utc):
             self._lease = None

@@ -3,7 +3,12 @@ from unittest import mock
 from photonic_synesthesia.core.config import Settings
 from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.graph.builder import PhotonicGraph
-from photonic_synesthesia.platform import CommandType, ControlPlaneStateService, OperatorCommand, OperatorRole
+from photonic_synesthesia.platform import (
+    CommandType,
+    ControlPlaneStateService,
+    OperatorCommand,
+    OperatorRole,
+)
 
 
 class _IdentityGraph:
