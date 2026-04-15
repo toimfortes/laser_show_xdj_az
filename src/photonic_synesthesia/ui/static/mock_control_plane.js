@@ -2,15 +2,21 @@ const appState = {
   catalog: null,
   fixtures: [],
   selectedFixtureId: null,
+  selectedUniverse: 1,
   sceneId: "intro_ambient",
   masterIntensity: 0.82,
   masterSpeed: 1.0,
   blackout: false,
   runtimeSnapshot: null,
+  universeSnapshot: null,
   wsStatus: "connecting",
+  dragFixtureId: null,
 };
 
 const elements = {};
+const fixturePatchTimers = new Map();
+let masterPatchTimer = null;
+let universeRefreshTimer = null;
 
 function qs(id) {
   return document.getElementById(id);
@@ -27,10 +33,6 @@ function clamp(value, min, max) {
 function round(value, digits = 2) {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
-}
-
-function uid(prefix) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function hexToRgb(hex) {
@@ -51,24 +53,79 @@ function rgba(hex, alpha) {
   return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${alpha})`;
 }
 
-async function loadCatalog() {
-  const response = await fetch("/api/mock/catalog");
+async function api(path, options = {}) {
+  const request = {
+    method: options.method || "GET",
+    headers: {
+      "Accept": "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  };
+
+  const response = await fetch(path, request);
   if (!response.ok) {
-    throw new Error("Failed to load mock catalog");
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const payload = await response.json();
+      if (payload.detail) {
+        detail = String(payload.detail);
+      }
+    } catch {
+      // Keep the HTTP detail.
+    }
+    throw new Error(detail);
   }
-  appState.catalog = await response.json();
+
+  if (response.status === 204) {
+    return null;
+  }
+  return response.json();
+}
+
+async function loadCatalog() {
+  appState.catalog = await api("/api/mock/catalog");
+}
+
+async function loadMockState() {
+  const state = await api("/api/mock/state");
+  applyMockState(state, { preserveSelection: false });
 }
 
 async function loadRuntimeSnapshot() {
   try {
-    const response = await fetch("/api/live/state");
-    if (!response.ok) {
-      return;
-    }
-    appState.runtimeSnapshot = await response.json();
+    appState.runtimeSnapshot = await api("/api/live/state");
     updateRuntimeSummary();
   } catch {
     // Runtime data is optional for the mock visualizer.
+  }
+}
+
+async function refreshUniverseSnapshot() {
+  appState.universeSnapshot = await api("/api/mock/universes");
+  const universe = appState.universeSnapshot.universes.find(
+    (entry) => entry.universe === appState.selectedUniverse,
+  );
+  if (!universe) {
+    appState.selectedUniverse = appState.universeSnapshot.universes[0]?.universe || 1;
+  }
+  renderMonitor();
+}
+
+function applyMockState(state, { preserveSelection = true } = {}) {
+  const previousSelection = appState.selectedFixtureId;
+  appState.fixtures = state.fixtures || [];
+  appState.sceneId = state.scene_id;
+  appState.masterIntensity = Number(state.master_intensity);
+  appState.masterSpeed = Number(state.master_speed);
+  appState.blackout = Boolean(state.blackout);
+
+  if (preserveSelection) {
+    const hasSelection = appState.fixtures.some((fixture) => fixture.id === previousSelection);
+    appState.selectedFixtureId = hasSelection ? previousSelection : appState.fixtures[0]?.id || null;
+  } else {
+    appState.selectedFixtureId = appState.fixtures[0]?.id || null;
   }
 }
 
@@ -81,48 +138,68 @@ function sceneById(sceneId) {
     || appState.catalog.scene_templates[0];
 }
 
-function createFixture(templateSlug, labelOverride = null) {
-  const template = templateBySlug(templateSlug);
-  if (!template) {
-    return null;
-  }
-
-  const sameTypeCount = appState.fixtures.filter((fixture) => fixture.type === template.type).length;
-  const defaults = structuredClone(template.defaults);
-  defaults.x = clamp(defaults.x + sameTypeCount * 0.07, 0.08, 0.92);
-  defaults.address = defaults.address + sameTypeCount * 20;
-
-  return {
-    id: uid(template.slug),
-    templateSlug: template.slug,
-    type: template.type,
-    label: labelOverride || `${template.label} ${sameTypeCount + 1}`,
-    ...defaults,
-    phaseOffset: Math.random() * Math.PI * 2,
-  };
-}
-
-function bootstrapDefaultRig() {
-  appState.fixtures = appState.catalog.default_rig
-    .map((entry) => createFixture(entry.template, entry.label))
-    .filter(Boolean);
-  appState.selectedFixtureId = appState.fixtures[0]?.id || null;
-}
-
 function selectedFixture() {
   return appState.fixtures.find((fixture) => fixture.id === appState.selectedFixtureId) || null;
+}
+
+function updateFixtureLocal(id, changes) {
+  const fixture = appState.fixtures.find((item) => item.id === id);
+  if (!fixture) {
+    return;
+  }
+  Object.assign(fixture, changes);
+}
+
+function updateMetrics() {
+  qs("fixture-count").textContent = String(appState.fixtures.length);
+  qs("master-intensity").value = String(appState.masterIntensity);
+  qs("master-speed").value = String(appState.masterSpeed);
+  qs("master-intensity-value").textContent = `${Math.round(appState.masterIntensity * 100)}%`;
+  qs("master-speed-value").textContent = `${appState.masterSpeed.toFixed(2)}x`;
+  qs("blackout-toggle").classList.toggle("active", appState.blackout);
+  qs("blackout-toggle").textContent = appState.blackout ? "Blackout On" : "Blackout Off";
+}
+
+function updateRuntimeSummary() {
+  const runtimeScene = appState.runtimeSnapshot?.active_scene_id || "idle";
+  qs("runtime-scene").textContent = runtimeScene;
+
+  const localScene = sceneById(appState.sceneId);
+  const parts = [
+    `Mock scene: ${localScene.label}`,
+    `Runtime scene: ${runtimeScene}`,
+    `Blackout: ${appState.blackout ? "yes" : "no"}`,
+  ];
+
+  const bpm = appState.runtimeSnapshot?.semantic_frame?.bpm;
+  if (typeof bpm === "number" && bpm > 0) {
+    parts.push(`BPM ${round(bpm, 1)}`);
+  }
+
+  qs("runtime-summary").textContent = parts.join(" · ");
 }
 
 function renderSceneBank() {
   elements.sceneBank.innerHTML = "";
   appState.catalog.scene_templates.forEach((scene) => {
     const button = document.createElement("button");
-    button.className = `scene-button${scene.scene_id === appState.sceneId ? " active" : ""}`;
-    button.innerHTML = `<strong>${scene.label}</strong><span>${scene.palette.join(" · ")}</span>`;
-    button.addEventListener("click", () => {
-      appState.sceneId = scene.scene_id;
+    const runtimeActive = appState.runtimeSnapshot?.active_scene_id === scene.scene_id;
+    button.className = `scene-button${scene.scene_id === appState.sceneId ? " active" : ""}${runtimeActive ? " runtime" : ""}`;
+    button.innerHTML = `
+      <strong>${scene.label}</strong>
+      <span>${scene.palette.join(" · ")}</span>
+      ${runtimeActive ? "<small>Runtime live</small>" : ""}
+    `;
+    button.addEventListener("click", async () => {
+      const state = await api("/api/mock/scene", {
+        method: "POST",
+        body: { scene_id: scene.scene_id },
+      });
+      applyMockState(state);
       renderSceneBank();
+      updateMetrics();
       updateRuntimeSummary();
+      await refreshUniverseSnapshot();
     });
     elements.sceneBank.appendChild(button);
   });
@@ -134,17 +211,17 @@ function renderFixtureLibrary() {
     const button = document.createElement("button");
     button.className = "fixture-template";
     button.innerHTML = `<strong>${template.label}</strong><span>${template.description}</span>`;
-    button.addEventListener("click", () => {
-      const fixture = createFixture(template.slug);
-      if (!fixture) {
-        return;
-      }
-      appState.fixtures.push(fixture);
-      appState.selectedFixtureId = fixture.id;
+    button.addEventListener("click", async () => {
+      const response = await api("/api/mock/fixtures", {
+        method: "POST",
+        body: { template_slug: template.slug },
+      });
+      applyMockState(response.state);
+      appState.selectedFixtureId = response.fixture.id;
       renderFixtureList();
       renderInspector();
-      renderMonitor();
       updateMetrics();
+      await refreshUniverseSnapshot();
     });
     elements.fixtureLibrary.appendChild(button);
   });
@@ -170,29 +247,16 @@ function renderFixtureList() {
       renderFixtureList();
       renderInspector();
     });
-    row.querySelector('[data-action="remove"]').addEventListener("click", () => {
-      appState.fixtures = appState.fixtures.filter((item) => item.id !== fixture.id);
-      if (appState.selectedFixtureId === fixture.id) {
-        appState.selectedFixtureId = appState.fixtures[0]?.id || null;
-      }
+    row.querySelector('[data-action="remove"]').addEventListener("click", async () => {
+      const response = await api(`/api/mock/fixtures/${fixture.id}`, { method: "DELETE" });
+      applyMockState(response.state);
       renderFixtureList();
       renderInspector();
-      renderMonitor();
       updateMetrics();
+      await refreshUniverseSnapshot();
     });
     elements.fixtureList.appendChild(row);
   });
-}
-
-function updateFixture(id, key, value) {
-  const fixture = appState.fixtures.find((item) => item.id === id);
-  if (!fixture) {
-    return;
-  }
-  fixture[key] = value;
-  renderFixtureList();
-  renderInspector();
-  renderMonitor();
 }
 
 function fieldMarkup({ label, key, type, min, max, step, value }) {
@@ -210,6 +274,34 @@ function fieldMarkup({ label, key, type, min, max, step, value }) {
       <input id="field-${key}" ${attrs.join(" ")} />
     </div>
   `;
+}
+
+function scheduleFixturePatch(fixtureId, changes, delay = 140) {
+  const pending = fixturePatchTimers.get(fixtureId);
+  if (pending) {
+    pending.changes = { ...pending.changes, ...changes };
+    window.clearTimeout(pending.timerId);
+  }
+
+  const timerId = window.setTimeout(async () => {
+    const request = fixturePatchTimers.get(fixtureId);
+    fixturePatchTimers.delete(fixtureId);
+    if (!request) {
+      return;
+    }
+
+    const response = await api(`/api/mock/fixtures/${fixtureId}`, {
+      method: "PATCH",
+      body: { changes: request.changes },
+    });
+    applyMockState(response.state);
+    renderFixtureList();
+    renderInspector();
+    updateMetrics();
+    await refreshUniverseSnapshot();
+  }, delay);
+
+  fixturePatchTimers.set(fixtureId, { changes: { ...(pending?.changes || {}), ...changes }, timerId });
 }
 
 function renderInspector() {
@@ -240,6 +332,8 @@ function renderInspector() {
   } else if (fixture.type === "moving_head") {
     typeFields.push(
       fieldMarkup({ label: "Beam Width", key: "beam_width", type: "range", min: 0.04, max: 0.25, step: 0.01, value: fixture.beam_width }),
+      fieldMarkup({ label: "Pan", key: "pan", type: "range", min: -1, max: 1, step: 0.01, value: fixture.pan }),
+      fieldMarkup({ label: "Tilt", key: "tilt", type: "range", min: 0, max: 1, step: 0.01, value: fixture.tilt }),
       fieldMarkup({ label: "Pan Range", key: "pan_range", type: "range", min: 0, max: 1, step: 0.01, value: fixture.pan_range }),
       fieldMarkup({ label: "Tilt Range", key: "tilt_range", type: "range", min: 0, max: 1, step: 0.01, value: fixture.tilt_range }),
     );
@@ -258,36 +352,35 @@ function renderInspector() {
   elements.fixtureInspector.innerHTML = `
     <div class="subhead">
       <h3>${fixture.label}</h3>
-      <p>${safeText(fixture.type)} fixture</p>
+      <p>${safeText(fixture.type)} fixture · drag it on the stage to repatch quickly</p>
     </div>
     ${[...commonFields, ...typeFields].join("")}
     <button type="button" class="danger" id="duplicate-fixture">Duplicate Fixture</button>
   `;
 
   elements.fixtureInspector.querySelectorAll("input").forEach((input) => {
-    input.addEventListener("input", (event) => {
+    const eventName = input.type === "range" || input.type === "color" ? "input" : "change";
+    input.addEventListener(eventName, (event) => {
       const target = event.currentTarget;
       const key = target.dataset.key;
       let value = target.value;
       if (target.type === "number" || target.type === "range") {
         value = Number(value);
       }
-      updateFixture(fixture.id, key, value);
+      updateFixtureLocal(fixture.id, { [key]: value });
+      renderFixtureList();
+      scheduleFixturePatch(fixture.id, { [key]: value });
     });
   });
 
-  elements.fixtureInspector.querySelector("#duplicate-fixture").addEventListener("click", () => {
-    const clone = structuredClone(fixture);
-    clone.id = uid(fixture.templateSlug);
-    clone.label = `${fixture.label} Copy`;
-    clone.x = clamp(Number(fixture.x) + 0.05, 0.05, 0.95);
-    clone.address = Number(fixture.address) + 10;
-    appState.fixtures.push(clone);
-    appState.selectedFixtureId = clone.id;
+  elements.fixtureInspector.querySelector("#duplicate-fixture").addEventListener("click", async () => {
+    const response = await api(`/api/mock/fixtures/${fixture.id}/duplicate`, { method: "POST" });
+    applyMockState(response.state);
+    appState.selectedFixtureId = response.fixture.id;
     renderFixtureList();
     renderInspector();
-    renderMonitor();
     updateMetrics();
+    await refreshUniverseSnapshot();
   });
 }
 
@@ -311,12 +404,6 @@ function fixtureOutput(fixture, timeSeconds) {
       sweep: Math.sin(phase) * fixture.swing,
       spread: fixture.spread,
       beamCount: Number(fixture.beam_count),
-      channels: [
-        ["Dim", Math.round(intensity * 255)],
-        ["Color", Math.round((hexToRgb(color).g / 255) * 255)],
-        ["Pattern", 160 + Math.round((Math.sin(phase) + 1) * 20)],
-        ["Scan", Math.round((0.2 + fixture.swing * 0.8) * 255)],
-      ],
     };
   }
 
@@ -328,12 +415,6 @@ function fixtureOutput(fixture, timeSeconds) {
       pan: fixture.pan + Math.sin(phase) * fixture.pan_range,
       tilt: fixture.tilt + Math.cos(phase * 0.8) * fixture.tilt_range,
       beamWidth: fixture.beam_width,
-      channels: [
-        ["Dim", Math.round(intensity * 255)],
-        ["Pan", Math.round(((Math.sin(phase) * 0.5) + 0.5) * 255)],
-        ["Tilt", Math.round(((Math.cos(phase * 0.8) * 0.5) + 0.5) * 255)],
-        ["Color", Math.round((hexToRgb(color).r / 255) * 255)],
-      ],
     };
   }
 
@@ -343,12 +424,6 @@ function fixtureOutput(fixture, timeSeconds) {
       color,
       intensity,
       radius: fixture.radius * (0.9 + mix * 0.2),
-      channels: [
-        ["Dim", Math.round(intensity * 255)],
-        ["Red", hexToRgb(color).r],
-        ["Green", hexToRgb(color).g],
-        ["Blue", hexToRgb(color).b],
-      ],
     };
   }
 
@@ -359,19 +434,13 @@ function fixtureOutput(fixture, timeSeconds) {
     width: fixture.width,
     pixelCount: Number(fixture.pixel_count),
     chase: (Math.sin(phase * 1.6) + 1) * 0.5,
-    channels: [
-      ["Dim", Math.round(intensity * 255)],
-      ["Pixels", Math.round(clamp(fixture.pixel_count, 0, 16))],
-      ["Chase", Math.round(((Math.sin(phase * 1.6) + 1) * 0.5) * 255)],
-      ["Color", Math.round((hexToRgb(color).b / 255) * 255)],
-    ],
   };
 }
 
 function drawBackground(ctx, width, height) {
   const sky = ctx.createLinearGradient(0, 0, 0, height);
   sky.addColorStop(0, "#09121f");
-  sky.addColorStop(0.65, "#162335");
+  sky.addColorStop(0.58, "#162335");
   sky.addColorStop(1, "#35261d");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
@@ -386,13 +455,27 @@ function drawBackground(ctx, width, height) {
     ctx.stroke();
   }
 
+  for (let i = 0; i < 12; i += 1) {
+    const x = 80 + ((width - 160) / 11) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, 110);
+    ctx.lineTo(x, height - 90);
+    ctx.strokeStyle = "rgba(255,255,255,0.035)";
+    ctx.stroke();
+  }
+
   ctx.fillStyle = "rgba(255,255,255,0.06)";
   ctx.fillRect(60, 72, width - 120, 8);
+  ctx.fillRect(80, height - 104, width - 160, 6);
 
   ctx.beginPath();
   ctx.ellipse(width / 2, height - 76, width * 0.42, 70, 0, 0, Math.PI * 2);
   ctx.fillStyle = "rgba(255, 214, 153, 0.12)";
   ctx.fill();
+
+  ctx.fillStyle = "rgba(255,255,255,0.6)";
+  ctx.font = "600 14px Trebuchet MS";
+  ctx.fillText("Patch surface", 82, 102);
 }
 
 function drawLaser(ctx, fixture, output, width, height) {
@@ -406,7 +489,7 @@ function drawLaser(ctx, fixture, output, width, height) {
     const targetX = clamp(originX + spread + sweep, 90, width - 90);
     const targetY = height - 92 - Math.abs(centered) * 40;
     const beam = ctx.createLinearGradient(originX, originY, targetX, targetY);
-    beam.addColorStop(0, rgba(output.color, 0.0));
+    beam.addColorStop(0, rgba(output.color, 0));
     beam.addColorStop(0.12, rgba(output.color, output.intensity * 0.22));
     beam.addColorStop(1, rgba(output.color, output.intensity * 0.85));
     ctx.strokeStyle = beam;
@@ -482,10 +565,23 @@ function drawLedBar(ctx, fixture, output, width, height) {
 function drawFixtureBody(ctx, fixture, width, height) {
   const x = fixture.x * width;
   const y = fixture.y * height;
-  ctx.fillStyle = "rgba(250, 248, 241, 0.85)";
+  const selected = fixture.id === appState.selectedFixtureId;
+  ctx.fillStyle = selected ? "rgba(255, 255, 255, 0.96)" : "rgba(250, 248, 241, 0.85)";
   ctx.fillRect(x - 9, y - 9, 18, 18);
-  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.strokeStyle = selected ? "rgba(248, 94, 0, 0.95)" : "rgba(0,0,0,0.35)";
+  ctx.lineWidth = selected ? 2 : 1;
   ctx.strokeRect(x - 9, y - 9, 18, 18);
+
+  if (selected) {
+    ctx.beginPath();
+    ctx.arc(x, y, 18, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(248, 94, 0, 0.35)";
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = "600 12px Trebuchet MS";
+  ctx.fillText(fixture.label, x + 14, y + 4);
 }
 
 function renderStage(timeMillis) {
@@ -511,63 +607,196 @@ function renderStage(timeMillis) {
   });
 
   appState.fixtures.forEach((fixture) => drawFixtureBody(ctx, fixture, width, height));
+
+  if (appState.selectedFixtureId) {
+    ctx.fillStyle = "rgba(255,255,255,0.74)";
+    ctx.font = "600 13px Trebuchet MS";
+    ctx.fillText("Drag fixtures in the stage to change patch position", 78, height - 34);
+  }
+
   window.requestAnimationFrame(renderStage);
 }
 
 function renderMonitor() {
-  elements.dmxMonitor.innerHTML = "";
-  const now = performance.now() / 1000;
-
-  appState.fixtures.forEach((fixture) => {
-    const output = fixtureOutput(fixture, now);
-    const row = document.createElement("div");
-    row.className = "monitor-row";
-    row.innerHTML = `
-      <div class="monitor-header">
-        <div>
-          <strong>${fixture.label}</strong>
-          <p class="monitor-meta">U${fixture.universe} · ${fixture.address} · ${fixture.type}</p>
-        </div>
-        <div>${Math.round(output.intensity * 100)}%</div>
-      </div>
-      <div class="channels">
-        ${output.channels.map(([label, value]) => `
-          <div class="channel">
-            <small>${label}</small>
-            <strong>${value}</strong>
-          </div>
-        `).join("")}
+  const snapshot = appState.universeSnapshot;
+  if (!snapshot || snapshot.universes.length === 0) {
+    elements.dmxMonitor.innerHTML = `
+      <div class="monitor-empty">
+        No active universes yet. Add a mock fixture to generate synthetic DMX output.
       </div>
     `;
-    elements.dmxMonitor.appendChild(row);
+    return;
+  }
+
+  const activeUniverse = snapshot.universes.find((entry) => entry.universe === appState.selectedUniverse)
+    || snapshot.universes[0];
+  appState.selectedUniverse = activeUniverse.universe;
+
+  elements.dmxMonitor.innerHTML = `
+    <div class="monitor-tabs">
+      ${snapshot.universes.map((entry) => `
+        <button type="button" class="monitor-tab${entry.universe === activeUniverse.universe ? " active" : ""}" data-universe="${entry.universe}">
+          Universe ${entry.universe}
+          <small>${entry.active_channel_count} ch</small>
+        </button>
+      `).join("")}
+    </div>
+    <div class="monitor-summary">
+      <strong>${activeUniverse.fixtures.length} fixtures</strong>
+      <span>Scene ${snapshot.scene_id} · ${Math.round(snapshot.master_intensity * 100)}% master</span>
+    </div>
+    <div class="monitor-channel-grid">
+      ${activeUniverse.channels.map((channel) => `
+        <div class="channel-cell">
+          <small>CH ${channel.channel}</small>
+          <strong>${channel.value}</strong>
+          <span>${channel.fixture_label} · ${channel.label}</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="monitor-fixture-list">
+      ${activeUniverse.fixtures.map((fixture) => `
+        <div class="monitor-row">
+          <div class="monitor-header">
+            <div>
+              <strong>${fixture.fixture_label}</strong>
+              <p class="monitor-meta">U${activeUniverse.universe} · ${fixture.address} · ${fixture.type}</p>
+            </div>
+            <div>${Math.round(fixture.intensity * 100)}%</div>
+          </div>
+          <div class="channels">
+            ${fixture.channels.map((channel) => `
+              <div class="channel">
+                <small>CH ${channel.channel}</small>
+                <strong>${channel.value}</strong>
+                <span>${channel.label}</span>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  elements.dmxMonitor.querySelectorAll(".monitor-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      appState.selectedUniverse = Number(button.dataset.universe);
+      renderMonitor();
+    });
   });
 }
 
-function updateMetrics() {
-  qs("fixture-count").textContent = String(appState.fixtures.length);
-  qs("master-intensity-value").textContent = `${Math.round(appState.masterIntensity * 100)}%`;
-  qs("master-speed-value").textContent = `${appState.masterSpeed.toFixed(2)}x`;
-  qs("blackout-toggle").classList.toggle("active", appState.blackout);
-  qs("blackout-toggle").textContent = appState.blackout ? "Blackout On" : "Blackout Off";
+function canvasCoordinates(event) {
+  const rect = elements.stageCanvas.getBoundingClientRect();
+  const scaleX = elements.stageCanvas.width / rect.width;
+  const scaleY = elements.stageCanvas.height / rect.height;
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY,
+  };
 }
 
-function updateRuntimeSummary() {
-  const runtimeScene = appState.runtimeSnapshot?.active_scene_id || "idle";
-  qs("runtime-scene").textContent = runtimeScene;
+function hitFixture(point) {
+  const threshold = 18;
+  for (let index = appState.fixtures.length - 1; index >= 0; index -= 1) {
+    const fixture = appState.fixtures[index];
+    const x = fixture.x * elements.stageCanvas.width;
+    const y = fixture.y * elements.stageCanvas.height;
+    if (Math.abs(point.x - x) <= threshold && Math.abs(point.y - y) <= threshold) {
+      return fixture;
+    }
+  }
+  return null;
+}
 
-  const localScene = sceneById(appState.sceneId);
-  const parts = [
-    `Mock scene: ${localScene.label}`,
-    `Runtime scene: ${runtimeScene}`,
-    `Blackout: ${appState.blackout ? "yes" : "no"}`,
-  ];
+function bindStageInteractions() {
+  const stopDrag = async () => {
+    if (!appState.dragFixtureId) {
+      return;
+    }
+    const fixture = selectedFixture();
+    const fixtureId = appState.dragFixtureId;
+    appState.dragFixtureId = null;
+    elements.stageCanvas.classList.remove("dragging");
+    if (fixture && fixture.id === fixtureId) {
+      scheduleFixturePatch(fixtureId, {
+        x: fixture.x,
+        y: fixture.y,
+      }, 0);
+    }
+  };
 
-  const bpm = appState.runtimeSnapshot?.semantic_frame?.bpm;
-  if (typeof bpm === "number" && bpm > 0) {
-    parts.push(`BPM ${round(bpm, 1)}`);
+  elements.stageCanvas.addEventListener("pointerdown", (event) => {
+    const point = canvasCoordinates(event);
+    const fixture = hitFixture(point);
+    if (!fixture) {
+      return;
+    }
+    appState.selectedFixtureId = fixture.id;
+    appState.dragFixtureId = fixture.id;
+    elements.stageCanvas.classList.add("dragging");
+    renderFixtureList();
+    renderInspector();
+  });
+
+  elements.stageCanvas.addEventListener("pointermove", (event) => {
+    if (!appState.dragFixtureId) {
+      return;
+    }
+    const point = canvasCoordinates(event);
+    const nextX = clamp(point.x / elements.stageCanvas.width, 0.05, 0.95);
+    const nextY = clamp(point.y / elements.stageCanvas.height, 0.05, 0.60);
+    updateFixtureLocal(appState.dragFixtureId, { x: round(nextX, 3), y: round(nextY, 3) });
+  });
+
+  window.addEventListener("pointerup", () => {
+    stopDrag().catch((error) => {
+      console.error(error);
+    });
+  });
+}
+
+function queueMasterPatch(changes) {
+  if (masterPatchTimer) {
+    window.clearTimeout(masterPatchTimer.timerId);
+    masterPatchTimer.changes = { ...masterPatchTimer.changes, ...changes };
+  } else {
+    masterPatchTimer = { changes: { ...changes }, timerId: null };
   }
 
-  qs("runtime-summary").textContent = parts.join(" · ");
+  masterPatchTimer.timerId = window.setTimeout(async () => {
+    const request = masterPatchTimer;
+    masterPatchTimer = null;
+    const state = await api("/api/mock/masters", {
+      method: "POST",
+      body: request.changes,
+    });
+    applyMockState(state);
+    updateMetrics();
+    updateRuntimeSummary();
+    await refreshUniverseSnapshot();
+  }, 140);
+}
+
+function bindControls() {
+  qs("master-intensity").addEventListener("input", (event) => {
+    appState.masterIntensity = Number(event.currentTarget.value);
+    updateMetrics();
+    queueMasterPatch({ master_intensity: appState.masterIntensity });
+  });
+
+  qs("master-speed").addEventListener("input", (event) => {
+    appState.masterSpeed = Number(event.currentTarget.value);
+    updateMetrics();
+    queueMasterPatch({ master_speed: appState.masterSpeed });
+  });
+
+  qs("blackout-toggle").addEventListener("click", () => {
+    appState.blackout = !appState.blackout;
+    updateMetrics();
+    updateRuntimeSummary();
+    queueMasterPatch({ blackout: appState.blackout });
+  });
 }
 
 function connectWebSocket() {
@@ -580,6 +809,7 @@ function connectWebSocket() {
   socket.addEventListener("message", (event) => {
     appState.runtimeSnapshot = JSON.parse(event.data);
     updateRuntimeSummary();
+    renderSceneBank();
   });
   socket.addEventListener("close", () => {
     appState.wsStatus = "reconnecting";
@@ -588,25 +818,15 @@ function connectWebSocket() {
   });
 }
 
-function bindControls() {
-  qs("master-intensity").addEventListener("input", (event) => {
-    appState.masterIntensity = Number(event.currentTarget.value);
-    updateMetrics();
-    renderMonitor();
-  });
-
-  qs("master-speed").addEventListener("input", (event) => {
-    appState.masterSpeed = Number(event.currentTarget.value);
-    updateMetrics();
-    renderMonitor();
-  });
-
-  qs("blackout-toggle").addEventListener("click", () => {
-    appState.blackout = !appState.blackout;
-    updateMetrics();
-    updateRuntimeSummary();
-    renderMonitor();
-  });
+function startUniversePolling() {
+  if (universeRefreshTimer) {
+    window.clearInterval(universeRefreshTimer);
+  }
+  universeRefreshTimer = window.setInterval(() => {
+    refreshUniverseSnapshot().catch((error) => {
+      console.error(error);
+    });
+  }, 1000);
 }
 
 async function boot() {
@@ -618,18 +838,20 @@ async function boot() {
   elements.stageCanvas = qs("stage-canvas");
 
   await loadCatalog();
+  await loadMockState();
   await loadRuntimeSnapshot();
+  await refreshUniverseSnapshot();
 
-  bootstrapDefaultRig();
   bindControls();
+  bindStageInteractions();
   renderSceneBank();
   renderFixtureLibrary();
   renderFixtureList();
   renderInspector();
-  renderMonitor();
   updateMetrics();
   updateRuntimeSummary();
   connectWebSocket();
+  startUniversePolling();
   window.requestAnimationFrame(renderStage);
 }
 

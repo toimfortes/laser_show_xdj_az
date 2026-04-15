@@ -18,6 +18,11 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/control/scenes/launch" in routes
     assert "/api/control/scenes/hold" in routes
     assert "/api/mock/catalog" in routes
+    assert "/api/mock/state" in routes
+    assert "/api/mock/universes" in routes
+    assert "/api/mock/fixtures" in routes
+    assert "/api/mock/scene" in routes
+    assert "/api/mock/masters" in routes
 
 
 def test_live_state_endpoint_reflects_runtime_ingest() -> None:
@@ -65,3 +70,60 @@ def test_mock_catalog_exposes_fixture_and_scene_templates() -> None:
         "wash",
         "led_bar",
     }
+
+
+def test_mock_rig_crud_round_trips_through_backend_state() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    initial_state = client.get("/api/mock/state")
+    assert initial_state.status_code == 200
+    initial_count = len(initial_state.json()["fixtures"])
+
+    create_response = client.post("/api/mock/fixtures", json={"template_slug": "laser"})
+    assert create_response.status_code == 200
+    created_fixture = create_response.json()["fixture"]
+    assert created_fixture["type"] == "laser"
+
+    update_response = client.patch(
+        f"/api/mock/fixtures/{created_fixture['id']}",
+        json={"changes": {"universe": 3, "address": 101, "x": 0.55}},
+    )
+    assert update_response.status_code == 200
+    updated_fixture = update_response.json()["fixture"]
+    assert updated_fixture["universe"] == 3
+    assert updated_fixture["address"] == 101
+
+    duplicate_response = client.post(f"/api/mock/fixtures/{created_fixture['id']}/duplicate")
+    assert duplicate_response.status_code == 200
+    assert duplicate_response.json()["fixture"]["id"] != created_fixture["id"]
+
+    delete_response = client.delete(f"/api/mock/fixtures/{created_fixture['id']}")
+    assert delete_response.status_code == 200
+
+    final_state = client.get("/api/mock/state")
+    assert final_state.status_code == 200
+    assert len(final_state.json()["fixtures"]) == initial_count + 1
+
+
+def test_mock_universe_snapshot_includes_sparse_channel_monitor() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    create_response = client.post("/api/mock/fixtures", json={"template_slug": "wash"})
+    fixture_id = create_response.json()["fixture"]["id"]
+    patch_response = client.patch(
+        f"/api/mock/fixtures/{fixture_id}",
+        json={"changes": {"universe": 4, "address": 120, "color": "#3366ff"}},
+    )
+    assert patch_response.status_code == 200
+
+    response = client.get("/api/mock/universes")
+
+    assert response.status_code == 200
+    body = response.json()
+    target_universe = next(item for item in body["universes"] if item["universe"] == 4)
+    assert target_universe["active_channel_count"] >= 4
+    first_channel = target_universe["channels"][0]
+    assert first_channel["channel"] == 120
+    assert first_channel["fixture_label"]

@@ -232,9 +232,26 @@ select {
   display: block;
 }
 
+.scene-button span,
+.fixture-template span {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .scene-button.active {
   background: linear-gradient(135deg, rgba(0, 126, 167, 0.16), rgba(248, 94, 0, 0.18));
   border-color: rgba(0, 126, 167, 0.35);
+}
+
+.scene-button.runtime small {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent-2);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .fixture-library {
@@ -277,6 +294,11 @@ select {
   border: 1px solid rgba(255, 255, 255, 0.85);
   background: linear-gradient(180deg, #09121f 0%, #162335 62%, #35261d 100%);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+  cursor: grab;
+}
+
+#stage-canvas.dragging {
+  cursor: grabbing;
 }
 
 .legend {
@@ -395,6 +417,87 @@ select {
 
 .channel strong {
   font-size: 1rem;
+}
+
+.channel span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.monitor-empty {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px dashed rgba(29, 36, 51, 0.24);
+  background: rgba(255, 255, 255, 0.42);
+  color: var(--muted);
+}
+
+.monitor-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.monitor-tab {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.78);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.monitor-tab.active {
+  background: linear-gradient(135deg, rgba(0, 126, 167, 0.14), rgba(248, 94, 0, 0.12));
+  border-color: rgba(0, 126, 167, 0.35);
+}
+
+.monitor-tab small {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.monitor-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.monitor-summary span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.monitor-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+}
+
+.channel-cell {
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+}
+
+.channel-cell small,
+.channel-cell span {
+  display: block;
+  color: var(--muted);
+}
+
+.channel-cell strong {
+  display: block;
+  margin: 6px 0;
+  font-size: 1.05rem;
+}
+
+.monitor-fixture-list {
+  display: grid;
+  gap: 10px;
 }
 
 @media (max-width: 1280px) {

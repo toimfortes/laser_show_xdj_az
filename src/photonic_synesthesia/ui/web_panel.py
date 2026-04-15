@@ -1,10 +1,14 @@
 """FastAPI-based control plane for the optional web interface."""
 
-from __future__ import annotations
-
 import asyncio
+import copy
+import math
 import os
+import random
 import sys
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +127,355 @@ MOCK_DEFAULT_RIG: list[dict[str, Any]] = [
     {"template": "wash", "label": "Wash A"},
     {"template": "led_bar", "label": "Bar A"},
 ]
+
+_FIXTURE_TEMPLATE_INDEX = {item["slug"]: item for item in MOCK_FIXTURE_TEMPLATES}
+_SCENE_TEMPLATE_INDEX = {item["scene_id"]: item for item in MOCK_SCENE_TEMPLATES}
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def _normalize_float(value: Any, lower: float, upper: float) -> float:
+    return _clamp(float(value), lower, upper)
+
+
+def _normalize_int(value: Any, lower: int, upper: int) -> int:
+    return max(lower, min(upper, int(value)))
+
+
+def _normalize_color(value: Any) -> str:
+    text = str(value).strip()
+    if not text.startswith("#"):
+        text = f"#{text}"
+    if len(text) == 4:
+        text = "#" + "".join(char * 2 for char in text[1:])
+    if len(text) != 7:
+        return "#ffffff"
+    try:
+        int(text[1:], 16)
+    except ValueError:
+        return "#ffffff"
+    return text.lower()
+
+
+def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
+    normalized = _normalize_color(hex_color)
+    value = int(normalized[1:], 16)
+    return ((value >> 16) & 255, (value >> 8) & 255, value & 255)
+
+
+def _build_mock_fixture(
+    template_slug: str,
+    existing_fixtures: list[dict[str, Any]],
+    *,
+    label_override: str | None = None,
+) -> dict[str, Any]:
+    template = _FIXTURE_TEMPLATE_INDEX.get(template_slug)
+    if template is None:
+        raise KeyError(template_slug)
+
+    same_type_count = sum(1 for fixture in existing_fixtures if fixture["type"] == template["type"])
+    defaults = copy.deepcopy(template["defaults"])
+    defaults["x"] = _clamp(float(defaults["x"]) + same_type_count * 0.07, 0.08, 0.92)
+    defaults["address"] = int(defaults["address"]) + same_type_count * 20
+    return {
+        "id": f"{template_slug}-{uuid.uuid4().hex[:8]}",
+        "templateSlug": template["slug"],
+        "type": template["type"],
+        "label": label_override or f"{template['label']} {same_type_count + 1}",
+        **defaults,
+        "phaseOffset": random.random() * math.pi * 2.0,
+    }
+
+
+def _scene_mix(scene: dict[str, Any], time_seconds: float) -> float:
+    return 0.55 + math.sin(time_seconds * float(scene["speed_multiplier"]) * 2.0) * float(
+        scene["pulse"]
+    ) * 0.35
+
+
+def _fixture_output(
+    fixture: dict[str, Any],
+    scene: dict[str, Any],
+    *,
+    time_seconds: float,
+    master_intensity: float,
+    master_speed: float,
+    blackout: bool,
+) -> dict[str, Any]:
+    mix = _scene_mix(scene, time_seconds)
+    phase = time_seconds * master_speed * float(scene["speed_multiplier"]) + float(
+        fixture["phaseOffset"]
+    )
+    base_intensity = float(fixture["intensity"]) * master_intensity * mix
+    intensity = 0.0 if blackout else _clamp(base_intensity, 0.0, 1.0)
+    color = _normalize_color(fixture["color"])
+    red, green, blue = _hex_to_rgb(color)
+
+    if fixture["type"] == "laser":
+        return {
+            "type": "laser",
+            "color": color,
+            "intensity": intensity,
+            "channels": [
+                ("Dim", round(intensity * 255)),
+                ("Color", round(green)),
+                ("Pattern", 160 + round((math.sin(phase) + 1.0) * 20)),
+                ("Scan", round((0.2 + float(fixture["swing"]) * 0.8) * 255)),
+            ],
+        }
+
+    if fixture["type"] == "moving_head":
+        return {
+            "type": "moving_head",
+            "color": color,
+            "intensity": intensity,
+            "channels": [
+                ("Dim", round(intensity * 255)),
+                ("Pan", round(((math.sin(phase) * 0.5) + 0.5) * 255)),
+                ("Tilt", round(((math.cos(phase * 0.8) * 0.5) + 0.5) * 255)),
+                ("Color", round(red)),
+            ],
+        }
+
+    if fixture["type"] == "wash":
+        return {
+            "type": "wash",
+            "color": color,
+            "intensity": intensity,
+            "channels": [
+                ("Dim", round(intensity * 255)),
+                ("Red", red),
+                ("Green", green),
+                ("Blue", blue),
+            ],
+        }
+
+    return {
+        "type": "led_bar",
+        "color": color,
+        "intensity": intensity,
+        "channels": [
+            ("Dim", round(intensity * 255)),
+            ("Pixels", _normalize_int(fixture["pixel_count"], 2, 16)),
+            ("Chase", round(((math.sin(phase * 1.6) + 1.0) * 0.5) * 255)),
+            ("Color", round(blue)),
+        ],
+    }
+
+
+class MockRigStore:
+    """Server-owned mock rig state for the browser preview."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._fixtures: list[dict[str, Any]] = []
+        self._scene_id = MOCK_SCENE_TEMPLATES[0]["scene_id"]
+        self._master_intensity = 0.82
+        self._master_speed = 1.0
+        self._blackout = False
+        self._seed_default_rig()
+
+    def _seed_default_rig(self) -> None:
+        self._fixtures = []
+        for entry in MOCK_DEFAULT_RIG:
+            self._fixtures.append(
+                _build_mock_fixture(entry["template"], self._fixtures, label_override=entry["label"])
+            )
+
+    def catalog(self) -> dict[str, Any]:
+        return {
+            "fixture_templates": copy.deepcopy(MOCK_FIXTURE_TEMPLATES),
+            "scene_templates": copy.deepcopy(MOCK_SCENE_TEMPLATES),
+            "default_rig": copy.deepcopy(MOCK_DEFAULT_RIG),
+        }
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "fixtures": copy.deepcopy(self._fixtures),
+                "scene_id": self._scene_id,
+                "master_intensity": self._master_intensity,
+                "master_speed": self._master_speed,
+                "blackout": self._blackout,
+            }
+
+    def _fixture_by_id(self, fixture_id: str) -> dict[str, Any] | None:
+        for fixture in self._fixtures:
+            if fixture["id"] == fixture_id:
+                return fixture
+        return None
+
+    def create_fixture(self, template_slug: str, label: str | None = None) -> dict[str, Any]:
+        with self._lock:
+            fixture = _build_mock_fixture(template_slug, self._fixtures, label_override=label)
+            self._fixtures.append(fixture)
+            return copy.deepcopy(fixture)
+
+    def duplicate_fixture(self, fixture_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            fixture = self._fixture_by_id(fixture_id)
+            if fixture is None:
+                return None
+            clone = copy.deepcopy(fixture)
+            clone["id"] = f"{fixture['templateSlug']}-{uuid.uuid4().hex[:8]}"
+            clone["label"] = f"{fixture['label']} Copy"
+            clone["x"] = _clamp(float(fixture["x"]) + 0.05, 0.05, 0.95)
+            clone["address"] = _normalize_int(int(fixture["address"]) + 10, 1, 512)
+            self._fixtures.append(clone)
+            return copy.deepcopy(clone)
+
+    def delete_fixture(self, fixture_id: str) -> bool:
+        with self._lock:
+            original_len = len(self._fixtures)
+            self._fixtures = [fixture for fixture in self._fixtures if fixture["id"] != fixture_id]
+            return len(self._fixtures) != original_len
+
+    def update_fixture(self, fixture_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            fixture = self._fixture_by_id(fixture_id)
+            if fixture is None:
+                return None
+
+            for key, value in changes.items():
+                if key == "label":
+                    fixture["label"] = str(value).strip()[:80] or fixture["label"]
+                elif key == "color":
+                    fixture["color"] = _normalize_color(value)
+                elif key == "intensity":
+                    fixture["intensity"] = _normalize_float(value, 0.0, 1.0)
+                elif key == "x":
+                    fixture["x"] = _normalize_float(value, 0.05, 0.95)
+                elif key == "y":
+                    fixture["y"] = _normalize_float(value, 0.05, 0.60)
+                elif key == "universe":
+                    fixture["universe"] = _normalize_int(value, 1, 32)
+                elif key == "address":
+                    fixture["address"] = _normalize_int(value, 1, 512)
+                elif key == "spread" and fixture["type"] == "laser":
+                    fixture["spread"] = _normalize_float(value, 0.05, 0.55)
+                elif key == "beam_count" and fixture["type"] == "laser":
+                    fixture["beam_count"] = _normalize_int(value, 1, 9)
+                elif key == "swing" and fixture["type"] == "laser":
+                    fixture["swing"] = _normalize_float(value, 0.0, 1.0)
+                elif key == "beam_width" and fixture["type"] == "moving_head":
+                    fixture["beam_width"] = _normalize_float(value, 0.04, 0.25)
+                elif key == "pan" and fixture["type"] == "moving_head":
+                    fixture["pan"] = _normalize_float(value, -1.0, 1.0)
+                elif key == "tilt" and fixture["type"] == "moving_head":
+                    fixture["tilt"] = _normalize_float(value, 0.0, 1.0)
+                elif key == "pan_range" and fixture["type"] == "moving_head":
+                    fixture["pan_range"] = _normalize_float(value, 0.0, 1.0)
+                elif key == "tilt_range" and fixture["type"] == "moving_head":
+                    fixture["tilt_range"] = _normalize_float(value, 0.0, 1.0)
+                elif key == "radius" and fixture["type"] == "wash":
+                    fixture["radius"] = _normalize_float(value, 0.08, 0.40)
+                elif key == "width" and fixture["type"] == "led_bar":
+                    fixture["width"] = _normalize_float(value, 0.08, 0.35)
+                elif key == "pixel_count" and fixture["type"] == "led_bar":
+                    fixture["pixel_count"] = _normalize_int(value, 2, 16)
+
+            return copy.deepcopy(fixture)
+
+    def update_scene(self, scene_id: str) -> bool:
+        if scene_id not in _SCENE_TEMPLATE_INDEX:
+            return False
+        with self._lock:
+            self._scene_id = scene_id
+        return True
+
+    def update_masters(
+        self,
+        *,
+        master_intensity: float | None = None,
+        master_speed: float | None = None,
+        blackout: bool | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if master_intensity is not None:
+                self._master_intensity = _normalize_float(master_intensity, 0.0, 1.0)
+            if master_speed is not None:
+                self._master_speed = _normalize_float(master_speed, 0.2, 2.2)
+            if blackout is not None:
+                self._blackout = bool(blackout)
+        return self.snapshot()
+
+    def universe_snapshot(self, *, at_time: float | None = None) -> dict[str, Any]:
+        state = self.snapshot()
+        scene = _SCENE_TEMPLATE_INDEX[state["scene_id"]]
+        generated_at = at_time if at_time is not None else time.time()
+        universes: dict[int, dict[str, Any]] = {}
+
+        for fixture in state["fixtures"]:
+            output = _fixture_output(
+                fixture,
+                scene,
+                time_seconds=generated_at,
+                master_intensity=float(state["master_intensity"]),
+                master_speed=float(state["master_speed"]),
+                blackout=bool(state["blackout"]),
+            )
+            universe_id = int(fixture["universe"])
+            universe = universes.setdefault(
+                universe_id,
+                {
+                    "universe": universe_id,
+                    "active_channel_count": 0,
+                    "fixtures": [],
+                    "channels": [],
+                },
+            )
+
+            fixture_channels: list[dict[str, Any]] = []
+            start_address = int(fixture["address"])
+            for offset, (label, value) in enumerate(output["channels"]):
+                channel = start_address + offset
+                if channel > 512:
+                    continue
+                record = {
+                    "channel": channel,
+                    "offset": offset + 1,
+                    "label": label,
+                    "value": _normalize_int(value, 0, 255),
+                }
+                fixture_channels.append(record)
+                universe["channels"].append(
+                    {
+                        "channel": channel,
+                        "label": label,
+                        "value": record["value"],
+                        "fixture_id": fixture["id"],
+                        "fixture_label": fixture["label"],
+                    }
+                )
+
+            universe["fixtures"].append(
+                {
+                    "fixture_id": fixture["id"],
+                    "fixture_label": fixture["label"],
+                    "type": fixture["type"],
+                    "address": fixture["address"],
+                    "intensity": output["intensity"],
+                    "channels": fixture_channels,
+                }
+            )
+
+        ordered_universes = []
+        for universe in sorted(universes.values(), key=lambda item: item["universe"]):
+            universe["channels"].sort(key=lambda item: int(item["channel"]))
+            universe["active_channel_count"] = len(universe["channels"])
+            ordered_universes.append(universe)
+
+        return {
+            "generated_at": generated_at,
+            "scene_id": state["scene_id"],
+            "master_intensity": state["master_intensity"],
+            "master_speed": state["master_speed"],
+            "blackout": state["blackout"],
+            "fixture_count": len(state["fixtures"]),
+            "universes": ordered_universes,
+        }
 
 
 def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
@@ -299,6 +652,21 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     class SceneCommandRequest(SessionEnvelope):
         scene_id: str
 
+    class MockFixtureCreateRequest(BaseModel):
+        template_slug: str
+        label: str | None = None
+
+    class MockFixtureUpdateRequest(BaseModel):
+        changes: dict[str, Any]
+
+    class MockSceneStateRequest(BaseModel):
+        scene_id: str
+
+    class MockMasterStateRequest(BaseModel):
+        master_intensity: float | None = None
+        master_speed: float | None = None
+        blackout: bool | None = None
+
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
         version=__version__,
@@ -310,6 +678,8 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
+    app.state.mock_rig = MockRigStore()
+    mock_rig: MockRigStore = app.state.mock_rig
 
     def require_control(session_id: str) -> None:
         if not services.has_control(session_id):
@@ -341,6 +711,8 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
                 "live_safety",
                 "mock_fixture_catalog",
                 "mock_fixture_visualizer",
+                "mock_rig_crud",
+                "mock_universe_monitor",
                 "websocket_live_feed",
             ],
         ).model_dump(mode="json")
@@ -368,11 +740,58 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     @app.get("/api/mock/catalog")
     async def mock_catalog() -> dict[str, Any]:
-        return {
-            "fixture_templates": MOCK_FIXTURE_TEMPLATES,
-            "scene_templates": MOCK_SCENE_TEMPLATES,
-            "default_rig": MOCK_DEFAULT_RIG,
-        }
+        return mock_rig.catalog()
+
+    @app.get("/api/mock/state")
+    async def mock_state() -> dict[str, Any]:
+        return mock_rig.snapshot()
+
+    @app.get("/api/mock/universes")
+    async def mock_universes() -> dict[str, Any]:
+        return mock_rig.universe_snapshot()
+
+    @app.post("/api/mock/fixtures")
+    async def create_mock_fixture(request: MockFixtureCreateRequest) -> dict[str, Any]:
+        if request.template_slug not in _FIXTURE_TEMPLATE_INDEX:
+            raise HTTPException(status_code=404, detail="Unknown fixture template")
+        fixture = mock_rig.create_fixture(request.template_slug, request.label)
+        return {"fixture": fixture, "state": mock_rig.snapshot()}
+
+    @app.patch("/api/mock/fixtures/{fixture_id}")
+    async def update_mock_fixture(
+        fixture_id: str, request: MockFixtureUpdateRequest
+    ) -> dict[str, Any]:
+        fixture = mock_rig.update_fixture(fixture_id, request.changes)
+        if fixture is None:
+            raise HTTPException(status_code=404, detail="Fixture not found")
+        return {"fixture": fixture, "state": mock_rig.snapshot()}
+
+    @app.post("/api/mock/fixtures/{fixture_id}/duplicate")
+    async def duplicate_mock_fixture(fixture_id: str) -> dict[str, Any]:
+        fixture = mock_rig.duplicate_fixture(fixture_id)
+        if fixture is None:
+            raise HTTPException(status_code=404, detail="Fixture not found")
+        return {"fixture": fixture, "state": mock_rig.snapshot()}
+
+    @app.delete("/api/mock/fixtures/{fixture_id}")
+    async def delete_mock_fixture(fixture_id: str) -> dict[str, Any]:
+        if not mock_rig.delete_fixture(fixture_id):
+            raise HTTPException(status_code=404, detail="Fixture not found")
+        return {"deleted": True, "state": mock_rig.snapshot()}
+
+    @app.post("/api/mock/scene")
+    async def update_mock_scene(request: MockSceneStateRequest) -> dict[str, Any]:
+        if not mock_rig.update_scene(request.scene_id):
+            raise HTTPException(status_code=404, detail="Unknown mock scene")
+        return mock_rig.snapshot()
+
+    @app.post("/api/mock/masters")
+    async def update_mock_masters(request: MockMasterStateRequest) -> dict[str, Any]:
+        return mock_rig.update_masters(
+            master_intensity=request.master_intensity,
+            master_speed=request.master_speed,
+            blackout=request.blackout,
+        )
 
     @app.post("/api/control/lease/acquire")
     async def acquire_control_lease(request: LeaseAcquireRequest) -> dict[str, Any]:
