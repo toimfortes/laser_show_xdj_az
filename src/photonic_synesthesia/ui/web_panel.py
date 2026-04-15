@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from photonic_synesthesia import __version__
@@ -18,23 +19,265 @@ from photonic_synesthesia.platform import (
     get_shared_control_plane_service,
 )
 
+MOCK_FIXTURE_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "slug": "laser",
+        "label": "Laser Scanner",
+        "type": "laser",
+        "description": "Multi-beam fan with wide scan spread and fast rhythmic motion.",
+        "defaults": {
+            "color": "#12d8ff",
+            "intensity": 0.9,
+            "x": 0.18,
+            "y": 0.16,
+            "spread": 0.30,
+            "beam_count": 5,
+            "swing": 0.40,
+            "universe": 1,
+            "address": 1,
+        },
+    },
+    {
+        "slug": "moving_head",
+        "label": "Moving Head",
+        "type": "moving_head",
+        "description": "Pan/tilt spot with beam cone, sweep range, and target motion.",
+        "defaults": {
+            "color": "#ff7a18",
+            "intensity": 0.8,
+            "x": 0.42,
+            "y": 0.12,
+            "pan": 0.0,
+            "tilt": 0.55,
+            "pan_range": 0.55,
+            "tilt_range": 0.35,
+            "beam_width": 0.10,
+            "universe": 1,
+            "address": 30,
+        },
+    },
+    {
+        "slug": "wash",
+        "label": "Wash Fixture",
+        "type": "wash",
+        "description": "Soft color field for stage coverage and scene mood.",
+        "defaults": {
+            "color": "#ff4d6d",
+            "intensity": 0.65,
+            "x": 0.68,
+            "y": 0.20,
+            "radius": 0.22,
+            "universe": 1,
+            "address": 60,
+        },
+    },
+    {
+        "slug": "led_bar",
+        "label": "LED Bar",
+        "type": "led_bar",
+        "description": "Pixel strip style bar for chases, accents, and audience wash.",
+        "defaults": {
+            "color": "#7cf29c",
+            "intensity": 0.75,
+            "x": 0.84,
+            "y": 0.18,
+            "pixel_count": 6,
+            "width": 0.18,
+            "universe": 1,
+            "address": 90,
+        },
+    },
+]
 
-def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any]:
+MOCK_SCENE_TEMPLATES: list[dict[str, Any]] = [
+    {
+        "scene_id": "intro_ambient",
+        "label": "Intro Ambient",
+        "palette": ["#12d8ff", "#ffc857", "#ff7a18"],
+        "speed_multiplier": 0.55,
+        "pulse": 0.35,
+        "strobe": 0.0,
+    },
+    {
+        "scene_id": "break_sweep",
+        "label": "Break Sweep",
+        "palette": ["#0ea5e9", "#f97316", "#fb7185"],
+        "speed_multiplier": 0.9,
+        "pulse": 0.5,
+        "strobe": 0.05,
+    },
+    {
+        "scene_id": "drop_intense",
+        "label": "Drop Intense",
+        "palette": ["#f94144", "#f8961e", "#90be6d"],
+        "speed_multiplier": 1.4,
+        "pulse": 0.85,
+        "strobe": 0.18,
+    },
+]
+
+MOCK_DEFAULT_RIG: list[dict[str, Any]] = [
+    {"template": "laser", "label": "Laser A"},
+    {"template": "moving_head", "label": "Mover A"},
+    {"template": "moving_head", "label": "Mover B"},
+    {"template": "wash", "label": "Wash A"},
+    {"template": "led_bar", "label": "Bar A"},
+]
+
+
+def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     try:
         from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
         from fastapi.responses import HTMLResponse
+        from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
         raise RuntimeError(
             "The web control plane requires optional dependencies. "
             "Install with: pip install -e '.[web]'"
         ) from exc
-    return FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, BaseModel
+    return FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, StaticFiles, BaseModel
+
+
+def _render_control_plane_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html lang="en">
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>Photonic Synesthesia Control Plane</title>
+            <link rel="stylesheet" href="/static/mock_control_plane.css" />
+        </head>
+        <body>
+            <div id="app">
+                <header class="hero">
+                    <div>
+                        <p class="eyebrow">Photonic Synesthesia</p>
+                        <h1>Control Plane Mock Visualizer</h1>
+                        <p class="lede">
+                            Create fake lasers, movers, washes, and LED bars, then preview the scene in-browser before
+                            touching real fixtures.
+                        </p>
+                    </div>
+                    <div class="hero-metrics">
+                        <div class="metric-card">
+                            <span>WebSocket</span>
+                            <strong id="ws-status">connecting</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span>Runtime Scene</span>
+                            <strong id="runtime-scene">idle</strong>
+                        </div>
+                        <div class="metric-card">
+                            <span>Fixture Count</span>
+                            <strong id="fixture-count">0</strong>
+                        </div>
+                    </div>
+                </header>
+
+                <main class="layout">
+                    <section class="panel stack" aria-label="Show controls">
+                        <div class="panel-header">
+                            <h2>Show Controls</h2>
+                            <p>Mock rig controls inspired by lighting desks and virtual consoles.</p>
+                        </div>
+
+                        <div class="stack compact">
+                            <label class="range-field">
+                                <span>Master Intensity</span>
+                                <input id="master-intensity" type="range" min="0" max="1" step="0.01" value="0.82" />
+                                <strong id="master-intensity-value">82%</strong>
+                            </label>
+                            <label class="range-field">
+                                <span>Master Speed</span>
+                                <input id="master-speed" type="range" min="0.2" max="2.2" step="0.01" value="1.00" />
+                                <strong id="master-speed-value">1.00x</strong>
+                            </label>
+                            <button id="blackout-toggle" class="panic">Blackout Off</button>
+                        </div>
+
+                        <div class="stack compact">
+                            <div class="subhead">
+                                <h3>Scene Bank</h3>
+                                <p>Trigger fake looks locally while still observing live runtime telemetry.</p>
+                            </div>
+                            <div id="scene-bank" class="scene-bank"></div>
+                        </div>
+
+                        <div class="stack compact">
+                            <div class="subhead">
+                                <h3>Fixture Library</h3>
+                                <p>Add simulated fixtures to the preview rig.</p>
+                            </div>
+                            <div id="fixture-library" class="fixture-library"></div>
+                        </div>
+
+                        <div class="stack compact">
+                            <div class="subhead">
+                                <h3>Rig</h3>
+                                <p>Select a fixture to tune position, color, and behavior.</p>
+                            </div>
+                            <div id="fixture-list" class="fixture-list"></div>
+                        </div>
+                    </section>
+
+                    <section class="panel preview-panel" aria-label="Stage preview">
+                        <div class="panel-header wide">
+                            <div>
+                                <h2>Stage Preview</h2>
+                                <p>Browser-only renderer with laser fans, beam cones, washes, and LED strip output.</p>
+                            </div>
+                            <div class="legend">
+                                <span><i class="legend-chip laser"></i> Laser</span>
+                                <span><i class="legend-chip mover"></i> Mover</span>
+                                <span><i class="legend-chip wash"></i> Wash</span>
+                                <span><i class="legend-chip bar"></i> LED Bar</span>
+                            </div>
+                        </div>
+                        <canvas id="stage-canvas" width="1080" height="700"></canvas>
+                        <div class="preview-footer">
+                            <div>
+                                <strong>Preview mode</strong>
+                                <p>Local simulation only. No hardware output is sent from this screen.</p>
+                            </div>
+                            <div>
+                                <strong>Live snapshot</strong>
+                                <p id="runtime-summary">Waiting for control-plane state…</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="panel stack" aria-label="Inspector">
+                        <div class="panel-header">
+                            <h2>Fixture Inspector</h2>
+                            <p>Per-fixture settings and a DMX-style monitor for the mock rig.</p>
+                        </div>
+
+                        <div id="fixture-inspector" class="inspector-empty">
+                            Select a fixture to edit its mock parameters.
+                        </div>
+
+                        <div class="stack compact">
+                            <div class="subhead">
+                                <h3>Mock DMX Monitor</h3>
+                                <p>Fixture-oriented synthetic channel output for the browser preview.</p>
+                            </div>
+                            <div id="dmx-monitor" class="dmx-monitor"></div>
+                        </div>
+                    </section>
+                </main>
+            </div>
+
+            <script src="/static/mock_control_plane.js"></script>
+        </body>
+    </html>
+    """
 
 
 def create_app(services: ControlPlaneStateService | None = None) -> Any:
     """Create the FastAPI control-plane application."""
-    FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, BaseModel = (
+    FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, StaticFiles, BaseModel = (
         _import_web_stack()
     )
 
@@ -61,6 +304,9 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         version=__version__,
         summary="Control-plane service for live operation and future authoring flows.",
     )
+    static_dir = Path(__file__).with_name("static")
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
@@ -78,24 +324,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
-        return """
-        <html>
-            <head><title>Photonic Synesthesia Control Plane</title></head>
-            <body>
-                <h1>Photonic Synesthesia Control Plane</h1>
-                <p>The FastAPI control-plane service is running.</p>
-                <ul>
-                    <li><code>GET /api/live/health</code></li>
-                    <li><code>GET /api/live/state</code></li>
-                    <li><code>POST /api/control/lease/acquire</code></li>
-                    <li><code>POST /api/control/lease/release</code></li>
-                    <li><code>POST /api/control/blackout</code></li>
-                    <li><code>POST /api/control/intensity</code></li>
-                    <li><code>WS /ws/live</code></li>
-                </ul>
-            </body>
-        </html>
-        """
+        return _render_control_plane_html()
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -110,6 +339,8 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
                 "live_health",
                 "live_snapshot",
                 "live_safety",
+                "mock_fixture_catalog",
+                "mock_fixture_visualizer",
                 "websocket_live_feed",
             ],
         ).model_dump(mode="json")
@@ -133,6 +364,14 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             if snapshot.active_control_lease
             else None,
             "recent_events": [event.model_dump(mode="json") for event in snapshot.recent_events],
+        }
+
+    @app.get("/api/mock/catalog")
+    async def mock_catalog() -> dict[str, Any]:
+        return {
+            "fixture_templates": MOCK_FIXTURE_TEMPLATES,
+            "scene_templates": MOCK_SCENE_TEMPLATES,
+            "default_rig": MOCK_DEFAULT_RIG,
         }
 
     @app.post("/api/control/lease/acquire")

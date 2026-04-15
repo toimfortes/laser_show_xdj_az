@@ -17,6 +17,7 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/control/blackout" in routes
     assert "/api/control/scenes/launch" in routes
     assert "/api/control/scenes/hold" in routes
+    assert "/api/mock/catalog" in routes
 
 
 def test_live_state_endpoint_reflects_runtime_ingest() -> None:
@@ -34,3 +35,33 @@ def test_live_state_endpoint_reflects_runtime_ingest() -> None:
     body = response.json()
     assert body["active_scene_id"] == "intro_ambient"
     assert body["diagnostics"]["runtime_source"] == "graph"
+
+
+def test_root_page_exposes_mock_visualizer_shell() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert "Control Plane Mock Visualizer" in response.text
+    assert "/static/mock_control_plane.js" in response.text
+
+
+def test_mock_catalog_exposes_fixture_and_scene_templates() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/api/mock/catalog")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fixture_templates"]
+    assert body["scene_templates"]
+    assert body["default_rig"]
+    assert {item["slug"] for item in body["fixture_templates"]} >= {
+        "laser",
+        "moving_head",
+        "wash",
+        "led_bar",
+    }
