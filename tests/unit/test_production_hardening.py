@@ -80,6 +80,35 @@ def test_dmx_output_rejects_inf_channel_value() -> None:
     assert universe[5] == 0, "-Inf must be rejected"
 
 
+def test_dmx_output_request_blackout_latches_zero_universe() -> None:
+    node = DMXOutputNode(DMXConfig(interface_type="artnet"))
+    state = create_initial_state()
+    state["fixture_commands"] = [
+        FixtureCommand(
+            fixture_id="fx1",
+            fixture_type="laser",
+            channel_values={1: 255, 2: 127},
+        )
+    ]
+    node(state)
+    assert node.get_stats()["blackout_requested"] is False
+
+    node.request_blackout()
+    state = create_initial_state()
+    state["fixture_commands"] = [
+        FixtureCommand(
+            fixture_id="fx1",
+            fixture_type="laser",
+            channel_values={1: 255},
+        )
+    ]
+    result = node(state)
+
+    assert result["dmx_universe"][1] == 0
+    assert result["dmx_universe"][2] == 0
+    assert node.get_stats()["blackout_requested"] is True
+
+
 # ---------------------------------------------------------------------------
 # Art-Net blackout on stop
 # ---------------------------------------------------------------------------
@@ -226,6 +255,26 @@ def test_run_loop_stop_called_in_finally() -> None:
         pg.run_loop(target_fps=1.0)
 
     pg.stop.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Feature extraction logging hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_feature_extract_logs_missing_librosa_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing librosa warning should emit once per node, not once per frame."""
+    from photonic_synesthesia.graph.nodes import feature_extract as feature_extract_module
+
+    monkeypatch.setattr(feature_extract_module, "LIBROSA_AVAILABLE", False)
+    warning_mock = mock.MagicMock()
+    monkeypatch.setattr(feature_extract_module.logger, "warning", warning_mock)
+
+    node = feature_extract_module.FeatureExtractNode()
+    node(create_initial_state())
+    node(create_initial_state())
+
+    assert warning_mock.call_count == 1
 
 
 # ---------------------------------------------------------------------------

@@ -133,6 +133,17 @@ class SafetyState(TypedDict):
     emergency_stop: bool
 
 
+class ControlState(TypedDict):
+    """Operator control-plane overrides applied to execution."""
+
+    armed_live: bool
+    blackout_active: bool
+    global_intensity: float
+    global_speed: float
+    scene_hold: str | None
+    launched_scene: str | None
+
+
 class PhotonicState(TypedDict):
     """
     Central state object flowing through LangGraph.
@@ -191,6 +202,9 @@ class PhotonicState(TypedDict):
 
     # Safety Status
     safety_state: SafetyState
+
+    # Operator Controls
+    control_state: ControlState
 
     # System Health
     sensor_status: dict[str, bool]  # Which sensors are active
@@ -295,6 +309,15 @@ def create_initial_state() -> PhotonicState:
             laser_enabled=True,
             strobe_enabled=True,
             emergency_stop=False,
+        ),
+        # Operator Controls
+        control_state=ControlState(
+            armed_live=True,
+            blackout_active=False,
+            global_intensity=1.0,
+            global_speed=1.0,
+            scene_hold=None,
+            launched_scene=None,
         ),
         # System
         sensor_status={

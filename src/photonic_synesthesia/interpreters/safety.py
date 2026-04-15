@@ -25,16 +25,24 @@ class SafetyConstraintInterpreter:
         self,
         commands: list[FixtureCommand],
         strobe_budget_hz: float,
+        global_intensity: float = 1.0,
     ) -> list[FixtureCommand]:
         interpreted: list[FixtureCommand] = []
         for command in commands:
-            interpreted.append(self._interpret_single(command, strobe_budget_hz=strobe_budget_hz))
+            interpreted.append(
+                self._interpret_single(
+                    command,
+                    strobe_budget_hz=strobe_budget_hz,
+                    global_intensity=global_intensity,
+                )
+            )
         return interpreted
 
     def _interpret_single(
         self,
         command: FixtureCommand,
         strobe_budget_hz: float,
+        global_intensity: float,
     ) -> FixtureCommand:
         fixture_type = command["fixture_type"]
         values = dict(command["channel_values"])
@@ -59,6 +67,16 @@ class SafetyConstraintInterpreter:
             strobe_channel = base + 4
             if strobe_channel in values:
                 values[strobe_channel] = min(values[strobe_channel], strobe_limit)
+
+        intensity = min(1.0, max(0.0, global_intensity))
+        if fixture_type == "moving_head":
+            for channel in (base + 5, base + 13, base + 14, base + 15):
+                if channel in values:
+                    values[channel] = int(values[channel] * intensity)
+        elif fixture_type == "panel":
+            for channel in (base + 0, base + 1, base + 2, base + 3):
+                if channel in values:
+                    values[channel] = int(values[channel] * intensity)
 
         smoothed: dict[int, int] = {}
         for channel, target in values.items():

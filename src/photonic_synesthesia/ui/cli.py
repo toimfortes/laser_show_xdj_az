@@ -13,11 +13,11 @@ import sys
 from pathlib import Path
 
 import click
-import structlog
 
 from photonic_synesthesia import __version__
+from photonic_synesthesia.core.logging import configure_logging, get_logger
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 def _validate_startup_config(settings: object, mock: bool = False) -> None:
@@ -86,9 +86,7 @@ def cli(ctx: click.Context, debug: bool, config: str | None) -> None:
 
     # Configure logging
     log_level = logging.DEBUG if debug else logging.INFO
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(log_level),
-    )
+    configure_logging(log_level)
 
     ctx.obj["debug"] = debug
     ctx.obj["config_path"] = Path(config) if config else None
@@ -102,6 +100,11 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     """Run the photonic synesthesia system."""
     from photonic_synesthesia.core.config import Settings
     from photonic_synesthesia.graph import build_photonic_graph
+    from photonic_synesthesia.platform import (
+        ControlPlaneStateService,
+        clear_shared_control_plane_service,
+        set_shared_control_plane_service,
+    )
 
     click.echo(f"Photonic Synesthesia v{__version__}")
     click.echo("=" * 50)
@@ -121,6 +124,7 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 
     # Build and run graph
     graph = None
+    control_plane_service = set_shared_control_plane_service(ControlPlaneStateService())
 
     def _shutdown(signum: int, frame: object) -> None:
         """Signal handler: ask the graph to stop cleanly."""
@@ -131,7 +135,11 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     signal.signal(signal.SIGINT, _shutdown)
 
     try:
-        graph = build_photonic_graph(settings, mock_sensors=mock)
+        graph = build_photonic_graph(
+            settings,
+            mock_sensors=mock,
+            control_plane_service=control_plane_service,
+        )
         click.echo("Graph built successfully. Starting...")
         click.echo("Press Ctrl+C to stop.")
         click.echo()
@@ -148,6 +156,7 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     finally:
         if graph is not None:
             graph.stop()  # idempotent: stop() is safe to call multiple times
+        clear_shared_control_plane_service()
 
 
 @cli.command()

@@ -10,12 +10,12 @@ from __future__ import annotations
 import time
 
 import numpy as np
-import structlog
 from numpy.typing import NDArray
 
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import AudioFeatures, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # Import librosa conditionally
 try:
@@ -46,11 +46,13 @@ class FeatureExtractNode:
         hop_length: int = 512,
         n_mfcc: int = 13,
         n_mels: int = 128,
+        streaming_dsp: bool = False,
     ):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.n_mfcc = n_mfcc
         self.n_mels = n_mels
+        self.streaming_dsp = streaming_dsp
 
         # Frequency band boundaries (Hz)
         self.low_band = (20, 200)  # Sub-bass and bass
@@ -59,13 +61,16 @@ class FeatureExtractNode:
 
         # Previous spectrum for flux calculation
         self._prev_spectrum: NDArray | None = None
+        self._warned_missing_librosa = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Extract audio features and update state."""
         start_time = time.time()
 
         if not LIBROSA_AVAILABLE:
-            logger.warning("librosa not available, using dummy features")
+            if not self._warned_missing_librosa:
+                logger.warning("librosa not available, using dummy features")
+                self._warned_missing_librosa = True
             return self._dummy_features(state)
 
         audio_buffer = state.get("audio_buffer", [])

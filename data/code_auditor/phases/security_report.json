@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-02-21T02:09:20.772284Z",
+  "phase": "security",
+  "target_path": ".",
+  "findings": [],
+  "metrics": {
+    "phase_name": "security",
+    "files_scanned": 0,
+    "issues_found": 0,
+    "duration_seconds": 1.3736391919665039,
+    "tool_version": null,
+    "critical_count": 0,
+    "high_count": 0,
+    "medium_count": 0,
+    "low_count": 0,
+    "info_count": 0
+  },
+  "tool_config": {},
+  "warnings": []
+}

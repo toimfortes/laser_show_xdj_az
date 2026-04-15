@@ -1,0 +1,102 @@
+{
+  "schema_version": "1.0.0",
+  "generated_at": "2026-02-21T02:08:12.949815Z",
+  "project_root": ".",
+  "phases_completed": [
+    "preflight",
+    "toolchain",
+    "patterns",
+    "lint",
+    "types",
+    "tests",
+    "security",
+    "dead-code",
+    "complexity"
+  ],
+  "phases_failed": [],
+  "phases_skipped": [],
+  "total_files_scanned": 12,
+  "total_findings": 17,
+  "total_duration_seconds": 36.59783108194824,
+  "total_critical": 0,
+  "total_high": 12,
+  "total_medium": 0,
+  "total_low": 2,
+  "total_info": 3,
+  "phase_summaries": {
+    "preflight": {
+      "files_scanned": 6,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.00025144097162410617
+    },
+    "toolchain": {
+      "files_scanned": 6,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.0
+    },
+    "patterns": {
+      "files_scanned": 0,
+      "findings": 3,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.13396162202116102
+    },
+    "lint": {
+      "files_scanned": 0,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.02312002202961594
+    },
+    "types": {
+      "files_scanned": 0,
+      "findings": 12,
+      "critical": 0,
+      "high": 12,
+      "medium": 0,
+      "duration_seconds": 31.306788561982103
+    },
+    "tests": {
+      "files_scanned": 0,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 2.806352371000685
+    },
+    "security": {
+      "files_scanned": 0,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 1.3736391919665039
+    },
+    "dead-code": {
+      "files_scanned": 0,
+      "findings": 2,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.38118887098971754
+    },
+    "complexity": {
+      "files_scanned": 0,
+      "findings": 0,
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "duration_seconds": 0.5725290009868331
+    }
+  },
+  "ci_pass": false,
+  "ci_fail_reason": "Critical/high issues found in types"
+}

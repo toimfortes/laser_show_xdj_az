@@ -1,0 +1,340 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "code-auditor",
+          "version": "0.1.0",
+          "rules": []
+        }
+      },
+      "results": [
+        {
+          "ruleId": "PAT",
+          "level": "note",
+          "message": {
+            "text": "DMX universe created as 512 bytes; should be 513 (start code + 512 channels)."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/photonic_synesthesia/graph/nodes/dmx_output.py"
+                },
+                "region": {
+                  "startLine": 154
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "PAT",
+          "level": "note",
+          "message": {
+            "text": "Exception caught without variable binding \u2014 use 'except Exception as exc:' and log exc_info."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/photonic_synesthesia/graph/nodes/dmx_output.py"
+                },
+                "region": {
+                  "startLine": 147
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "PAT",
+          "level": "note",
+          "message": {
+            "text": "Exception caught without variable binding \u2014 use 'except Exception as exc:' and log exc_info."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/photonic_synesthesia/graph/nodes/dmx_output.py"
+                },
+                "region": {
+                  "startLine": 161
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "dict-item",
+          "level": "error",
+          "message": {
+            "text": "Dict entry 1 has incompatible type \"int\": \"float\"; expected \"int\": \"int\""
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 46
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "dict-item",
+          "level": "error",
+          "message": {
+            "text": "Dict entry 1 has incompatible type \"int\": \"float\"; expected \"int\": \"int\""
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 69
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "dict-item",
+          "level": "error",
+          "message": {
+            "text": "Dict entry 2 has incompatible type \"int\": \"float\"; expected \"int\": \"int\""
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 70
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "no-untyped-def",
+          "level": "error",
+          "message": {
+            "text": "Function is missing a type annotation"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 197
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "TYPE-0005",
+          "level": "error",
+          "message": {
+            "text": "Error code \"no-untyped-def\" not covered by \"type: ignore\" comment"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 197
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "method-assign",
+          "level": "error",
+          "message": {
+            "text": "Cannot assign to a method"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 203
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "method-assign",
+          "level": "error",
+          "message": {
+            "text": "Cannot assign to a method"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 204
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "func-returns-value",
+          "level": "error",
+          "message": {
+            "text": "\"assert_called\" of \"NonCallableMock\" does not return a value (it only ever returns None)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 209
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "no-untyped-def",
+          "level": "error",
+          "message": {
+            "text": "Function is missing a type annotation"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 217
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "TYPE-0010",
+          "level": "error",
+          "message": {
+            "text": "Error code \"no-untyped-def\" not covered by \"type: ignore\" comment"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 217
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "method-assign",
+          "level": "error",
+          "message": {
+            "text": "Cannot assign to a method"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 221
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "method-assign",
+          "level": "error",
+          "message": {
+            "text": "Cannot assign to a method"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "tests/unit/test_production_hardening.py"
+                },
+                "region": {
+                  "startLine": 222
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "vulture",
+          "level": "note",
+          "message": {
+            "text": "unused variable 'frame' (100% confidence)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/photonic_synesthesia/ui/cli.py"
+                },
+                "region": {
+                  "startLine": 79
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "vulture",
+          "level": "note",
+          "message": {
+            "text": "unused variable 'signum' (100% confidence)"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/photonic_synesthesia/ui/cli.py"
+                },
+                "region": {
+                  "startLine": 79
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

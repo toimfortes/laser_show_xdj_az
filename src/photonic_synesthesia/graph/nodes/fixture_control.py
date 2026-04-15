@@ -10,16 +10,15 @@ from __future__ import annotations
 import math
 import time
 
-import structlog
-
 from photonic_synesthesia.core.config import (
     FixtureConfig,
     LaserSafetyConfig,
     MovingHeadSafetyConfig,
 )
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class LaserControlNode:

@@ -11,8 +11,7 @@ import math
 import random
 import time
 
-import structlog
-
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import (
     AudioFeatures,
     BeatInfo,
@@ -23,7 +22,7 @@ from photonic_synesthesia.core.state import (
 )
 from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class MockAudioSenseNode:

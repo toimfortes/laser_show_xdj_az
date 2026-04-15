@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import structlog
 from langgraph.graph import END, StateGraph
 
 from photonic_synesthesia.core.config import Settings
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState, create_initial_state
 from photonic_synesthesia.graph.nodes import (
     AudioSenseNode,
@@ -31,8 +31,10 @@ from photonic_synesthesia.graph.nodes import (
     SceneSelectNode,
     StructureDetectNode,
 )
+from photonic_synesthesia.platform.state_service import ControlPlaneStateService
+from photonic_synesthesia.platform import CommandType, OperatorCommand
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class PhotonicGraph:
@@ -48,12 +50,16 @@ class PhotonicGraph:
         graph: Any,  # Compiled StateGraph
         settings: Settings,
         nodes: dict[str, Any],
+        control_plane_service: ControlPlaneStateService | None = None,
     ):
         self.graph = graph
         self.settings = settings
         self.nodes = nodes
+        self.control_plane_service = control_plane_service
         self._running = False
         self._state = create_initial_state()
+        self.hybrid_pacing = settings.runtime_flags.hybrid_pacing
+        self.dual_loop = settings.runtime_flags.dual_loop
 
     def start(self) -> None:
         """Start all sensor nodes and begin processing."""
@@ -65,6 +71,8 @@ class PhotonicGraph:
             self.nodes["audio_sense"].start()
         if "midi_sense" in self.nodes:
             self.nodes["midi_sense"].start()
+        if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "start"):
+            self.nodes["cv_sense"].start()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
@@ -80,6 +88,8 @@ class PhotonicGraph:
             self.nodes["audio_sense"].stop()
         if "midi_sense" in self.nodes:
             self.nodes["midi_sense"].stop()
+        if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "stop"):
+            self.nodes["cv_sense"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
         if "dmx_output" in self.nodes:
@@ -87,26 +97,81 @@ class PhotonicGraph:
 
     def step(self) -> PhotonicState:
         """Execute one iteration of the graph."""
+        self._drain_control_commands()
         self._state = self.graph.invoke(self._state)
+        if self.control_plane_service is not None:
+            self.control_plane_service.update_from_photonic_state(self._state)
         return self._state
+
+    def _drain_control_commands(self) -> None:
+        if self.control_plane_service is None:
+            return
+        for command in self.control_plane_service.commands.drain():
+            self._apply_control_command(command)
+
+    def _apply_control_command(self, command: OperatorCommand) -> None:
+        control_state = self._state["control_state"]
+
+        if command.command_type == CommandType.ARM:
+            control_state["armed_live"] = True
+        elif command.command_type == CommandType.DISARM:
+            control_state["armed_live"] = False
+            control_state["blackout_active"] = True
+            self._request_blackout()
+        elif command.command_type == CommandType.BLACKOUT:
+            control_state["blackout_active"] = True
+            self._request_blackout()
+        elif command.command_type == CommandType.CLEAR_BLACKOUT:
+            control_state["blackout_active"] = False
+            self._clear_blackout()
+        elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
+            intensity = float(command.payload.get("intensity", control_state["global_intensity"]))
+            control_state["global_intensity"] = max(0.0, min(1.0, intensity))
+        elif command.command_type == CommandType.SET_GLOBAL_SPEED:
+            speed = float(command.payload.get("speed", control_state["global_speed"]))
+            control_state["global_speed"] = max(0.1, speed)
+        elif command.command_type == CommandType.LAUNCH_SCENE:
+            control_state["launched_scene"] = str(command.payload.get("scene_id", "idle"))
+        elif command.command_type == CommandType.HOLD_SCENE:
+            scene_id = command.payload.get("scene_id") or self._state["scene_state"]["current_scene"]
+            control_state["scene_hold"] = str(scene_id)
+        elif command.command_type == CommandType.RELEASE_SCENE_HOLD:
+            control_state["scene_hold"] = None
+
+    def _request_blackout(self) -> None:
+        dmx_output = self.nodes.get("dmx_output")
+        if dmx_output is not None and hasattr(dmx_output, "request_blackout"):
+            dmx_output.request_blackout()
+
+    def _clear_blackout(self) -> None:
+        dmx_output = self.nodes.get("dmx_output")
+        if dmx_output is not None and hasattr(dmx_output, "clear_blackout_request"):
+            dmx_output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""
         import time
 
         frame_time = 1.0 / target_fps
+        if self.dual_loop:
+            logger.warning(
+                "Dual-loop runtime flag is enabled, but single-loop execution path is active",
+            )
 
         try:
             self.start()
             while self._running:
-                start = time.time()
+                start = time.perf_counter()
                 self.step()
-                elapsed = time.time() - start
+                elapsed = time.perf_counter() - start
 
                 # Sleep to maintain target FPS
                 sleep_time = frame_time - elapsed
                 if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    if self.hybrid_pacing:
+                        self._sleep_with_hybrid_pacing(sleep_time)
+                    else:
+                        time.sleep(sleep_time)
                 elif self.settings.debug:
                     logger.warning(
                         "Frame overrun",
@@ -115,6 +180,26 @@ class PhotonicGraph:
                     )
         finally:
             self.stop()
+
+    @staticmethod
+    def _sleep_with_hybrid_pacing(sleep_time: float) -> None:
+        """
+        Use coarse sleep plus a short spin/yield tail for tighter frame pacing.
+        """
+        import time
+
+        if sleep_time <= 0:
+            return
+        deadline = time.perf_counter() + sleep_time
+        coarse = sleep_time - 0.002
+        if coarse > 0:
+            time.sleep(coarse)
+        while True:
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            if remaining > 0.0005:
+                time.sleep(0)
 
     @property
     def state(self) -> PhotonicState:
@@ -125,6 +210,7 @@ class PhotonicGraph:
 def build_photonic_graph(
     settings: Settings | None = None,
     mock_sensors: bool = False,
+    control_plane_service: ControlPlaneStateService | None = None,
 ) -> PhotonicGraph:
     """
     Build and compile the complete photonic synesthesia graph.
@@ -159,11 +245,19 @@ def build_photonic_graph(
     else:
         nodes["audio_sense"] = AudioSenseNode(settings.audio)
         nodes["midi_sense"] = MidiSenseNode(settings.midi)
-        nodes["cv_sense"] = CVSenseNode(settings.cv)
-        nodes["dmx_output"] = DMXOutputNode(settings.dmx)
+        nodes["cv_sense"] = CVSenseNode(
+            settings.cv,
+            cv_threaded=settings.runtime_flags.cv_threaded,
+        )
+        nodes["dmx_output"] = DMXOutputNode(
+            settings.dmx,
+            dmx_double_buffer=settings.runtime_flags.dmx_double_buffer,
+        )
 
     # Analysis nodes (always real)
-    nodes["feature_extract"] = FeatureExtractNode()
+    nodes["feature_extract"] = FeatureExtractNode(
+        streaming_dsp=settings.runtime_flags.streaming_dsp
+    )
     nodes["beat_track"] = BeatTrackNode(settings.beat_tracking)
     nodes["structure_detect"] = StructureDetectNode(settings.structure_detection)
     nodes["fusion"] = FusionNode()
@@ -196,33 +290,25 @@ def build_photonic_graph(
     # Entry point: audio capture
     graph.set_entry_point("audio_sense")
 
-    # Parallel sensor acquisition
-    # Audio path
+    # Deterministic single-writer flow:
+    # LangGraph merge semantics reject concurrent writes to scalar keys
+    # (e.g. `timestamp`) unless reducers are explicitly configured.
+    # Keep one path per step so each key has a single writer.
     graph.add_edge("audio_sense", "feature_extract")
     graph.add_edge("feature_extract", "beat_track")
     graph.add_edge("beat_track", "structure_detect")
-    graph.add_edge("structure_detect", "fusion")
-
-    # MIDI path (parallel to audio)
-    graph.add_edge("audio_sense", "midi_sense")
-    graph.add_edge("midi_sense", "fusion")
-
-    # CV path (parallel to audio)
-    graph.add_edge("audio_sense", "cv_sense")
+    graph.add_edge("structure_detect", "midi_sense")
+    graph.add_edge("midi_sense", "cv_sense")
     graph.add_edge("cv_sense", "fusion")
 
     # Scene selection after fusion
     graph.add_edge("fusion", "director_intent")
     graph.add_edge("director_intent", "scene_select")
 
-    # Parallel fixture control
+    # Fixture control (sequential for the same reason as above)
     graph.add_edge("scene_select", "laser_control")
-    graph.add_edge("scene_select", "moving_head_control")
-    graph.add_edge("scene_select", "panel_control")
-
-    # Converge through interpreter, then safety interlock, then DMX output
-    graph.add_edge("laser_control", "interpreter")
-    graph.add_edge("moving_head_control", "interpreter")
+    graph.add_edge("laser_control", "moving_head_control")
+    graph.add_edge("moving_head_control", "panel_control")
     graph.add_edge("panel_control", "interpreter")
 
     # Safety check BEFORE committing to DMX universe
@@ -238,10 +324,18 @@ def build_photonic_graph(
     # Compile
     compiled = graph.compile()
 
-    return PhotonicGraph(compiled, settings, nodes)
+    return PhotonicGraph(
+        compiled,
+        settings,
+        nodes,
+        control_plane_service=control_plane_service,
+    )
 
 
-def build_minimal_graph(settings: Settings | None = None) -> PhotonicGraph:
+def build_minimal_graph(
+    settings: Settings | None = None,
+    control_plane_service: ControlPlaneStateService | None = None,
+) -> PhotonicGraph:
     """
     Build a minimal graph for testing DMX output only.
 
@@ -253,7 +347,10 @@ def build_minimal_graph(settings: Settings | None = None) -> PhotonicGraph:
 
     from photonic_synesthesia.graph.nodes.mocks import MockAudioSenseNode
 
-    dmx_output = DMXOutputNode(settings.dmx)
+    dmx_output = DMXOutputNode(
+        settings.dmx,
+        dmx_double_buffer=settings.runtime_flags.dmx_double_buffer,
+    )
     nodes = {
         "audio_sense": MockAudioSenseNode(),
         "dmx_output": dmx_output,
@@ -275,4 +372,9 @@ def build_minimal_graph(settings: Settings | None = None) -> PhotonicGraph:
     graph.add_edge("dmx_output", END)
 
     compiled = graph.compile()
-    return PhotonicGraph(compiled, settings, nodes)
+    return PhotonicGraph(
+        compiled,
+        settings,
+        nodes,
+        control_plane_service=control_plane_service,
+    )

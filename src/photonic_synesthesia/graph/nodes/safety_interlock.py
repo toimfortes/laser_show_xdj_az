@@ -37,6 +37,13 @@ class SupportsBlackout(Protocol):
         """Immediately zero output."""
 
 
+class SupportsBlackoutRequest(SupportsBlackout, Protocol):
+    """Optional non-blocking blackout latch API for watchdog callbacks."""
+
+    def request_blackout(self) -> None:
+        """Request blackout asynchronously."""
+
+
 class SupportsBlackoutAndStats(SupportsBlackout, Protocol):
     """DMX protocol needed for frame-stall monitoring."""
 
@@ -134,8 +141,12 @@ class SafetyInterlockNode:
         self._emergency_stop = False
         self._heartbeat_watchdog: HeartbeatWatchdog | None = None
         if dmx_output is not None:
+            timeout_callback = dmx_output.blackout
+            maybe_request = getattr(dmx_output, "request_blackout", None)
+            if callable(maybe_request):
+                timeout_callback = maybe_request
             self._heartbeat_watchdog = HeartbeatWatchdog(
-                on_timeout=dmx_output.blackout,
+                on_timeout=timeout_callback,
                 timeout_s=self.config.heartbeat_timeout_s,
             )
 
