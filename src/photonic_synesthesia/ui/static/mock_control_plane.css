@@ -213,6 +213,42 @@ select {
   gap: 10px;
 }
 
+.playback-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+}
+
+.playback-panel.empty {
+  color: var(--muted);
+}
+
+.playback-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.playback-meta span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.playback-panel audio,
+#waveform-canvas {
+  width: 100%;
+}
+
+#waveform-canvas {
+  display: block;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
 .scene-button,
 .fixture-template,
 .fixture-row {

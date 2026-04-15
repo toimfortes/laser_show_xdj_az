@@ -165,6 +165,9 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 @click.option("--fps", default=50.0, help="Target graph frames per second")
 @click.option("--realtime/--offline", default=True, help="Sleep between chunks to mimic playback")
 @click.option("--speed", default=1.0, type=float, help="Playback speed multiplier in realtime mode")
+@click.option("--web", "web_mode", is_flag=True, help="Serve the control-plane website in the same process")
+@click.option("--web-host", default="127.0.0.1", help="Embedded web server host")
+@click.option("--web-port", default=8000, type=int, help="Embedded web server port")
 @click.pass_context
 def run_file(
     ctx: click.Context,
@@ -172,6 +175,9 @@ def run_file(
     fps: float,
     realtime: bool,
     speed: float,
+    web_mode: bool,
+    web_host: str,
+    web_port: int,
 ) -> None:
     """Run the graph against an audio file such as MP3 or WAV."""
     from photonic_synesthesia.core.config import Settings
@@ -179,15 +185,22 @@ def run_file(
     from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
     from photonic_synesthesia.platform import (
         ControlPlaneStateService,
+        PlaybackContext,
         clear_shared_control_plane_service,
+        clear_shared_playback_context,
         set_shared_control_plane_service,
+        set_shared_playback_context,
     )
+    from photonic_synesthesia.ui.web_panel import serve_in_thread
 
     if fps <= 0:
         click.echo("Error: --fps must be greater than 0", err=True)
         sys.exit(1)
     if speed <= 0:
         click.echo("Error: --speed must be greater than 0", err=True)
+        sys.exit(1)
+    if not 1 <= web_port <= 65535:
+        click.echo("Error: --web-port must be between 1 and 65535", err=True)
         sys.exit(1)
 
     click.echo(f"Photonic Synesthesia v{__version__}")
@@ -216,6 +229,8 @@ def run_file(
     click.echo()
 
     graph = None
+    web_server = None
+    web_thread = None
     control_plane_service = set_shared_control_plane_service(ControlPlaneStateService())
 
     def _shutdown(signum: int, frame: object) -> None:
@@ -226,6 +241,23 @@ def run_file(
     signal.signal(signal.SIGINT, _shutdown)
 
     try:
+        if web_mode:
+            audio_node.start()
+            set_shared_playback_context(
+                PlaybackContext(
+                    file_path=str(audio_file),
+                    file_name=audio_file.name,
+                    duration_seconds=audio_node.duration_seconds,
+                    waveform=audio_node.waveform_preview(),
+                )
+            )
+            web_server, web_thread = serve_in_thread(
+                services=control_plane_service,
+                host=web_host,
+                port=web_port,
+            )
+            click.echo(f"Web UI: http://{web_host}:{web_port}/")
+
         graph = build_photonic_graph(
             settings,
             mock_sensors=True,
@@ -274,7 +306,12 @@ def run_file(
     finally:
         if graph is not None:
             graph.stop()
+        if web_server is not None:
+            web_server.should_exit = True
+        if web_thread is not None:
+            web_thread.join(timeout=3.0)
         clear_shared_control_plane_service()
+        clear_shared_playback_context()
 
 
 @cli.command()

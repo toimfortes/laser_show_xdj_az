@@ -9,6 +9,7 @@ const appState = {
   blackout: false,
   runtimeSnapshot: null,
   universeSnapshot: null,
+  playback: null,
   wsStatus: "connecting",
   dragFixtureId: null,
 };
@@ -102,6 +103,12 @@ async function loadRuntimeSnapshot() {
   }
 }
 
+async function loadPlaybackState() {
+  const playback = await api("/api/mock/playback");
+  appState.playback = playback;
+  renderPlayback();
+}
+
 async function refreshUniverseSnapshot() {
   appState.universeSnapshot = await api("/api/mock/universes");
   const universe = appState.universeSnapshot.universes.find(
@@ -127,6 +134,68 @@ function applyMockState(state, { preserveSelection = true } = {}) {
   } else {
     appState.selectedFixtureId = appState.fixtures[0]?.id || null;
   }
+}
+
+function renderPlayback() {
+  if (!elements.playbackPanel) {
+    return;
+  }
+
+  const playback = appState.playback;
+  if (!playback || !playback.available) {
+    elements.playbackPanel.className = "playback-panel empty";
+    elements.playbackPanel.textContent = "Start a file-backed session with web mode to expose the current track here.";
+    return;
+  }
+
+  elements.playbackPanel.className = "playback-panel";
+  elements.playbackPanel.innerHTML = `
+    <div class="playback-meta">
+      <strong>${playback.file_name}</strong>
+      <span>${playback.duration_seconds.toFixed(1)}s</span>
+    </div>
+    <audio id="track-audio" controls preload="metadata" src="${playback.audio_url}"></audio>
+    <canvas id="waveform-canvas" width="640" height="96"></canvas>
+  `;
+
+  const audio = elements.playbackPanel.querySelector("#track-audio");
+  const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");
+  const waveform = Array.isArray(playback.waveform) ? playback.waveform : [];
+  const ctx = waveformCanvas.getContext("2d");
+
+  function drawWaveform() {
+    const width = waveformCanvas.width;
+    const height = waveformCanvas.height;
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = "rgba(9, 18, 31, 0.88)";
+    ctx.fillRect(0, 0, width, height);
+
+    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.beginPath();
+    ctx.moveTo(0, height / 2);
+    ctx.lineTo(width, height / 2);
+    ctx.stroke();
+
+    if (waveform.length > 0) {
+      const barWidth = width / waveform.length;
+      ctx.fillStyle = "rgba(18, 216, 255, 0.75)";
+      waveform.forEach((value, index) => {
+        const amplitude = Math.max(2, value * (height * 0.42));
+        const x = index * barWidth;
+        ctx.fillRect(x, (height / 2) - amplitude, Math.max(1, barWidth - 1), amplitude * 2);
+      });
+    }
+
+    const duration = Number(audio.duration || playback.duration_seconds || 0);
+    const progress = duration > 0 ? clamp(audio.currentTime / duration, 0, 1) : 0;
+    ctx.fillStyle = "rgba(248, 94, 0, 0.95)";
+    ctx.fillRect(progress * width, 0, 2, height);
+  }
+
+  audio.addEventListener("timeupdate", drawWaveform);
+  audio.addEventListener("loadedmetadata", drawWaveform);
+  audio.addEventListener("seeked", drawWaveform);
+  drawWaveform();
 }
 
 function templateBySlug(slug) {
@@ -836,11 +905,13 @@ async function boot() {
   elements.fixtureInspector = qs("fixture-inspector");
   elements.dmxMonitor = qs("dmx-monitor");
   elements.stageCanvas = qs("stage-canvas");
+  elements.playbackPanel = qs("playback-panel");
 
   await loadCatalog();
   await loadMockState();
   await loadRuntimeSnapshot();
   await refreshUniverseSnapshot();
+  await loadPlaybackState();
 
   bindControls();
   bindStageInteractions();

@@ -20,9 +20,13 @@ from photonic_synesthesia.platform.contracts import (
 )
 from photonic_synesthesia.platform.events import InMemoryEventBus
 from photonic_synesthesia.platform.runtime_context import (
+    PlaybackContext,
     clear_shared_control_plane_service,
+    clear_shared_playback_context,
     get_shared_control_plane_service,
+    get_shared_playback_context,
     set_shared_control_plane_service,
+    set_shared_playback_context,
 )
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
@@ -44,10 +48,14 @@ __all__ = [
     "PlatformClock",
     "PlatformEvent",
     "PlatformEventType",
+    "PlaybackContext",
     "SafetySummary",
     "SemanticFrame",
     "SystemClock",
     "clear_shared_control_plane_service",
+    "clear_shared_playback_context",
     "get_shared_control_plane_service",
+    "get_shared_playback_context",
     "set_shared_control_plane_service",
+    "set_shared_playback_context",
 ]

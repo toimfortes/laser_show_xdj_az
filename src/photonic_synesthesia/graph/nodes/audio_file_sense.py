@@ -47,6 +47,8 @@ class AudioFileSenseNode:
 
     def start(self) -> None:
         """Decode the source file and prepare chunk playback."""
+        if self._running and self._samples.size > 0:
+            return
         if librosa is None:
             raise RuntimeError("librosa is required for file audio playback")
 
@@ -125,3 +127,21 @@ class AudioFileSenseNode:
     def duration_seconds(self) -> float:
         """Total duration of the decoded source in seconds."""
         return self._duration_seconds
+
+    def waveform_preview(self, bins: int = 256) -> list[float]:
+        """Return normalized peak values for lightweight waveform rendering."""
+        if self._samples.size == 0 or bins <= 0:
+            return []
+
+        window = max(1, len(self._samples) // bins)
+        peaks: list[float] = []
+        for start in range(0, len(self._samples), window):
+            chunk = self._samples[start : start + window]
+            if chunk.size == 0:
+                continue
+            peaks.append(float(np.max(np.abs(chunk))))
+
+        if not peaks:
+            return []
+        scale = max(peaks) or 1.0
+        return [round(value / scale, 4) for value in peaks[:bins]]

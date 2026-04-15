@@ -5,6 +5,7 @@ import copy
 import math
 import os
 import random
+import socket
 import sys
 import threading
 import time
@@ -20,7 +21,9 @@ from photonic_synesthesia.platform import (
     OperatorCommand,
     OperatorRole,
     PlatformEventType,
+    PlaybackContext,
     get_shared_control_plane_service,
+    get_shared_playback_context,
 )
 
 MOCK_FIXTURE_TEMPLATES: list[dict[str, Any]] = [
@@ -478,10 +481,10 @@ class MockRigStore:
         }
 
 
-def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
+def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
     try:
         from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-        from fastapi.responses import HTMLResponse
+        from fastapi.responses import FileResponse, HTMLResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
@@ -489,7 +492,16 @@ def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
             "The web control plane requires optional dependencies. "
             "Install with: pip install -e '.[web]'"
         ) from exc
-    return FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, StaticFiles, BaseModel
+    return (
+        FastAPI,
+        HTTPException,
+        WebSocket,
+        WebSocketDisconnect,
+        HTMLResponse,
+        FileResponse,
+        StaticFiles,
+        BaseModel,
+    )
 
 
 def _render_control_plane_html() -> str:
@@ -556,6 +568,16 @@ def _render_control_plane_html() -> str:
                                 <p>Trigger fake looks locally while still observing live runtime telemetry.</p>
                             </div>
                             <div id="scene-bank" class="scene-bank"></div>
+                        </div>
+
+                        <div class="stack compact">
+                            <div class="subhead">
+                                <h3>Track Preview</h3>
+                                <p>Hear the active file-backed session and watch a lightweight waveform preview.</p>
+                            </div>
+                            <div id="playback-panel" class="playback-panel empty">
+                                Start a file-backed session with web mode to expose the current track here.
+                            </div>
                         </div>
 
                         <div class="stack compact">
@@ -630,7 +652,16 @@ def _render_control_plane_html() -> str:
 
 def create_app(services: ControlPlaneStateService | None = None) -> Any:
     """Create the FastAPI control-plane application."""
-    FastAPI, HTTPException, WebSocket, WebSocketDisconnect, HTMLResponse, StaticFiles, BaseModel = (
+    (
+        FastAPI,
+        HTTPException,
+        WebSocket,
+        WebSocketDisconnect,
+        HTMLResponse,
+        FileResponse,
+        StaticFiles,
+        BaseModel,
+    ) = (
         _import_web_stack()
     )
 
@@ -679,6 +710,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
     app.state.mock_rig = MockRigStore()
+    app.state.playback_context = get_shared_playback_context()
     mock_rig: MockRigStore = app.state.mock_rig
 
     def require_control(session_id: str) -> None:
@@ -749,6 +781,29 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     @app.get("/api/mock/universes")
     async def mock_universes() -> dict[str, Any]:
         return mock_rig.universe_snapshot()
+
+    @app.get("/api/mock/playback")
+    async def mock_playback() -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            return {"available": False}
+        return {
+            "available": True,
+            "file_name": playback_context.file_name,
+            "duration_seconds": playback_context.duration_seconds,
+            "audio_url": "/api/mock/playback/audio",
+            "waveform": playback_context.waveform,
+        }
+
+    @app.get("/api/mock/playback/audio")
+    async def mock_playback_audio() -> Any:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        media_path = Path(playback_context.file_path)
+        if not media_path.is_file():
+            raise HTTPException(status_code=404, detail="Playback file is missing")
+        return FileResponse(media_path)
 
     @app.post("/api/mock/fixtures")
     async def create_mock_fixture(request: MockFixtureCreateRequest) -> dict[str, Any]:
@@ -921,7 +976,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.websocket("/ws/live")
-    async def websocket_live(websocket: Any) -> None:
+    async def websocket_live(websocket: WebSocket) -> None:
         await websocket.accept()
         try:
             while True:
@@ -945,3 +1000,42 @@ def main() -> None:
     host = os.getenv("PHOTONIC_WEB_HOST", "127.0.0.1")
     port = int(os.getenv("PHOTONIC_WEB_PORT", "8000"))
     uvicorn.run(app, host=host, port=port)
+
+
+def serve_in_thread(
+    *,
+    services: ControlPlaneStateService | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8000,
+) -> tuple[Any, threading.Thread]:
+    """Start the control-plane app in a background thread."""
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
+        raise RuntimeError(
+            "uvicorn is required for embedded web serving. Install with: pip install -e '.[web]'"
+        ) from exc
+
+    app = create_app(services=services)
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, name="photonic-web", daemon=True)
+    thread.start()
+
+    deadline = time.time() + 5.0
+    while not server.started:
+        if not thread.is_alive():
+            raise RuntimeError("Embedded web server terminated before startup completed")
+        if time.time() >= deadline:
+            raise RuntimeError("Timed out waiting for embedded web server startup")
+        time.sleep(0.05)
+
+    # Ensure the port is actually accepting connections before returning.
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex((host, port)) == 0:
+                break
+        time.sleep(0.05)
+
+    return server, thread

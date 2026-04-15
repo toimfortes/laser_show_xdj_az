@@ -13,6 +13,7 @@ import time
 
 from photonic_synesthesia.core.config import DMXConfig
 from photonic_synesthesia.core.exceptions import DMXConnectionError
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, PhotonicState
 from photonic_synesthesia.dmx.artnet import ArtNetTransmitter
 from photonic_synesthesia.dmx.universe import (
@@ -21,14 +22,7 @@ from photonic_synesthesia.dmx.universe import (
     is_valid_dmx_channel,
 )
 
-try:
-    import structlog
-
-    logger = structlog.get_logger()
-except ImportError:  # pragma: no cover - fallback for minimal test envs
-    import logging
-
-    logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 try:
     from pyftdi.serialext import serial_for_url

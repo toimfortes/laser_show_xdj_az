@@ -1,7 +1,12 @@
 from fastapi.testclient import TestClient
 
 from photonic_synesthesia.core.state import create_initial_state
-from photonic_synesthesia.platform import ControlPlaneStateService
+from photonic_synesthesia.platform import (
+    ControlPlaneStateService,
+    PlaybackContext,
+    clear_shared_playback_context,
+    set_shared_playback_context,
+)
 from photonic_synesthesia.ui.web_panel import create_app
 
 
@@ -20,6 +25,8 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/catalog" in routes
     assert "/api/mock/state" in routes
     assert "/api/mock/universes" in routes
+    assert "/api/mock/playback" in routes
+    assert "/api/mock/playback/audio" in routes
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
     assert "/api/mock/masters" in routes
@@ -127,3 +134,44 @@ def test_mock_universe_snapshot_includes_sparse_channel_monitor() -> None:
     first_channel = target_universe["channels"][0]
     assert first_channel["channel"] == 120
     assert first_channel["fixture_label"]
+
+
+def test_live_websocket_streams_snapshot_payload() -> None:
+    app = create_app()
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws/live") as websocket:
+        payload = websocket.receive_json()
+
+    assert payload["snapshot_id"]
+    assert "captured_at" in payload
+
+
+def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=12.5,
+            waveform=[0.1, 0.5, 0.2],
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+
+    metadata_response = client.get("/api/mock/playback")
+    audio_response = client.get("/api/mock/playback/audio")
+
+    assert metadata_response.status_code == 200
+    assert metadata_response.json()["available"] is True
+    assert metadata_response.json()["file_name"] == "track.mp3"
+    assert metadata_response.json()["waveform"] == [0.1, 0.5, 0.2]
+    assert audio_response.status_code == 200
+    assert audio_response.content == b"fake mp3 bytes"
+
+    clear_shared_playback_context()

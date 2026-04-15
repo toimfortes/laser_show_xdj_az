@@ -3,9 +3,13 @@ from unittest import mock
 from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.platform import (
     ControlPlaneStateService,
+    PlaybackContext,
     clear_shared_control_plane_service,
+    clear_shared_playback_context,
     get_shared_control_plane_service,
+    get_shared_playback_context,
     set_shared_control_plane_service,
+    set_shared_playback_context,
 )
 from photonic_synesthesia.ui.web_panel import create_app
 
@@ -46,3 +50,19 @@ def test_web_panel_uses_shared_control_plane_service_by_default() -> None:
     assert get_shared_control_plane_service() is shared
 
     clear_shared_control_plane_service()
+
+
+def test_shared_playback_context_is_process_local() -> None:
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/test.mp3",
+            file_name="test.mp3",
+            duration_seconds=123.4,
+            waveform=[0.1, 0.2, 0.3],
+        )
+    )
+
+    assert get_shared_playback_context() is playback
+
+    clear_shared_playback_context()
