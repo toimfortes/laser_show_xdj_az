@@ -75,8 +75,12 @@ class AudioFeatures(TypedDict):
     percussive_ratio: float
     tonal_stability: float  # Stable/pad-like vs harmonically shifting
     harmonic_change: float  # Harmonic motion / chord-change pressure
+    harmonic_tension: float  # Tonal instability / suspense estimate
     pitch_salience: float  # How prominent a pitched lead is
     pitch_height: float  # Approximate normalized register of dominant pitch
+    melodic_contour: float  # Rising/falling melodic slope estimate
+    melodic_stability: float  # Stable note holding vs jittery melodic motion
+    onset_density: float  # How densely attacks are occurring
     timbral_harshness: float  # Bright/noisy/aggressive timbre estimate
     mfcc_vector: list[float]
 
@@ -143,6 +147,9 @@ class DirectorState(TypedDict):
     melodic_smoothness: float
     laser_aggression: float
     color_drive: float
+    laser_motion_energy: float
+    laser_color_energy: float
+    phrase_role: str
     allow_scene_transition: bool
 
 
@@ -269,8 +276,12 @@ def create_initial_state() -> PhotonicState:
             percussive_ratio=0.0,
             tonal_stability=0.0,
             harmonic_change=0.0,
+            harmonic_tension=0.0,
             pitch_salience=0.0,
             pitch_height=0.0,
+            melodic_contour=0.0,
+            melodic_stability=0.0,
+            onset_density=0.0,
             timbral_harshness=0.0,
             mfcc_vector=[0.0] * 13,
         ),
@@ -333,6 +344,9 @@ def create_initial_state() -> PhotonicState:
             melodic_smoothness=0.0,
             laser_aggression=0.0,
             color_drive=0.0,
+            laser_motion_energy=0.0,
+            laser_color_energy=0.0,
+            phrase_role="unknown",
             allow_scene_transition=True,
         ),
         # Scene

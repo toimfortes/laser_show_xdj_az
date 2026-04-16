@@ -49,6 +49,8 @@ def test_director_energy_is_bounded() -> None:
     assert 0.0 <= decision.melodic_smoothness <= 1.0
     assert 0.0 <= decision.laser_aggression <= 1.0
     assert 0.0 <= decision.color_drive <= 1.0
+    assert 0.0 <= decision.laser_motion_energy <= 1.0
+    assert 0.0 <= decision.laser_color_energy <= 1.0
 
 
 def test_director_intent_node_publishes_extended_director_fields() -> None:
@@ -68,6 +70,11 @@ def test_director_intent_node_publishes_extended_director_fields() -> None:
     assert "melodic_smoothness" in result["director_state"]
     assert "laser_aggression" in result["director_state"]
     assert "color_drive" in result["director_state"]
+    assert "laser_motion_energy" in result["director_state"]
+    assert "laser_color_energy" in result["director_state"]
+    assert "phrase_role" in result["director_state"]
     assert 0.0 <= result["director_state"]["melodic_smoothness"] <= 1.0
     assert 0.0 <= result["director_state"]["laser_aggression"] <= 1.0
     assert 0.0 <= result["director_state"]["color_drive"] <= 1.0
+    assert 0.0 <= result["director_state"]["laser_motion_energy"] <= 1.0
+    assert 0.0 <= result["director_state"]["laser_color_energy"] <= 1.0

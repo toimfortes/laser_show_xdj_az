@@ -893,6 +893,145 @@ def _laser_expression(
     }
 
 
+def _laser_color_mode_for_strategy(color_strategy: str, context: str) -> str:
+    if color_strategy in {"white_accent_launch"} or context == "drop_launch":
+        return "white_hits"
+    if color_strategy in {"target_color_steps", "contrast_flips", "texture_flip", "dual_cycle_contrast"}:
+        return "dual_cycle"
+    if color_strategy in {"single_hue_focus"}:
+        return "static"
+    return "morph"
+
+
+def _laser_look(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    context: str,
+    kind: str,
+    ordinal: int,
+    token_suffix: str,
+) -> dict[str, Any]:
+    token = f"laser-look:{kind}:{context}:{ordinal}:{base_pattern}:{token_suffix}"
+    geometry_family = _LASER_PATTERN_GEOMETRY.get(base_pattern, "fan")
+    strategy = _GEOMETRY_STRATEGIES.get(geometry_family, _GEOMETRY_STRATEGIES["fan"])
+    target_bias = ["crowd", "mid_air", "ceiling"][int(_stable_float(f"{token}:target_bias") * 3) % 3]
+    return {
+        "id": f"{token_suffix}_{base_pattern}",
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Vector", "Prism", "Arc", "Nova", "Pulse", "Aerial"],
+            ["Look", "Pass", "Sweep", "Launch", "Fill", "Shape"],
+        ),
+        "pattern": base_pattern,
+        "geometry_family": geometry_family,
+        "content_family": strategy["content_family"],
+        "target_strategy": strategy["target_strategy"],
+        "blanking_strategy": strategy["blanking_strategy"],
+        "color_strategy": strategy["color_strategy"],
+        "color_mode": _laser_color_mode_for_strategy(strategy["color_strategy"], context),
+        "target_bias": target_bias,
+        "density": round(0.72 + _stable_float(f"{token}:density") * 0.95, 3),
+        "motion": round(0.7 + _stable_float(f"{token}:motion") * 1.05, 3),
+        "emphasis": round(0.3 + _stable_float(f"{token}:emphasis") * 0.7, 3),
+    }
+
+
+def _laser_zone_policy(kind: str, context: str) -> str:
+    stage = _pattern_stage(kind)
+    if stage == "breakdown":
+        return "overhead_only"
+    if context == "drop_launch":
+        return "crowd_punctuate"
+    if stage == "build":
+        return "mixed_air"
+    if stage == "drop":
+        return "mixed_air"
+    return "overhead_bias"
+
+
+def _laser_program(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    stage = _pattern_stage(kind)
+    all_candidates = _pattern_candidates(
+        family="laser",
+        kind=kind,
+        context=context,
+        profile=profile,
+    )
+    release_stage = "breakdown" if stage in {"drop", "build"} else "intro"
+    release_candidates = _dedupe(
+        list(_LASER_PATTERN_POOLS.get(release_stage, _LASER_PATTERN_POOLS["intro"]))
+        + ["fan", "thin_scan", "circle_trace"]
+    )
+    fill_hints = _TRANSITION_PATTERN_HINTS.get(context, {}).get("laser", [])
+    sustain_candidates = _dedupe([base_pattern] + all_candidates)
+    fill_candidates = _dedupe(fill_hints + all_candidates[1:])
+
+    launch_pattern = base_pattern
+    sustain_patterns = sustain_candidates[:3] if sustain_candidates else [base_pattern]
+    fill_patterns = fill_candidates[:2] if fill_candidates else sustain_patterns[:1]
+    release_pattern = release_candidates[int(_stable_float(f"{track_seed}:release:{kind}:{ordinal}") * len(release_candidates)) % len(release_candidates)]
+
+    if stage == "breakdown":
+        sustain_patterns = [pattern for pattern in sustain_patterns if _LASER_PATTERN_GEOMETRY.get(pattern, "fan") in {"sky", "trace", "helix", "fan", "cone", "scan"}] or sustain_patterns
+        fill_patterns = sustain_patterns[:1]
+    elif stage == "intro":
+        fill_patterns = sustain_patterns[:1]
+
+    return {
+        "phrase_role": context,
+        "zone_policy": _laser_zone_policy(kind, context),
+        "launch": _laser_look(
+            track_seed=track_seed,
+            base_pattern=launch_pattern,
+            context=context,
+            kind=kind,
+            ordinal=ordinal,
+            token_suffix="launch",
+        ),
+        "sustain": [
+            _laser_look(
+                track_seed=track_seed,
+                base_pattern=pattern,
+                context=context,
+                kind=kind,
+                ordinal=ordinal,
+                token_suffix=f"sustain_{index}",
+            )
+            for index, pattern in enumerate(sustain_patterns)
+        ],
+        "fills": [
+            _laser_look(
+                track_seed=track_seed,
+                base_pattern=pattern,
+                context=context,
+                kind=kind,
+                ordinal=ordinal,
+                token_suffix=f"fill_{index}",
+            )
+            for index, pattern in enumerate(fill_patterns)
+        ],
+        "release": _laser_look(
+            track_seed=track_seed,
+            base_pattern=release_pattern,
+            context=context,
+            kind=kind,
+            ordinal=ordinal,
+            token_suffix="release",
+        ),
+    }
+
+
 def _mover_variant(
     *,
     track_seed: str,
@@ -1043,6 +1182,14 @@ def _default_show_sections(
                 "laser_pattern": laser_pattern,
                 "laser_variant": _laser_variant(track_seed=seed, base_pattern=laser_pattern, kind="drop", context="drop_launch", ordinal=0),
                 "laser_expression": _laser_expression(track_seed=seed, base_pattern=laser_pattern, kind="drop", context="drop_launch", ordinal=0),
+                "laser_program": _laser_program(
+                    track_seed=seed,
+                    base_pattern=laser_pattern,
+                    kind="drop",
+                    context="drop_launch",
+                    ordinal=0,
+                    profile=profile,
+                ),
                 "mover_pattern": mover_pattern,
                 "mover_variant": _mover_variant(track_seed=seed, base_pattern=mover_pattern, kind="drop", context="drop_launch", ordinal=0),
                 "wash_pattern": wash_pattern,
@@ -1205,6 +1352,14 @@ def _default_show_sections(
                 "laser_pattern": laser_pattern,
                 "laser_variant": laser_variant,
                 "laser_expression": laser_expression,
+                "laser_program": _laser_program(
+                    track_seed=seed,
+                    base_pattern=laser_pattern,
+                    kind=kind,
+                    context=context,
+                    ordinal=ordinal,
+                    profile=profile,
+                ),
                 "mover_pattern": mover_pattern,
                 "mover_variant": mover_variant,
                 "wash_pattern": wash_pattern,

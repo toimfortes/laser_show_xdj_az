@@ -184,8 +184,12 @@ class ControlPlaneStateService:
             percussive_ratio=float(state["audio_features"]["percussive_ratio"]),
             tonal_stability=float(state["audio_features"]["tonal_stability"]),
             harmonic_change=float(state["audio_features"]["harmonic_change"]),
+            harmonic_tension=float(state["audio_features"]["harmonic_tension"]),
             pitch_salience=float(state["audio_features"]["pitch_salience"]),
             pitch_height=float(state["audio_features"]["pitch_height"]),
+            melodic_contour=float(state["audio_features"]["melodic_contour"]),
+            melodic_stability=float(state["audio_features"]["melodic_stability"]),
+            onset_density=float(state["audio_features"]["onset_density"]),
             timbral_harshness=float(state["audio_features"]["timbral_harshness"]),
         )
         director_summary = DirectorSummary(
@@ -197,6 +201,9 @@ class ControlPlaneStateService:
             melodic_smoothness=float(director["melodic_smoothness"]),
             laser_aggression=float(director["laser_aggression"]),
             color_drive=float(director["color_drive"]),
+            laser_motion_energy=float(director["laser_motion_energy"]),
+            laser_color_energy=float(director["laser_color_energy"]),
+            phrase_role=str(director["phrase_role"]),
             allow_scene_transition=bool(director["allow_scene_transition"]),
         )
         safety_summary = SafetySummary(

@@ -141,8 +141,12 @@ class SemanticFrame(BaseModel):
     percussive_ratio: float = 0.0
     tonal_stability: float = 0.0
     harmonic_change: float = 0.0
+    harmonic_tension: float = 0.0
     pitch_salience: float = 0.0
     pitch_height: float = 0.0
+    melodic_contour: float = 0.0
+    melodic_stability: float = 0.0
+    onset_density: float = 0.0
     timbral_harshness: float = 0.0
 
 
@@ -157,6 +161,9 @@ class DirectorSummary(BaseModel):
     melodic_smoothness: float = 0.0
     laser_aggression: float = 0.0
     color_drive: float = 0.0
+    laser_motion_energy: float = 0.0
+    laser_color_energy: float = 0.0
+    phrase_role: str = "unknown"
     allow_scene_transition: bool = True
 
 

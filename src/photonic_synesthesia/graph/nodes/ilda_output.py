@@ -6,6 +6,7 @@ import json
 import math
 import time
 from pathlib import Path
+from typing import Any
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
@@ -13,6 +14,7 @@ from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, MusicStructure
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.laser.ether_dream import EtherDreamClient
 from photonic_synesthesia.laser.ilda_file import encode_ild
+from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 
 logger = get_logger(__name__)
 
@@ -44,6 +46,20 @@ def _rgb_from_mode(
         blue = int(60 + 195 * (0.5 + 0.5 * math.sin(phase + 4.2)))
         return red, green, blue
     return 0, int(160 + 95 * color_drive), 255
+
+
+def _program_color_mode(color_mode: str | None, color_strategy: str | None, fallback: str) -> str:
+    if color_mode:
+        return color_mode
+    if color_strategy in {"white_accent_launch"}:
+        return "white_hits"
+    if color_strategy in {"contrast_flips", "dual_cycle_contrast", "target_color_steps", "texture_flip"}:
+        return "dual_cycle"
+    if color_strategy in {"single_hue_focus"}:
+        return "static"
+    if color_strategy:
+        return "morph"
+    return fallback
 
 
 class ILDAOutputNode:
@@ -152,13 +168,26 @@ class ILDAOutputNode:
         timestamp = state["timestamp"]
         audio = state["audio_features"]
         director = state["director_state"]
+        program_look = self._current_program_look(state)
 
-        geometry_family = self._geometry_family(structure, director["laser_aggression"])
-        color_mode = self._color_mode(director["color_drive"], audio["timbral_harshness"])
-        target_bias = self._target_bias(
-            director["melodic_smoothness"],
-            director["laser_aggression"],
-            structure,
+        geometry_family = (
+            str(program_look.get("geometry_family"))
+            if program_look is not None and program_look.get("geometry_family")
+            else self._geometry_family(structure, director["laser_aggression"])
+        )
+        color_mode = _program_color_mode(
+            str(program_look.get("color_mode")) if program_look is not None and program_look.get("color_mode") else None,
+            str(program_look.get("color_strategy")) if program_look is not None and program_look.get("color_strategy") else None,
+            self._color_mode(director["color_drive"], audio["timbral_harshness"]),
+        )
+        target_bias = (
+            str(program_look.get("target_bias"))
+            if program_look is not None and program_look.get("target_bias")
+            else self._target_bias(
+                director["melodic_smoothness"],
+                director["laser_aggression"],
+                structure,
+            )
         )
         points = self._build_points(
             point_count=max(24, self.config.points_per_frame),
@@ -170,10 +199,17 @@ class ILDAOutputNode:
             timestamp=timestamp,
             harmonic_change=audio["harmonic_change"],
             pitch_height=audio["pitch_height"],
+            melodic_contour=audio["melodic_contour"],
+            melodic_stability=audio["melodic_stability"],
+            onset_density=audio["onset_density"],
+            harmonic_tension=audio["harmonic_tension"],
             harshness=audio["timbral_harshness"],
             color_drive=director["color_drive"],
             aggression=director["laser_aggression"],
             melodic_smoothness=director["melodic_smoothness"],
+            motion_energy=director["laser_motion_energy"],
+            color_energy=director["laser_color_energy"],
+            program_look=program_look,
         )
         return ILDAFrame(
             fixture_id=fixture.id,
@@ -185,6 +221,74 @@ class ILDAOutputNode:
             repeat=True,
             points=points,
         )
+
+    def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
+        playback = get_shared_playback_context()
+        if playback is None:
+            return None
+        snapshot = playback.snapshot()
+        sections = snapshot.get("show_sections") or []
+        if not sections:
+            return None
+        playhead = float(snapshot.get("playhead_seconds", 0.0))
+        current_section = None
+        for section in sections:
+            start = float(section.get("start_seconds", 0.0))
+            end = float(section.get("end_seconds", start))
+            if start <= playhead < max(end, start + 1e-6):
+                current_section = section
+                break
+        if current_section is None:
+            current_section = sections[-1]
+        laser_program = current_section.get("laser_program")
+        if not isinstance(laser_program, dict):
+            return None
+
+        start = float(current_section.get("start_seconds", 0.0))
+        end = float(current_section.get("end_seconds", start + 1.0))
+        progress = max(0.0, min(1.0, (playhead - start) / max(end - start, 1e-6)))
+        role = str(laser_program.get("phrase_role", ""))
+        launch = laser_program.get("launch")
+        release = laser_program.get("release")
+        sustain = laser_program.get("sustain") or []
+        fills = laser_program.get("fills") or []
+
+        if progress <= 0.16 and isinstance(launch, dict):
+            selected = dict(launch)
+        elif progress >= 0.84 and isinstance(release, dict):
+            selected = dict(release)
+        else:
+            selected = None
+            should_fill = (
+                bool(fills)
+                and state["beat_info"]["downbeat"]
+                and state["beat_info"]["bar_position"] in {1, 4}
+                and role in {"build_riser", "drop_launch", "drop_variation"}
+            )
+            if should_fill:
+                fill_index = int((state["frame_number"] + int(playhead * 8)) % len(fills))
+                candidate = fills[fill_index]
+                if isinstance(candidate, dict):
+                    selected = dict(candidate)
+            if selected is None and sustain:
+                sustain_index = min(
+                    len(sustain) - 1,
+                    max(0, int(((progress - 0.16) / 0.68) * len(sustain))),
+                )
+                candidate = sustain[sustain_index]
+                if isinstance(candidate, dict):
+                    selected = dict(candidate)
+        if selected is None:
+            return None
+
+        zone_policy = str(laser_program.get("zone_policy", ""))
+        if zone_policy == "overhead_only":
+            selected["target_bias"] = "ceiling"
+        elif zone_policy == "overhead_bias" and selected.get("target_bias") == "crowd":
+            selected["target_bias"] = "mid_air"
+        elif zone_policy == "crowd_punctuate" and selected.get("target_bias") != "crowd" and progress > 0.2:
+            selected["target_bias"] = "mid_air"
+        return selected
 
     @staticmethod
     def _geometry_family(structure: MusicStructure, aggression: float) -> str:
@@ -232,16 +336,26 @@ class ILDAOutputNode:
         timestamp: float,
         harmonic_change: float,
         pitch_height: float,
+        melodic_contour: float,
+        melodic_stability: float,
+        onset_density: float,
+        harmonic_tension: float,
         harshness: float,
         color_drive: float,
         aggression: float,
         melodic_smoothness: float,
+        motion_energy: float,
+        color_energy: float,
+        program_look: dict[str, Any] | None,
     ) -> list[ILDAPoint]:
         sweep_phase = timestamp * max(0.25, bpm / 60.0) * (0.5 + aggression * 1.8)
-        amplitude_x = 0.35 + aggression * 0.45
+        density_scale = float(program_look.get("density", 1.0)) if program_look else 1.0
+        motion_scale = float(program_look.get("motion", 1.0)) if program_look else 1.0
+        amplitude_x = (0.35 + aggression * 0.45) * (0.78 + motion_scale * 0.34) * (0.86 + motion_energy * 0.28)
         amplitude_y = min(
             self.safety.y_axis_max / 255.0,
-            0.12 + melodic_smoothness * 0.28 + pitch_height * 0.18,
+            (0.12 + melodic_smoothness * 0.28 + pitch_height * 0.18 + (melodic_contour - 0.5) * 0.08)
+            * (0.82 + motion_scale * 0.22),
         )
         if geometry_family == "burst":
             amplitude_x += 0.08
@@ -251,6 +365,18 @@ class ILDAOutputNode:
         elif geometry_family == "rake":
             amplitude_x *= 0.8
             amplitude_y += 0.08
+        elif geometry_family == "array":
+            amplitude_x *= 0.68
+            amplitude_y *= 0.65
+        elif geometry_family == "sheet":
+            amplitude_x *= 1.08
+            amplitude_y *= 0.45
+        elif geometry_family == "trace":
+            amplitude_x *= 0.74
+            amplitude_y *= 0.72
+        elif geometry_family == "sequence":
+            amplitude_x *= 0.82
+            amplitude_y *= 0.58
 
         y_offset = {
             "crowd": -0.2,
@@ -258,7 +384,7 @@ class ILDAOutputNode:
             "ceiling": 0.28,
         }[target_bias]
         y_offset = min(y_offset, (self.safety.y_axis_max / 255.0) - amplitude_y)
-        beat_boost = 1.0 + 0.22 * math.sin(beat_phase * math.pi * 2.0)
+        beat_boost = 1.0 + (0.18 + onset_density * 0.18) * math.sin(beat_phase * math.pi * 2.0)
         points: list[ILDAPoint] = []
         for index in range(point_count):
             t = index / max(1, point_count - 1)
@@ -279,15 +405,36 @@ class ILDAOutputNode:
             elif geometry_family == "helix":
                 x = math.sin(shape_phase * 1.3) * amplitude_x
                 y = y_offset + math.cos(shape_phase * 1.9) * amplitude_y
+            elif geometry_family == "array":
+                lane = (index % 4) / 3.0 - 0.5
+                x = lane * amplitude_x * 1.6 + math.sin(sweep_phase + (index // 4) * 0.35) * amplitude_x * 0.12
+                y = y_offset + math.cos(shape_phase * 0.7) * amplitude_y * 0.55
+            elif geometry_family == "sheet":
+                x = (-amplitude_x + 2 * amplitude_x * t)
+                y = y_offset + math.sin(sweep_phase * 0.5) * amplitude_y * 0.18
+            elif geometry_family == "trace":
+                radius = 0.45 + 0.25 * math.sin(sweep_phase * 0.6)
+                x = math.cos(shape_phase * (1.0 + melodic_stability * 0.6)) * amplitude_x * radius
+                y = y_offset + math.sin(shape_phase * (1.0 + harmonic_tension * 0.8)) * amplitude_y * radius
+            elif geometry_family == "sequence":
+                lane_count = 5
+                lane = (index % lane_count) / max(1, lane_count - 1) - 0.5
+                x = lane * amplitude_x * 1.5
+                y = y_offset + math.sin(sweep_phase + (index // lane_count) * 0.65) * amplitude_y * 0.5
             else:
                 x = math.sin(shape_phase * 0.7) * amplitude_x * 0.75
                 y = y_offset + abs(math.sin(shape_phase * 0.9)) * amplitude_y
 
-            color_phase = shape_phase + harmonic_change * 5.0
-            r, g, b = _rgb_from_mode(color_mode, color_phase, color_drive, harshness)
+            color_phase = shape_phase + harmonic_change * 5.0 + color_energy * 2.0
+            r, g, b = _rgb_from_mode(color_mode, color_phase, color_drive + color_energy * 0.25, harshness)
             blanked = False
+            blanking_density = max(1, int(round(8 - min(6, density_scale * 3.2))))
             if geometry_family == "burst" and aggression > 0.72:
                 blanked = (index % 5) in {0, 1} and beat_phase < 0.22
+            elif geometry_family == "sequence":
+                blanked = (index % blanking_density) != int((beat_phase * blanking_density) % blanking_density)
+            elif geometry_family == "sheet":
+                blanked = density_scale < 0.9 and (index % max(2, blanking_density - 2)) == 0
             elif harshness > 0.78:
                 blanked = (index % 7) == 0 and math.sin(shape_phase * 2.0) > 0.0
 

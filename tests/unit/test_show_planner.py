@@ -145,3 +145,11 @@ def test_build_and_drop_transitions_escalate() -> None:
     assert envelope["launch_intensity"] > envelope["sustain_intensity"]
     assert len(drop["laser_expression"]["variation_plan"]) >= 2
     assert drop["strobe_profile"]["ceiling"] >= drop["strobe_profile"]["floor"]
+    laser_program = drop["laser_program"]
+    assert laser_program["phrase_role"] in {"drop_launch", "drop_variation", "build_riser", "breakdown_release", "intro_set", "outro_release"}
+    assert laser_program["zone_policy"] in {"overhead_only", "mixed_air", "crowd_punctuate", "overhead_bias"}
+    assert laser_program["launch"]["pattern"]
+    assert laser_program["release"]["pattern"]
+    assert len(laser_program["sustain"]) >= 1
+    assert len(laser_program["fills"]) >= 1
+    assert all(look["geometry_family"] for look in laser_program["sustain"])

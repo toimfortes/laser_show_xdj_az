@@ -8,6 +8,11 @@ from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSaf
 from photonic_synesthesia.core.state import MusicStructure, create_initial_state
 from photonic_synesthesia.graph.nodes.ilda_output import ILDAOutputNode
 from photonic_synesthesia.laser.ilda_file import encode_ild
+from photonic_synesthesia.platform.runtime_context import (
+    PlaybackContext,
+    clear_shared_playback_context,
+    set_shared_playback_context,
+)
 
 
 def test_ilda_output_generates_frame_for_hybrid_laser() -> None:
@@ -51,6 +56,86 @@ def test_ilda_output_generates_frame_for_hybrid_laser() -> None:
     assert all(-32767 <= point["y"] <= 32767 for point in frame["points"])
     y_cap = int((96 / 255.0) * 32767)
     assert all(point["y"] <= y_cap for point in frame["points"])
+
+
+def test_ilda_output_uses_active_laser_program_when_playback_context_exists() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=120.0,
+            show_sections=[
+                {
+                    "id": "section_000",
+                    "label": "Drop A",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 64.0,
+                    "laser_program": {
+                        "phrase_role": "drop_variation",
+                        "zone_policy": "overhead_only",
+                        "launch": {
+                            "pattern": "sheet",
+                            "geometry_family": "sheet",
+                            "color_mode": "dual_cycle",
+                            "target_bias": "crowd",
+                        },
+                        "sustain": [
+                            {
+                                "pattern": "sequence",
+                                "geometry_family": "sequence",
+                                "color_mode": "morph",
+                                "target_bias": "crowd",
+                            }
+                        ],
+                        "fills": [],
+                        "release": {
+                            "pattern": "circle_trace",
+                            "geometry_family": "trace",
+                            "color_mode": "morph",
+                            "target_bias": "mid_air",
+                        },
+                    },
+                }
+            ],
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=40.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    state = create_initial_state()
+    state["current_structure"] = MusicStructure.DROP
+    state["beat_info"]["downbeat"] = False
+    state["beat_info"]["bar_position"] = 2
+
+    try:
+        result = node(state)
+    finally:
+        clear_shared_playback_context()
+
+    frame = result["ilda_frames"][0]
+    assert frame["geometry_family"] == "sequence"
+    assert frame["color_mode"] == "morph"
+    assert frame["target_bias"] == "ceiling"
 
 
 def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:

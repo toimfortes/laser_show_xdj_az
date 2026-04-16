@@ -168,6 +168,31 @@ class FeatureExtractNode:
             tonnetz_delta = np.linalg.norm(np.diff(tonnetz, axis=1), axis=0)
             harmonic_change = float(np.clip((harmonic_change * 0.6) + (float(np.mean(tonnetz_delta)) * 0.4), 0.0, 1.0))
             tonal_stability = float(np.clip(1.0 - harmonic_change, 0.0, 1.0))
+        harmonic_tension = float(
+            np.clip(
+                (harmonic_change * 0.58)
+                + ((1.0 - tonal_stability) * 0.27)
+                + (np.clip(float(np.std(chroma)) * 0.65, 0.0, 1.0) * 0.15),
+                0.0,
+                1.0,
+            )
+        )
+
+        dominant_pitch_track = np.array([], dtype=np.float32)
+        pyin_pitch_track = np.array([], dtype=np.float32)
+        try:
+            pyin_f0, pyin_voiced, _ = librosa.pyin(
+                y,
+                fmin=librosa.note_to_hz("C2"),
+                fmax=librosa.note_to_hz("C7"),
+                sr=sr,
+                frame_length=self.n_fft,
+                hop_length=self.hop_length,
+            )
+            if pyin_f0 is not None and pyin_voiced is not None:
+                pyin_pitch_track = np.asarray(pyin_f0[np.asarray(pyin_voiced, dtype=bool)], dtype=np.float32)
+        except Exception:
+            pyin_pitch_track = np.array([], dtype=np.float32)
 
         pitches, magnitudes = librosa.piptrack(
             S=harmonic_spectrum,
@@ -182,15 +207,29 @@ class FeatureExtractNode:
         pitch_salience = float(np.clip(np.mean(frame_max_magnitudes) / overall_max_magnitude, 0.0, 1.0))
         if magnitudes.size and np.any(frame_max_magnitudes > 0):
             dominant_indices = np.argmax(magnitudes, axis=0)
-            dominant_pitches = pitches[dominant_indices, np.arange(pitches.shape[1])]
-            valid_pitches = dominant_pitches[dominant_pitches > 0]
-            if valid_pitches.size > 0:
-                median_pitch = float(np.median(valid_pitches))
-                pitch_height = float(np.clip((median_pitch - 80.0) / (1200.0 - 80.0), 0.0, 1.0))
+            dominant_pitch_track = pitches[dominant_indices, np.arange(pitches.shape[1])]
+            dominant_pitch_track = dominant_pitch_track[dominant_pitch_track > 0]
+        valid_pitches = pyin_pitch_track if pyin_pitch_track.size > 0 else dominant_pitch_track
+        if valid_pitches.size > 0:
+            median_pitch = float(np.median(valid_pitches))
+            pitch_height = float(np.clip((median_pitch - 80.0) / (1200.0 - 80.0), 0.0, 1.0))
+            if valid_pitches.size > 1:
+                log_pitches = np.log2(np.maximum(valid_pitches, 1e-6))
+                melodic_contour = float(np.clip((np.mean(np.diff(log_pitches)) * 18.0) + 0.5, 0.0, 1.0))
+                melodic_stability = float(np.clip(1.0 - (np.std(log_pitches) * 3.2), 0.0, 1.0))
             else:
-                pitch_height = 0.0
+                melodic_contour = 0.5
+                melodic_stability = 1.0
         else:
             pitch_height = 0.0
+            melodic_contour = 0.5
+            melodic_stability = 0.0
+
+        if onset_env.size > 0:
+            onset_threshold = float(np.mean(onset_env) + (0.35 * np.std(onset_env)))
+            onset_density = float(np.clip(np.mean(onset_env > onset_threshold), 0.0, 1.0))
+        else:
+            onset_density = 0.0
 
         flatness = librosa.feature.spectral_flatness(S=np.maximum(spectrum, 1e-10))
         flatness_mean = float(np.mean(flatness))
@@ -220,8 +259,12 @@ class FeatureExtractNode:
             percussive_ratio=percussive_ratio,
             tonal_stability=tonal_stability,
             harmonic_change=harmonic_change,
+            harmonic_tension=harmonic_tension,
             pitch_salience=pitch_salience,
             pitch_height=pitch_height,
+            melodic_contour=melodic_contour,
+            melodic_stability=melodic_stability,
+            onset_density=onset_density,
             timbral_harshness=timbral_harshness,
             mfcc_vector=mfcc_vector,
         )
@@ -240,8 +283,12 @@ class FeatureExtractNode:
             percussive_ratio=0.0,
             tonal_stability=0.0,
             harmonic_change=0.0,
+            harmonic_tension=0.0,
             pitch_salience=0.0,
             pitch_height=0.0,
+            melodic_contour=0.0,
+            melodic_stability=0.0,
+            onset_density=0.0,
             timbral_harshness=0.0,
             mfcc_vector=[0.0] * self.n_mfcc,
         )
