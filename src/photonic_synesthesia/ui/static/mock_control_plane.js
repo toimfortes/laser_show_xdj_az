@@ -20,6 +20,8 @@ let masterPatchTimer = null;
 let universeRefreshTimer = null;
 let playbackRefreshTimer = null;
 let playbackPollActive = false;
+let fixtureActivityRenderedAt = 0;
+let fixtureActivitySignature = "";
 
 const PLAYBACK_POLL_MS = 250;
 const PLAYBACK_STALE_MS = 900;
@@ -39,6 +41,15 @@ function clamp(value, min, max) {
 function round(value, digits = 2) {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
+}
+
+function titleCaseWords(value) {
+  return safeText(value, "")
+    .replaceAll("_", " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function hexToRgb(hex) {
@@ -781,6 +792,107 @@ function ledPatternFamily(pattern) {
   return "pulse";
 }
 
+function describeLaserBehavior(output, visual) {
+  const parts = [];
+  if (output.dropMode && visual.strobeActive) {
+    parts.push("drop strobe hits");
+  } else if (output.dropMode) {
+    parts.push("drop fan");
+  } else if (visual.section?.fixture_mode === "rebuild") {
+    parts.push("riser sweep");
+  } else {
+    parts.push("texture sweep");
+  }
+
+  if (Math.abs(output.verticalSweep || 0) > 0.24) {
+    parts.push("up/down rake");
+  }
+  if (Math.abs(output.rotation || 0) > 0.55) {
+    parts.push("rotating fan");
+  }
+  if (output.beamCount >= 6) {
+    parts.push(`${output.beamCount} beams`);
+  }
+  return parts.join(" · ");
+}
+
+function describeMoverBehavior(output, visual) {
+  const family = moverPatternFamily(output.pattern);
+  if (family === "hold") {
+    return "held focus look";
+  }
+  if (family === "hits") {
+    return visual.beatPulse > 0.45 ? "snap hits on beat" : "waiting for hit";
+  }
+  if (family === "cross") {
+    return "wide cross sweeps";
+  }
+  if (family === "shape") {
+    return "figure motion across stage";
+  }
+  if (family === "rise") {
+    return "lifting tilt arc";
+  }
+  return "slow pan/tilt drift";
+}
+
+function describeWashBehavior(output) {
+  const family = washPatternFamily(output.pattern);
+  if (family === "punch") {
+    return "punching downbeat blooms";
+  }
+  if (family === "bloom") {
+    return "expanding color bloom";
+  }
+  if (family === "fade") {
+    return "fading atmosphere";
+  }
+  if (family === "breath") {
+    return "breathing wash";
+  }
+  return "steady ambient fill";
+}
+
+function describeLedBehavior(output) {
+  const family = ledPatternFamily(output.pattern);
+  if (family === "chase") {
+    return "traveling chase";
+  }
+  if (family === "sparkle") {
+    return "sparkle accents";
+  }
+  if (family === "ramp") {
+    return "building ramp";
+  }
+  if (family === "fade") {
+    return "soft static glow";
+  }
+  return "pulse engine";
+}
+
+function describeFixtureActivity(fixture, output, visual) {
+  const sectionLabel = titleCaseWords(visual.section?.label || visual.section?.kind || visual.structure || "live");
+  const intensityText = `${Math.round(clamp(output.intensity || 0, 0, 1) * 100)}%`;
+  let behavior;
+  if (fixture.type === "laser") {
+    behavior = describeLaserBehavior(output, visual);
+  } else if (fixture.type === "moving_head") {
+    behavior = describeMoverBehavior(output, visual);
+  } else if (fixture.type === "wash") {
+    behavior = describeWashBehavior(output, visual);
+  } else {
+    behavior = describeLedBehavior(output, visual);
+  }
+  return {
+    typeLabel: titleCaseWords(fixture.type),
+    patternLabel: titleCaseWords(output.pattern || "idle"),
+    sectionLabel,
+    behavior,
+    intensityText,
+    muted: (output.intensity || 0) <= 0.02,
+  };
+}
+
 function runtimeVisualState(timeSeconds) {
   const playbackSeconds = currentPlaybackSeconds();
   const showSection = currentShowSection(playbackSeconds);
@@ -835,10 +947,12 @@ function runtimeVisualState(timeSeconds) {
   );
   const strobeBudget = clamp(Number(director.strobe_budget_hz || 0) / 12, 0, 1);
   const strobeLevel = clamp(Number(showSection?.strobe_level ?? scene.strobe ?? 0), 0, 1);
-  const strobeActive = structure === "drop"
-    && strobeLevel > 0
-    && beatPulse > 0.86
-    && strobeBudget > 0.2;
+  const dropTransitionHot = (structure === "drop" || showSection?.fixture_mode === "peak_return")
+    && sectionProgress <= 0.18;
+  const strobeActive = (structure === "drop" || showSection?.fixture_mode === "peak_return")
+    && strobeLevel > 0.12
+    && strobeBudget > 0.1
+    && (beatPulse > 0.62 || dropTransitionHot);
 
   return {
     scene,
@@ -855,6 +969,7 @@ function runtimeVisualState(timeSeconds) {
     sectionProgress,
     strobeLevel,
     strobeActive,
+    dropTransitionHot,
   };
 }
 
@@ -1149,13 +1264,16 @@ function fixtureOutput(fixture, visual) {
     const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
     const rebuildMode = fixtureMode === "rebuild" || visual.structure === "build";
     const laserPattern = String(section?.laser_pattern || "fan");
+    const strobeRate = dropMode
+      ? 3.2 + (visual.strobeLevel * 9) + (visual.dropTransitionHot ? 4.2 : 0)
+      : 2.2 + visual.strobeLevel * 6;
     const strobeGate = visual.strobeActive
-      ? (triangleWave(phase * (2.2 + visual.strobeLevel * 6)) > 0.45 ? 1 : 0)
+      ? (triangleWave(phase * strobeRate) > (visual.dropTransitionHot ? 0.62 : 0.45) ? 1 : 0)
       : dropMode
-        ? (triangleWave(phase * 0.9) > 0.14 ? 1 : 0.18)
+        ? (triangleWave(phase * (visual.dropTransitionHot ? 1.8 : 0.9)) > 0.14 ? 1 : 0.08)
         : 1;
     const verticalSweep = dropMode
-      ? Math.sin(phase * 1.7) * 0.42 + Math.cos(phase * 3.4) * 0.18
+      ? Math.sin(phase * 1.7) * 0.42 + Math.cos(phase * 3.4) * 0.18 + (visual.dropTransitionHot ? Math.sin(phase * 5.2) * 0.16 : 0)
       : rebuildMode
         ? Math.sin(phase * 0.8) * 0.26
         : Math.sin(phase * 0.45) * 0.12;
@@ -1165,7 +1283,7 @@ function fixtureOutput(fixture, visual) {
         ? Math.sin(phase * 0.55) * 0.35
         : Math.sin(phase * 0.22) * 0.12;
     const beamCount = dropMode
-      ? Number(fixture.beam_count) + (visual.beatPulse > 0.72 ? 2 : 0)
+      ? Number(fixture.beam_count) + (visual.beatPulse > 0.72 ? 2 : 0) + (visual.dropTransitionHot ? 2 : 0)
       : Number(fixture.beam_count);
     const patternFamily = laserPatternFamily(laserPattern);
     const patternSpread = patternFamily === "burst"
@@ -1202,9 +1320,9 @@ function fixtureOutput(fixture, visual) {
         ? Math.sin(phase * 1.2) * fixture.swing * 0.18
         : patternFamily === "vertical"
           ? Math.sin(phase * 0.55) * fixture.swing * 0.14
-          : Math.sin(phase * (dropMode ? 2.8 : 1.1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
+          : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
     const patternIntensity = patternFamily === "burst"
-      ? intensity * (0.78 + visual.beatPulse * 0.35)
+      ? intensity * (0.78 + visual.beatPulse * 0.35 + (visual.dropTransitionHot ? 0.18 : 0))
       : patternFamily === "scan"
         ? intensity * 0.72
         : intensity * strobeGate;
@@ -1306,6 +1424,40 @@ function fixtureOutput(fixture, visual) {
     pattern: ledPattern,
     phase,
   };
+}
+
+function renderFixtureActivity(visual, fixtureOutputs) {
+  if (!elements.fixtureActivity) {
+    return;
+  }
+  if (fixtureOutputs.length === 0) {
+    elements.fixtureActivity.textContent = "Add fixtures to see live patterns and behavior here.";
+    return;
+  }
+
+  const rows = fixtureOutputs.map(({ fixture, output }) => {
+    const activity = describeFixtureActivity(fixture, output, visual);
+    return {
+      key: `${fixture.id}|${activity.patternLabel}|${activity.behavior}|${activity.intensityText}|${activity.sectionLabel}|${activity.muted}`,
+      html: `
+        <div class="fixture-activity-row">
+          <strong>${fixture.label}</strong>
+          <span>${activity.typeLabel} · ${activity.patternLabel} · ${activity.sectionLabel}</span>
+          <small>${activity.muted ? "Muted" : activity.behavior} · ${activity.intensityText}</small>
+        </div>
+      `,
+    };
+  });
+
+  const signature = rows.map((row) => row.key).join("||");
+  const now = performance.now();
+  if (signature === fixtureActivitySignature && (now - fixtureActivityRenderedAt) < 160) {
+    return;
+  }
+
+  fixtureActivitySignature = signature;
+  fixtureActivityRenderedAt = now;
+  elements.fixtureActivity.innerHTML = rows.map((row) => row.html).join("");
 }
 
 function drawBackground(ctx, width, height, visual) {
@@ -1489,11 +1641,14 @@ function renderStage(timeMillis) {
   const height = canvas.height;
   const seconds = timeMillis / 1000;
   const visual = runtimeVisualState(seconds);
+  const fixtureOutputs = appState.fixtures.map((fixture) => ({
+    fixture,
+    output: fixtureOutput(fixture, visual),
+  }));
 
   drawBackground(ctx, width, height, visual);
 
-  appState.fixtures.forEach((fixture) => {
-    const output = fixtureOutput(fixture, visual);
+  fixtureOutputs.forEach(({ fixture, output }) => {
     if (fixture.type === "laser") {
       drawLaser(ctx, fixture, output, width, height);
     } else if (fixture.type === "moving_head") {
@@ -1506,6 +1661,7 @@ function renderStage(timeMillis) {
   });
 
   appState.fixtures.forEach((fixture) => drawFixtureBody(ctx, fixture, width, height));
+  renderFixtureActivity(visual, fixtureOutputs);
 
   if (appState.selectedFixtureId) {
     ctx.fillStyle = "rgba(255,255,255,0.74)";
@@ -1755,6 +1911,7 @@ async function boot() {
   elements.dmxMonitor = qs("dmx-monitor");
   elements.stageCanvas = qs("stage-canvas");
   elements.playbackPanel = qs("playback-panel");
+  elements.fixtureActivity = qs("fixture-activity");
 
   await loadCatalog();
   await loadMockState();

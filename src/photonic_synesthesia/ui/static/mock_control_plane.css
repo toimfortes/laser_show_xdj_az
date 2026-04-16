@@ -463,13 +463,38 @@ select {
 .preview-footer {
   margin-top: 14px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
 .preview-footer strong {
   display: block;
   margin-bottom: 6px;
+}
+
+.fixture-activity {
+  display: grid;
+  gap: 8px;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.fixture-activity-row {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fixture-activity-row strong {
+  margin: 0;
+}
+
+.fixture-activity-row span,
+.fixture-activity-row small {
+  color: var(--muted);
 }
 
 .inspector-empty {
@@ -493,6 +518,7 @@ select {
 .field label {
   font-size: 0.9rem;
   font-weight: 600;
+  color: var(--ink);
 }
 
 .field input,
@@ -501,11 +527,19 @@ select {
   padding: 10px 12px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(12, 18, 28, 0.94);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .field input[type="range"] {
   padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.field input::placeholder {
+  color: rgba(154, 167, 187, 0.78);
 }
 
 .inspector-grid .danger {

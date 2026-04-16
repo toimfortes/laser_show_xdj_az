@@ -620,6 +620,12 @@ def _render_control_plane_html() -> str:
                                 <strong>Live snapshot</strong>
                                 <p id="runtime-summary">Waiting for control-plane state…</p>
                             </div>
+                            <div>
+                                <strong>Fixture Activity</strong>
+                                <div id="fixture-activity" class="fixture-activity">
+                                    Waiting for fixture output…
+                                </div>
+                            </div>
                         </div>
                     </section>
 
