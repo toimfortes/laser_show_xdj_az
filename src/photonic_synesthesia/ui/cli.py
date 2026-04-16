@@ -980,8 +980,10 @@ def _laser_program(
     phrase_template = _PHRASE_ENVELOPES[stage]
 
     launch_pattern = base_pattern
-    sustain_patterns = sustain_candidates[:3] if sustain_candidates else [base_pattern]
-    fill_patterns = fill_candidates[:2] if fill_candidates else sustain_patterns[:1]
+    sustain_target_count = 4 if stage in {"build", "drop"} else 3
+    fill_target_count = 3 if stage in {"build", "drop"} else 2
+    sustain_patterns = sustain_candidates[:sustain_target_count] if sustain_candidates else [base_pattern]
+    fill_patterns = fill_candidates[:fill_target_count] if fill_candidates else sustain_patterns[:1]
     release_pattern = release_candidates[int(_stable_float(f"{track_seed}:release:{kind}:{ordinal}") * len(release_candidates)) % len(release_candidates)]
 
     if stage == "breakdown":
@@ -994,6 +996,14 @@ def _laser_program(
     sustain_bar_base = max(1, sustain_bar_budget // max(1, len(sustain_patterns)))
     sustain_bar_remainder = max(0, sustain_bar_budget - sustain_bar_base * len(sustain_patterns))
     fill_bar_base = 1 if stage in {"build", "drop"} else 2
+    fill_cadence = {
+        "build_riser": 2,
+        "drop_launch": 4,
+        "drop_variation": 2,
+        "breakdown_release": 8,
+        "intro_set": 8,
+        "outro_release": 8,
+    }.get(context, 4 if stage == "drop" else 6 if stage == "build" else 8)
 
     launch_look = _laser_look(
         track_seed=track_seed,
@@ -1044,7 +1054,7 @@ def _laser_program(
     return {
         "phrase_role": context,
         "zone_policy": _laser_zone_policy(kind, context),
-        "fill_trigger_every_bars": 2 if context in {"build_riser", "drop_launch", "drop_variation"} else 4,
+        "fill_trigger_every_bars": fill_cadence,
         "launch": launch_look,
         "sustain": sustain_looks,
         "fills": fill_looks,

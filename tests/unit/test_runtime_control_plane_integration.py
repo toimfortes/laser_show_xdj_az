@@ -32,6 +32,9 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
             state["director_state"]["melodic_smoothness"] = 0.79
             state["director_state"]["laser_aggression"] = 0.31
             state["director_state"]["color_drive"] = 0.48
+            state["director_state"]["subphrase_role"] = "variation"
+            state["director_state"]["fill_pressure"] = 0.66
+            state["director_state"]["phrase_intensity"] = 0.82
             return state
 
     class _FakeILDAOutput:
@@ -59,6 +62,9 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
     assert service.snapshot().semantic_frame.pitch_salience == 0.66
     assert service.snapshot().director_summary.melodic_smoothness == 0.79
     assert service.snapshot().director_summary.laser_aggression == 0.31
+    assert service.snapshot().director_summary.subphrase_role == "variation"
+    assert service.snapshot().director_summary.fill_pressure == 0.66
+    assert service.snapshot().director_summary.phrase_intensity == 0.82
     assert service.snapshot().diagnostics["ilda_transport_type"] == "ether_dream"
     assert service.snapshot().diagnostics["ilda_transport_host"] == "192.0.2.10"
     assert service.snapshot().diagnostics["ilda_transport_faulted"] is False

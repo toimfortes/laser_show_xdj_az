@@ -204,6 +204,9 @@ class ControlPlaneStateService:
             laser_motion_energy=float(director["laser_motion_energy"]),
             laser_color_energy=float(director["laser_color_energy"]),
             phrase_role=str(director["phrase_role"]),
+            subphrase_role=str(director["subphrase_role"]),
+            fill_pressure=float(director["fill_pressure"]),
+            phrase_intensity=float(director["phrase_intensity"]),
             allow_scene_transition=bool(director["allow_scene_transition"]),
         )
         safety_summary = SafetySummary(

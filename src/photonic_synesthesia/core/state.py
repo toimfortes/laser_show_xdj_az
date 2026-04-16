@@ -150,6 +150,9 @@ class DirectorState(TypedDict):
     laser_motion_energy: float
     laser_color_energy: float
     phrase_role: str
+    subphrase_role: str
+    fill_pressure: float
+    phrase_intensity: float
     allow_scene_transition: bool
 
 
@@ -347,6 +350,9 @@ def create_initial_state() -> PhotonicState:
             laser_motion_energy=0.0,
             laser_color_energy=0.0,
             phrase_role="unknown",
+            subphrase_role="idle",
+            fill_pressure=0.0,
+            phrase_intensity=0.0,
             allow_scene_transition=True,
         ),
         # Scene

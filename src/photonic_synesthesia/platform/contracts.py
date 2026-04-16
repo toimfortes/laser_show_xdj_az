@@ -164,6 +164,9 @@ class DirectorSummary(BaseModel):
     laser_motion_energy: float = 0.0
     laser_color_energy: float = 0.0
     phrase_role: str = "unknown"
+    subphrase_role: str = "idle"
+    fill_pressure: float = 0.0
+    phrase_intensity: float = 0.0
     allow_scene_transition: bool = True
 
 

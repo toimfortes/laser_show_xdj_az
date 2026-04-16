@@ -537,14 +537,14 @@ function renderShowEditor() {
     const renderFamily = laserRenderFamily(section.laser_pattern, safeText(laserExpression.geometry_family, "fan"));
     const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
     const launchPattern = pathValue(laserProgram, "launch.pattern", section.laser_pattern);
-    const sustainPattern = [
-      pathValue(laserProgram, "sustain.0.pattern", null),
-      pathValue(laserProgram, "sustain.1.pattern", null),
-    ].filter(Boolean).join(" / ") || section.laser_pattern;
-    const fillPattern = [
-      pathValue(laserProgram, "fills.0.pattern", null),
-      pathValue(laserProgram, "fills.1.pattern", null),
-    ].filter(Boolean).join(" / ") || launchPattern;
+    const sustainPattern = (Array.isArray(laserProgram.sustain) ? laserProgram.sustain : [])
+      .map((look) => safeText(look?.pattern, ""))
+      .filter(Boolean)
+      .join(" / ") || section.laser_pattern;
+    const fillPattern = (Array.isArray(laserProgram.fills) ? laserProgram.fills : [])
+      .map((look) => safeText(look?.pattern, ""))
+      .filter(Boolean)
+      .join(" / ") || launchPattern;
     const releasePattern = pathValue(laserProgram, "release.pattern", sustainPattern);
     return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${renderFamily} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · program launch ${launchPattern} / sustain ${sustainPattern} / fill ${fillPattern} / release ${releasePattern} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
@@ -734,6 +734,14 @@ function renderShowEditor() {
     </div>
   `;
 
+  const laserLookEditors = (section, arrayPath, titlePrefix, fallbackCount = 0) => {
+    const items = pathValue(section, arrayPath, []);
+    const count = Math.max(fallbackCount, Array.isArray(items) ? items.length : 0);
+    return Array.from({ length: count }, (_, index) => (
+      laserLookEditor(section, `${arrayPath}.${index}`, `${titlePrefix} ${String.fromCharCode(65 + index)}`)
+    )).join("");
+  };
+
   const sectionTimelineMarkup = (section) => {
     const windows = laserProgramMainWindows(section);
     const fills = laserProgramFillWindows(section);
@@ -889,10 +897,8 @@ function renderShowEditor() {
                 <input data-field="laser_program.fill_trigger_every_bars" type="number" min="1" max="16" step="1" value="${pathValue(section, "laser_program.fill_trigger_every_bars", 4)}" />
               </label>
               ${laserLookEditor(section, "laser_program.launch", "Launch Look")}
-              ${laserLookEditor(section, "laser_program.sustain.0", "Sustain A")}
-              ${laserLookEditor(section, "laser_program.sustain.1", "Sustain B")}
-              ${laserLookEditor(section, "laser_program.fills.0", "Fill A")}
-              ${laserLookEditor(section, "laser_program.fills.1", "Fill B")}
+              ${laserLookEditors(section, "laser_program.sustain", "Sustain", 2)}
+              ${laserLookEditors(section, "laser_program.fills", "Fill", 2)}
               ${laserLookEditor(section, "laser_program.release", "Release Look")}
             </div>
             <div class="show-toggle-row">
@@ -1339,6 +1345,7 @@ function currentLaserProgramLook(section, visual) {
 
   const progress = clamp(Number(visual.sectionProgress ?? 0), 0, 1);
   const role = safeText(laserProgram.phrase_role, "");
+  const subphraseRole = safeText(visual.subphraseRole, "");
   const windows = laserProgramMainWindows(section);
   const fills = laserProgramFillWindows(section);
 
@@ -1350,6 +1357,17 @@ function currentLaserProgramLook(section, visual) {
     return null;
   }
 
+  const sustainWindows = windows.filter((window) => window.role === "sustain");
+  if (selectedWindow.role === "sustain" && sustainWindows.length > 0) {
+    let sustainChoice = Math.max(0, Math.min(sustainWindows.length - 1, selectedWindow.index));
+    if (["variation", "pressure", "lift"].includes(subphraseRole) || visual.harmonicTension >= 0.58) {
+      sustainChoice = Math.min(sustainWindows.length - 1, sustainChoice + 1);
+    } else if (["settle", "float"].includes(subphraseRole) || visual.melodicSmoothness >= 0.7) {
+      sustainChoice = 0;
+    }
+    selectedWindow = sustainWindows[sustainChoice];
+  }
+
   const totalBars = Math.max(1, windows.reduce((sum, window) => sum + window.bars, 0));
   const fillEveryBars = Math.max(1, Number(laserProgram.fill_trigger_every_bars || 4));
   const currentBar = Math.floor(progress * totalBars);
@@ -1358,7 +1376,11 @@ function currentLaserProgramLook(section, visual) {
     && fills.length > 0
     && Boolean(appState.runtimeSnapshot?.semantic_frame?.downbeat)
     && ["build_riser", "drop_launch", "drop_variation"].includes(role)
-    && currentBar % fillEveryBars === 0
+    && (
+      subphraseRole === "fill"
+      || visual.fillPressure >= 0.62
+      || currentBar % fillEveryBars === 0
+    )
   );
 
   let selected = { ...selectedWindow.look };
@@ -1676,12 +1698,17 @@ function runtimeVisualState(timeSeconds) {
   const percussiveRatio = clamp(Number(semantic.percussive_ratio ?? (1 - harmonicRatio)), 0, 1);
   const tonalStability = clamp(Number(semantic.tonal_stability ?? 0.5), 0, 1);
   const harmonicChange = clamp(Number(semantic.harmonic_change ?? 0.0), 0, 1);
+  const harmonicTension = clamp(Number(semantic.harmonic_tension ?? 0.0), 0, 1);
   const pitchSalience = clamp(Number(semantic.pitch_salience ?? 0.0), 0, 1);
   const pitchHeight = clamp(Number(semantic.pitch_height ?? 0.0), 0, 1);
+  const onsetDensity = clamp(Number(semantic.onset_density ?? 0.0), 0, 1);
   const timbralHarshness = clamp(Number(semantic.timbral_harshness ?? 0.0), 0, 1);
   const melodicSmoothness = clamp(Number(director.melodic_smoothness ?? ((harmonicRatio * 0.55) + (tonalStability * 0.45))), 0, 1);
   const laserAggression = clamp(Number(director.laser_aggression ?? ((percussiveRatio * 0.55) + (timbralHarshness * 0.45))), 0, 1);
   const colorDrive = clamp(Number(director.color_drive ?? ((harmonicChange * 0.6) + (pitchSalience * 0.4))), 0, 1);
+  const fillPressure = clamp(Number(director.fill_pressure ?? ((harmonicTension * 0.55) + (onsetDensity * 0.45))), 0, 1);
+  const phraseIntensity = clamp(Number(director.phrase_intensity ?? 0.75), 0, 1.15);
+  const subphraseRole = safeText(director.subphrase_role, "");
   const sectionIntensity = clamp(Number(showSection?.intensity_multiplier ?? 1), 0, 1.6);
   const energy = clamp(Number(director.energy_level ?? scene.pulse ?? 0.4) * Math.max(0.45, sectionIntensity), 0, 1);
   const beatPhase = clamp(
@@ -1736,12 +1763,22 @@ function runtimeVisualState(timeSeconds) {
   const strobeBudget = clamp(Number(director.strobe_budget_hz || 0) / 12, 0, 1);
   const strobeLevel = modulatedStrobeLevel(showSection, scene.strobe ?? 0);
   const dropTransitionHot = (structure === "drop" || showSection?.fixture_mode === "peak_return")
-    && sectionProgress <= 0.18;
+    && (sectionProgress <= 0.18 || subphraseRole === "launch");
   const dropEnvelope = dropSectionEnvelope(structure, showSection?.fixture_mode, sectionProgress, beatPhase, beatPulse);
+  const resolvedDropIntensity = clamp(
+    (dropEnvelope.intensity * 0.45) + (phraseIntensity * 0.55),
+    0.56,
+    1.18,
+  );
   const strobeActive = (structure === "drop" || showSection?.fixture_mode === "peak_return")
     && strobeLevel > 0.12
     && strobeBudget > 0.1
-    && (beatPulse > 0.74 || dropTransitionHot || (dropEnvelope.accent >= 1 && beatPulse > 0.45));
+    && (
+      subphraseRole === "launch"
+      || subphraseRole === "fill"
+      || (beatPulse > 0.8 && fillPressure > 0.58)
+      || (dropEnvelope.accent >= 1 && beatPulse > 0.5)
+    );
 
   return {
     scene,
@@ -1754,12 +1791,17 @@ function runtimeVisualState(timeSeconds) {
     percussiveRatio,
     tonalStability,
     harmonicChange,
+    harmonicTension,
     pitchSalience,
     pitchHeight,
+    onsetDensity,
     timbralHarshness,
     melodicSmoothness,
     laserAggression,
     colorDrive,
+    fillPressure,
+    phraseIntensity,
+    subphraseRole,
     structure,
     motionStyle: movementStyle,
     motionRate,
@@ -1769,7 +1811,7 @@ function runtimeVisualState(timeSeconds) {
     strobeLevel,
     strobeActive,
     dropTransitionHot,
-    dropIntensityEnvelope: dropEnvelope.intensity,
+    dropIntensityEnvelope: resolvedDropIntensity,
     dropAccentGate: dropEnvelope.accent,
   };
 }

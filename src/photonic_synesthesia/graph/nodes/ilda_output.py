@@ -248,6 +248,11 @@ class ILDAOutputNode:
         end = float(current_section.get("end_seconds", start + 1.0))
         progress = max(0.0, min(1.0, (playhead - start) / max(end - start, 1e-6)))
         role = str(laser_program.get("phrase_role", ""))
+        director = state["director_state"]
+        subphrase_role = str(director.get("subphrase_role", ""))
+        fill_pressure = float(director.get("fill_pressure", 0.0))
+        harmonic_tension = float(state["audio_features"]["harmonic_tension"])
+        melodic_smoothness = float(director.get("melodic_smoothness", 0.0))
         windows = self._program_main_windows(laser_program)
         fills = [
             candidate
@@ -273,6 +278,17 @@ class ILDAOutputNode:
             selected_role = str(fallback_window["role"])
             selected_index = int(fallback_window["index"])
 
+        sustain_windows = [window for window in windows if window["role"] == "sustain"]
+        if selected_role == "sustain" and sustain_windows:
+            sustain_choice = max(0, min(len(sustain_windows) - 1, selected_index))
+            if subphrase_role in {"variation", "pressure", "lift"} or harmonic_tension >= 0.58:
+                sustain_choice = min(len(sustain_windows) - 1, sustain_choice + 1)
+            elif subphrase_role in {"settle", "float"} or melodic_smoothness >= 0.7:
+                sustain_choice = 0
+            selected_window = sustain_windows[sustain_choice]
+            selected = dict(selected_window["look"])
+            selected_index = sustain_choice
+
         should_fill = False
         fill_every_bars = max(1, int(laser_program.get("fill_trigger_every_bars", 4)))
         total_main_bars = max(1, sum(int(window["bars"]) for window in windows))
@@ -282,7 +298,11 @@ class ILDAOutputNode:
                 bool(fills)
                 and state["beat_info"]["downbeat"]
                 and role in {"build_riser", "drop_launch", "drop_variation"}
-                and current_bar % fill_every_bars == 0
+                and (
+                    subphrase_role == "fill"
+                    or fill_pressure >= 0.62
+                    or current_bar % fill_every_bars == 0
+                )
             )
         if should_fill:
             fill_index = (current_bar // fill_every_bars + selected_index) % len(fills)
