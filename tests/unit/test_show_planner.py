@@ -21,6 +21,9 @@ def test_show_planner_varies_across_track_seed() -> None:
         (
             section["laser_pattern"],
             section["laser_variant"]["label"],
+            section["laser_expression"]["label"],
+            section["laser_expression"]["geometry_family"],
+            section["laser_expression"]["color_mode"],
             section["mover_pattern"],
             section["mover_variant"]["label"],
             section["wash_pattern"],
@@ -39,6 +42,9 @@ def test_show_planner_varies_across_track_seed() -> None:
         (
             section["laser_pattern"],
             section["laser_variant"]["label"],
+            section["laser_expression"]["label"],
+            section["laser_expression"]["geometry_family"],
+            section["laser_expression"]["color_mode"],
             section["mover_pattern"],
             section["mover_variant"]["label"],
             section["wash_pattern"],
@@ -65,6 +71,8 @@ def test_repeated_drops_get_variation() -> None:
     first_signature = (
         drops[0]["laser_pattern"],
         drops[0]["laser_variant"]["label"],
+        drops[0]["laser_expression"]["label"],
+        drops[0]["laser_expression"]["target_bias"],
         drops[0]["mover_pattern"],
         drops[0]["mover_variant"]["label"],
         drops[0]["wash_pattern"],
@@ -77,6 +85,8 @@ def test_repeated_drops_get_variation() -> None:
     second_signature = (
         drops[1]["laser_pattern"],
         drops[1]["laser_variant"]["label"],
+        drops[1]["laser_expression"]["label"],
+        drops[1]["laser_expression"]["target_bias"],
         drops[1]["mover_pattern"],
         drops[1]["mover_variant"]["label"],
         drops[1]["wash_pattern"],
@@ -105,4 +115,6 @@ def test_build_and_drop_transitions_escalate() -> None:
     assert build["strobe_profile"]["mode"] == "riser"
     assert drop["strobe_profile"]["mode"] in {"impact", "burst"}
     assert "label" in drop["laser_variant"]
+    assert "label" in drop["laser_expression"]
+    assert drop["laser_expression"]["geometry_family"] in {"burst", "grouped", "tunnel", "lattice", "rake", "sky", "cone", "scan", "fan", "helix"}
     assert drop["strobe_profile"]["ceiling"] >= drop["strobe_profile"]["floor"]

@@ -542,6 +542,54 @@ def _laser_variant(
     }
 
 
+def _laser_expression(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    token = f"laser-expression:{kind}:{context}:{ordinal}:{base_pattern}"
+    geometry_family = {
+        "burst_fan": "burst",
+        "starburst": "burst",
+        "alternating_beam_groups": "grouped",
+        "shutter_hits": "grouped",
+        "tunnel": "tunnel",
+        "crisscross": "lattice",
+        "vertical_rake": "rake",
+        "liquid_sky": "sky",
+        "cone": "cone",
+        "thin_scan": "scan",
+        "wave": "scan",
+        "rotor": "helix",
+    }.get(base_pattern, "fan")
+    color_mode = ["static", "morph", "white_hits", "dual_cycle"][int(_stable_float(f"{token}:color_mode") * 4) % 4]
+    target_bias = ["crowd", "mid_air", "ceiling"][int(_stable_float(f"{token}:target") * 3) % 3]
+    return {
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Aerial", "Crowd", "Prism", "Helix", "Voltage", "Sky"],
+            ["Engine", "Vector", "Drive", "Pulse", "Lattice", "Sweep"],
+        ),
+        "geometry_family": geometry_family,
+        "color_mode": color_mode,
+        "target_bias": target_bias,
+        "x_amplitude": round(0.72 + _stable_float(f"{token}:x_amp") * 1.1, 3),
+        "y_amplitude": round(0.45 + _stable_float(f"{token}:y_amp") * 1.5, 3),
+        "rotation_rate": round(0.65 + _stable_float(f"{token}:rot_rate") * 1.8, 3),
+        "sweep_density": round(0.75 + _stable_float(f"{token}:density") * 1.2, 3),
+        "color_cycle_rate": round(0.2 + _stable_float(f"{token}:color_rate") * 1.8, 3),
+        "white_accent": round(_stable_float(f"{token}:white_accent"), 3),
+        "mirror": _stable_float(f"{token}:mirror") > 0.45,
+        "crowd_bias": round(_stable_float(f"{token}:crowd_bias"), 3),
+        "ceiling_bias": round(_stable_float(f"{token}:ceiling_bias"), 3),
+    }
+
+
 def _mover_variant(
     *,
     track_seed: str,
@@ -691,6 +739,7 @@ def _default_show_sections(
                 "strobe_profile": strobe_profile,
                 "laser_pattern": laser_pattern,
                 "laser_variant": _laser_variant(track_seed=seed, base_pattern=laser_pattern, kind="drop", context="drop_launch", ordinal=0),
+                "laser_expression": _laser_expression(track_seed=seed, base_pattern=laser_pattern, kind="drop", context="drop_launch", ordinal=0),
                 "mover_pattern": mover_pattern,
                 "mover_variant": _mover_variant(track_seed=seed, base_pattern=mover_pattern, kind="drop", context="drop_launch", ordinal=0),
                 "wash_pattern": wash_pattern,
@@ -809,6 +858,13 @@ def _default_show_sections(
             context=context,
             ordinal=ordinal,
         )
+        laser_expression = _laser_expression(
+            track_seed=seed,
+            base_pattern=laser_pattern,
+            kind=kind,
+            context=context,
+            ordinal=ordinal,
+        )
         mover_variant = _mover_variant(
             track_seed=seed,
             base_pattern=mover_pattern,
@@ -845,6 +901,7 @@ def _default_show_sections(
                 "strobe_profile": strobe_profile,
                 "laser_pattern": laser_pattern,
                 "laser_variant": laser_variant,
+                "laser_expression": laser_expression,
                 "mover_pattern": mover_pattern,
                 "mover_variant": mover_variant,
                 "wash_pattern": wash_pattern,
