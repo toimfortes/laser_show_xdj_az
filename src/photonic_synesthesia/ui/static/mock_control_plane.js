@@ -964,6 +964,24 @@ function laserPatternFamily(pattern) {
   return "fan";
 }
 
+function laserRenderFamily(pattern, geometryFamily) {
+  const expression = safeText(geometryFamily, "fan");
+  if (["sky", "helix", "lattice", "rake", "tunnel", "cone", "grouped", "burst"].includes(expression)) {
+    return expression;
+  }
+  const base = safeText(pattern, "fan");
+  if (["burst_fan", "starburst"].includes(base)) return "burst";
+  if (["alternating_beam_groups"].includes(base)) return "grouped";
+  if (["vertical_rake"].includes(base)) return "rake";
+  if (["liquid_sky"].includes(base)) return "sky";
+  if (["crisscross"].includes(base)) return "lattice";
+  if (["tunnel"].includes(base)) return "tunnel";
+  if (["cone"].includes(base)) return "cone";
+  if (["rotor"].includes(base)) return "helix";
+  if (["thin_scan", "wave", "shutter_hits"].includes(base)) return "scan";
+  return "fan";
+}
+
 function moverPatternFamily(pattern) {
   if (["hold"].includes(pattern)) return "hold";
   if (["rise", "ping_pong_tilt"].includes(pattern)) return "rise";
@@ -1001,12 +1019,18 @@ function describeLaserBehavior(output, visual) {
     parts.push("texture sweep");
   }
 
-  if (output.geometryFamily === "sky" || output.geometryFamily === "helix") {
+  if (output.renderFamily === "sky" || output.renderFamily === "helix") {
     parts.push("aerial sweep");
-  } else if (output.geometryFamily === "grouped" || output.geometryFamily === "burst") {
+  } else if (output.renderFamily === "grouped" || output.renderFamily === "burst") {
     parts.push("crowd punch");
-  } else if (output.geometryFamily === "lattice") {
+  } else if (output.renderFamily === "lattice") {
     parts.push("cross lattice");
+  } else if (output.renderFamily === "tunnel") {
+    parts.push("tunnel pull");
+  } else if (output.renderFamily === "cone") {
+    parts.push("cone bloom");
+  } else if (output.renderFamily === "scan") {
+    parts.push("slice scan");
   }
 
   if (Math.abs(output.verticalSweep || 0) > 0.24) {
@@ -1635,6 +1659,7 @@ function fixtureOutput(fixture, visual) {
         ? intensity * 0.72
         : intensity * strobeGate;
     const expressionGeometry = safeText(laserExpression.geometry_family, "fan");
+    const renderFamily = laserRenderFamily(laserPattern, expressionGeometry);
     const geometrySpread = expressionGeometry === "grouped"
       ? 0.82
       : expressionGeometry === "tunnel"
@@ -1682,6 +1707,7 @@ function fixtureOutput(fixture, visual) {
       variantLabel: safeText(laserVariant.label, ""),
       expressionLabel: safeText(laserExpression.label, ""),
       geometryFamily: expressionGeometry,
+      renderFamily,
       targetYBias: expressionTargetBias,
       mirror: Boolean(laserExpression.mirror),
       curveDepth,
@@ -1872,6 +1898,122 @@ function drawLaser(ctx, fixture, output, width, height) {
   const count = Math.max(1, output.beamCount);
   const rotation = output.rotation || 0;
   const geometryFamily = safeText(output.geometryFamily, "fan");
+  const renderFamily = safeText(output.renderFamily, geometryFamily);
+  const drawBeamPath = (targetX, targetY, centered, spread, rotationOffset, controlX, controlY) => {
+    if (renderFamily === "grouped") {
+      ctx.lineTo(targetX, targetY);
+      return;
+    }
+
+    if (renderFamily === "scan") {
+      const scanY = clamp(
+        targetY + Math.sin(output.phase * 7.5 + centered * 9) * height * 0.04,
+        70,
+        height - 90,
+      );
+      const scanX = clamp(
+        targetX + Math.sin(output.phase * 3.8 + centered * 5) * width * 0.08,
+        60,
+        width - 60,
+      );
+      ctx.quadraticCurveTo(
+        clamp((originX + scanX) / 2 + rotationOffset * 0.25, 40, width - 40),
+        clamp(originY - height * 0.08 + centered * 18, 40, height - 60),
+        scanX,
+        scanY,
+      );
+      return;
+    }
+
+    if (renderFamily === "tunnel") {
+      const tunnelCenterX = width * 0.5 + Math.sin(output.phase * 0.9) * width * 0.08;
+      const tunnelCenterY = clamp(height * (0.33 + (output.targetYBias || 0) * 0.1), 90, height - 140);
+      const ringPull = 0.28 + Math.abs(centered) * 0.5;
+      const midX = clamp(originX + (tunnelCenterX - originX) * ringPull + centered * width * 0.05, 40, width - 40);
+      const midY = clamp(originY + (tunnelCenterY - originY) * (0.52 + Math.abs(centered) * 0.15), 40, height - 60);
+      const finalX = clamp(tunnelCenterX + centered * output.spread * width * 0.22, 60, width - 60);
+      const finalY = clamp(tunnelCenterY + Math.sin(output.phase * 2.4 + centered * 6) * height * 0.03, 80, height - 90);
+      ctx.bezierCurveTo(midX, midY, clamp((midX + finalX) / 2, 40, width - 40), clamp(midY - height * 0.08, 40, height - 60), finalX, finalY);
+      return;
+    }
+
+    if (renderFamily === "cone") {
+      const coneApexX = width * 0.5 + Math.sin(output.phase * 1.2) * width * 0.05;
+      const coneApexY = clamp(height * (0.25 + (output.targetYBias || 0) * 0.06), 70, height - 150);
+      const coneX = clamp(coneApexX + centered * output.spread * width * 0.26, 60, width - 60);
+      const coneY = clamp(coneApexY + Math.abs(centered) * height * 0.06, 70, height - 90);
+      ctx.bezierCurveTo(
+        clamp((originX + coneApexX) / 2 + spread * 0.1, 40, width - 40),
+        clamp(originY - height * 0.12, 40, height - 60),
+        clamp((coneApexX + coneX) / 2, 40, width - 40),
+        clamp(coneApexY - height * 0.04, 40, height - 60),
+        coneX,
+        coneY,
+      );
+      return;
+    }
+
+    if (renderFamily === "burst") {
+      const burstX = clamp(targetX + Math.sin(output.phase * 6 + centered * 8) * width * 0.05, 60, width - 60);
+      const burstY = clamp(targetY - Math.abs(centered) * height * 0.08 - Math.cos(output.phase * 4.5 + centered * 3) * height * 0.05, 60, height - 90);
+      ctx.bezierCurveTo(
+        clamp(originX + spread * 0.2, 40, width - 40),
+        clamp(originY - height * (0.1 + Math.abs(centered) * 0.12), 40, height - 60),
+        clamp((originX + burstX) / 2 + rotationOffset * 0.3, 40, width - 40),
+        clamp(controlY - height * 0.12, 40, height - 60),
+        burstX,
+        burstY,
+      );
+      return;
+    }
+
+    if (renderFamily === "rake") {
+      const rakeX = clamp(originX + spread * 0.25 + Math.sin(output.phase * 2.8 + centered * 4) * width * 0.03, 60, width - 60);
+      const rakeY = clamp(targetY - centered * height * 0.14 - Math.sin(output.phase * 5 + centered * 6) * height * 0.04, 70, height - 80);
+      ctx.quadraticCurveTo(
+        clamp((originX + rakeX) / 2 + centered * width * 0.03, 40, width - 40),
+        clamp(controlY - height * 0.16, 40, height - 60),
+        rakeX,
+        rakeY,
+      );
+      return;
+    }
+
+    if (renderFamily === "sky") {
+      const skyX = clamp(targetX + Math.sin(output.phase * 1.6 + centered * 4) * width * 0.04, 60, width - 60);
+      const skyY = clamp(targetY - height * 0.1 - Math.abs(centered) * height * 0.05, 50, height - 100);
+      ctx.bezierCurveTo(
+        clamp((originX + skyX) / 2, 40, width - 40),
+        clamp(controlY - height * 0.2, 30, height - 60),
+        clamp((originX + skyX) / 2 + Math.cos(output.phase * 1.2 + centered * 5) * width * 0.1, 40, width - 40),
+        clamp(controlY - height * 0.32, 20, height - 70),
+        skyX,
+        skyY,
+      );
+      return;
+    }
+
+    if (renderFamily === "helix") {
+      const helixX = clamp(targetX + Math.cos(output.phase * 3 + centered * 6) * width * 0.05, 60, width - 60);
+      const helixY = clamp(targetY + Math.sin(output.phase * 2.6 + centered * 5) * height * 0.05, 70, height - 90);
+      ctx.bezierCurveTo(
+        clamp((originX + helixX) / 2 + Math.cos(output.phase * 2 + centered * 6) * width * 0.08, 40, width - 40),
+        clamp(controlY - height * 0.08, 40, height - 60),
+        clamp((originX + helixX) / 2 + Math.sin(output.phase * 2.7 + centered * 7) * width * 0.08, 40, width - 40),
+        clamp(controlY + height * 0.06, 40, height - 60),
+        helixX,
+        helixY,
+      );
+      return;
+    }
+
+    if (renderFamily === "lattice") {
+      ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
+      return;
+    }
+
+    ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
+  };
   for (let index = 0; index < count; index += 1) {
     const centered = count === 1 ? 0 : (index / (count - 1)) - 0.5;
     const mirrored = output.mirror && centered > 0 ? -centered : centered;
@@ -1917,11 +2059,7 @@ function drawLaser(ctx, fixture, output, width, height) {
     ctx.lineWidth = output.dropMode ? 2.8 : 2.2;
     ctx.beginPath();
     ctx.moveTo(originX, originY);
-    if (geometryFamily === "grouped") {
-      ctx.lineTo(targetX, targetY);
-    } else {
-      ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
-    }
+    drawBeamPath(targetX, targetY, centered, spread, rotationOffset, controlX, controlY);
     ctx.stroke();
 
     if (output.dropMode) {
@@ -1929,15 +2067,11 @@ function drawLaser(ctx, fixture, output, width, height) {
       ctx.lineWidth = 6;
       ctx.beginPath();
       ctx.moveTo(originX, originY);
-      if (geometryFamily === "grouped") {
-        ctx.lineTo(targetX, targetY);
-      } else {
-        ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
-      }
+      drawBeamPath(targetX, targetY, centered, spread, rotationOffset, controlX, controlY);
       ctx.stroke();
     }
 
-    if (geometryFamily === "lattice" && Math.abs(centered) > 0.12) {
+    if (renderFamily === "lattice" && Math.abs(centered) > 0.12) {
       const crossX = clamp(originX - spread + sweep - rotationOffset, 60, width - 60);
       const crossControlX = clamp((originX + crossX) / 2 - centered * width * 0.08, 40, width - 40);
       ctx.strokeStyle = rgba(output.color, output.intensity * 0.32);
@@ -1945,6 +2079,22 @@ function drawLaser(ctx, fixture, output, width, height) {
       ctx.beginPath();
       ctx.moveTo(originX, originY);
       ctx.quadraticCurveTo(crossControlX, controlY, crossX, targetY);
+      ctx.stroke();
+    }
+
+    if (renderFamily === "tunnel" && Math.abs(centered) < 0.18) {
+      const tunnelCenterX = width * 0.5 + Math.sin(output.phase * 0.9) * width * 0.08;
+      const tunnelCenterY = clamp(height * 0.33, 90, height - 140);
+      ctx.strokeStyle = rgba(output.color, output.intensity * 0.18);
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(
+        tunnelCenterX,
+        tunnelCenterY,
+        Math.max(12, width * 0.035 + Math.sin(output.phase * 2.1 + index) * 6),
+        0,
+        Math.PI * 2,
+      );
       ctx.stroke();
     }
 
