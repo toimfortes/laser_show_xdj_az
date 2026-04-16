@@ -140,13 +140,39 @@ class PlaybackContext:
 
     @staticmethod
     def _apply_nested_change(section: dict[str, Any], dotted_key: str, value: Any) -> None:
-        target = section
         parts = dotted_key.split(".")
-        for part in parts[:-1]:
+        target: Any = section
+        for index, part in enumerate(parts[:-1]):
+            next_part = parts[index + 1]
+            expect_list = next_part.isdigit()
+            if isinstance(target, list):
+                if not part.isdigit():
+                    return
+                item_index = int(part)
+                while len(target) <= item_index:
+                    target.append([] if expect_list else {})
+                current = target[item_index]
+                if expect_list and not isinstance(current, list):
+                    current = []
+                    target[item_index] = current
+                elif not expect_list and not isinstance(current, dict):
+                    current = {}
+                    target[item_index] = current
+                target = current
+                continue
+
+            if not isinstance(target, dict):
+                return
+
             current = target.get(part)
-            if not isinstance(current, dict):
-                current = {}
-                target[part] = current
+            if expect_list:
+                if not isinstance(current, list):
+                    current = []
+                    target[part] = current
+            else:
+                if not isinstance(current, dict):
+                    current = {}
+                    target[part] = current
             target = current
         leaf = parts[-1]
         if leaf in {
@@ -160,10 +186,16 @@ class PlaybackContext:
             "transition_role",
             "label",
             "intensity_curve",
+            "pattern",
+            "zone_policy",
+            "phrase_role",
+            "id",
         }:
-            target[leaf] = str(value)
+            if isinstance(target, dict):
+                target[leaf] = str(value)
         elif leaf in {"mirror"}:
-            target[leaf] = bool(value)
+            if isinstance(target, dict):
+                target[leaf] = bool(value)
         elif leaf in {
             "x_amplitude",
             "y_amplitude",
@@ -177,17 +209,24 @@ class PlaybackContext:
             "sustain_intensity",
             "release_intensity",
             "sustain_motion",
+            "density",
+            "motion",
+            "emphasis",
         }:
             try:
-                target[leaf] = float(value)
+                if isinstance(target, dict):
+                    target[leaf] = float(value)
             except (TypeError, ValueError):
                 return
         elif leaf in {"launch_bars", "sustain_bars", "release_bars", "normalize_after_bars"}:
             try:
-                target[leaf] = int(value)
+                if isinstance(target, dict):
+                    target[leaf] = int(value)
             except (TypeError, ValueError):
                 return
         elif leaf == "variation_plan":
+            if not isinstance(target, dict):
+                return
             if isinstance(value, list):
                 target[leaf] = [str(item) for item in value]
             else:

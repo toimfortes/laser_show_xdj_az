@@ -359,6 +359,29 @@ select {
   grid-column: 1 / -1;
 }
 
+.laser-program-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.laser-program-meta,
+.laser-program-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.laser-program-card h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
 .show-toggle-row {
   display: flex;
   flex-wrap: wrap;

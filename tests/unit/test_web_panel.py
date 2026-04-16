@@ -303,6 +303,50 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                         },
                         "variation_plan": ["hit hard", "settle down"],
                     },
+                    "laser_program": {
+                        "phrase_role": "drop_launch",
+                        "zone_policy": "crowd_punctuate",
+                        "launch": {
+                            "pattern": "burst_fan",
+                            "geometry_family": "burst",
+                            "target_bias": "crowd",
+                            "color_mode": "white_hits",
+                            "density": 1.2,
+                            "motion": 1.3,
+                            "emphasis": 0.9,
+                        },
+                        "sustain": [
+                            {
+                                "pattern": "tunnel",
+                                "geometry_family": "tunnel",
+                                "target_bias": "mid_air",
+                                "color_mode": "morph",
+                                "density": 1.0,
+                                "motion": 0.95,
+                                "emphasis": 0.6,
+                            }
+                        ],
+                        "fills": [
+                            {
+                                "pattern": "target_rotate_chase",
+                                "geometry_family": "sequence",
+                                "target_bias": "crowd",
+                                "color_mode": "dual_cycle",
+                                "density": 1.1,
+                                "motion": 1.2,
+                                "emphasis": 0.72,
+                            }
+                        ],
+                        "release": {
+                            "pattern": "circle_trace",
+                            "geometry_family": "trace",
+                            "target_bias": "ceiling",
+                            "color_mode": "morph",
+                            "density": 0.7,
+                            "motion": 0.65,
+                            "emphasis": 0.32,
+                        },
+                    },
                 }
             ],
             _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
@@ -322,6 +366,13 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                 "laser_expression.target_strategy": "aerial_hold",
                 "laser_expression.phrase_envelope.sustain_intensity": 0.55,
                 "laser_expression.variation_plan": "reduce beam density\nuse overhead arcs",
+                "laser_program.zone_policy": "overhead_only",
+                "laser_program.launch.pattern": "sheet",
+                "laser_program.launch.geometry_family": "sheet",
+                "laser_program.sustain.0.pattern": "beam_sequence_clockwise",
+                "laser_program.sustain.0.motion": 1.15,
+                "laser_program.fills.0.target_bias": "ceiling",
+                "laser_program.release.color_mode": "dual_cycle",
             }
         },
     )
@@ -338,6 +389,13 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
         "reduce beam density",
         "use overhead arcs",
     ]
+    assert updated["laser_program"]["zone_policy"] == "overhead_only"
+    assert updated["laser_program"]["launch"]["pattern"] == "sheet"
+    assert updated["laser_program"]["launch"]["geometry_family"] == "sheet"
+    assert updated["laser_program"]["sustain"][0]["pattern"] == "beam_sequence_clockwise"
+    assert updated["laser_program"]["sustain"][0]["motion"] == 1.15
+    assert updated["laser_program"]["fills"][0]["target_bias"] == "ceiling"
+    assert updated["laser_program"]["release"]["color_mode"] == "dual_cycle"
     assert get_shared_playback_context() is playback
     assert saved_payloads
     assert saved_payloads[-1]["track_key"] == "artist|track"

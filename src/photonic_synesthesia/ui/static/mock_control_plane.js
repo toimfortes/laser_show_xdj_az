@@ -499,9 +499,14 @@ function renderShowEditor() {
     const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
     const strobeProfile = sectionVariant(section, "strobe_profile");
     const laserExpression = sectionVariant(section, "laser_expression");
+    const laserProgram = sectionVariant(section, "laser_program");
     const renderFamily = laserRenderFamily(section.laser_pattern, safeText(laserExpression.geometry_family, "fan"));
     const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
-    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${renderFamily} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+    const launchPattern = pathValue(laserProgram, "launch.pattern", section.laser_pattern);
+    const sustainPattern = pathValue(laserProgram, "sustain.0.pattern", section.laser_pattern);
+    const fillPattern = pathValue(laserProgram, "fills.0.pattern", launchPattern);
+    const releasePattern = pathValue(laserProgram, "release.pattern", sustainPattern);
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${renderFamily} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · program launch ${launchPattern} / sustain ${sustainPattern} / fill ${fillPattern} / release ${releasePattern} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
@@ -619,6 +624,68 @@ function renderShowEditor() {
     ["texture_flip", "Texture Flip"],
     ["shape_outline_morph", "Shape Outline Morph"],
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const geometryFamilyOptions = [
+    ["fan", "Fan"],
+    ["burst", "Burst"],
+    ["grouped", "Grouped"],
+    ["tunnel", "Tunnel"],
+    ["lattice", "Lattice"],
+    ["rake", "Rake"],
+    ["sky", "Sky"],
+    ["cone", "Cone"],
+    ["scan", "Scan"],
+    ["helix", "Helix"],
+    ["array", "Array"],
+    ["sheet", "Sheet"],
+    ["trace", "Trace"],
+    ["sequence", "Sequence"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const zonePolicyOptions = [
+    ["overhead_only", "Overhead Only"],
+    ["mixed_air", "Mixed Air"],
+    ["crowd_punctuate", "Crowd Punctuate"],
+    ["overhead_bias", "Overhead Bias"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const colorModeOptions = [
+    ["static", "Static"],
+    ["morph", "Morph"],
+    ["white_hits", "White Hits"],
+    ["dual_cycle", "Dual Cycle"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+
+  const laserLookEditor = (section, slotPath, title) => `
+    <div class="laser-program-card">
+      <h4>${title}</h4>
+      <label>
+        <span>Pattern</span>
+        <select data-field="${slotPath}.pattern">${laserPatternOptions}</select>
+      </label>
+      <label>
+        <span>Geometry</span>
+        <select data-field="${slotPath}.geometry_family">${geometryFamilyOptions}</select>
+      </label>
+      <label>
+        <span>Target Bias</span>
+        <select data-field="${slotPath}.target_bias">${laserTargetBiasOptions}</select>
+      </label>
+      <label>
+        <span>Color Mode</span>
+        <select data-field="${slotPath}.color_mode">${colorModeOptions}</select>
+      </label>
+      <label>
+        <span>Density</span>
+        <input data-field="${slotPath}.density" type="range" min="0.4" max="1.8" step="0.05" value="${pathValue(section, `${slotPath}.density`, 1)}" />
+      </label>
+      <label>
+        <span>Motion</span>
+        <input data-field="${slotPath}.motion" type="range" min="0.4" max="1.8" step="0.05" value="${pathValue(section, `${slotPath}.motion`, 1)}" />
+      </label>
+      <label>
+        <span>Emphasis</span>
+        <input data-field="${slotPath}.emphasis" type="range" min="0" max="1" step="0.05" value="${pathValue(section, `${slotPath}.emphasis`, 0.5)}" />
+      </label>
+    </div>
+  `;
 
   elements.showEditor.innerHTML = `
     <div class="subhead">
@@ -714,6 +781,20 @@ function renderShowEditor() {
               <span>Variation Plan</span>
               <textarea data-field="laser_expression.variation_plan" rows="3">${(pathValue(section, "laser_expression.variation_plan", []) || []).join("\n")}</textarea>
             </label>
+            <div class="laser-program-grid">
+              <label class="laser-program-meta">
+                <span>Zone Policy</span>
+                <select data-field="laser_program.zone_policy">${zonePolicyOptions}</select>
+              </label>
+              <label class="laser-program-meta">
+                <span>Phrase Role</span>
+                <input data-field="laser_program.phrase_role" type="text" value="${pathValue(section, "laser_program.phrase_role", "")}" />
+              </label>
+              ${laserLookEditor(section, "laser_program.launch", "Launch Look")}
+              ${laserLookEditor(section, "laser_program.sustain.0", "Sustain A")}
+              ${laserLookEditor(section, "laser_program.fills.0", "Fill A")}
+              ${laserLookEditor(section, "laser_program.release", "Release Look")}
+            </div>
             <div class="show-toggle-row">
               <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
               <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers</label>
@@ -747,7 +828,10 @@ function renderShowEditor() {
       ) {
         input.value = section[input.dataset.field];
       }
-      if (input.dataset.field?.startsWith("laser_expression.") && input.tagName !== "TEXTAREA") {
+      if (
+        (input.dataset.field?.startsWith("laser_expression.") || input.dataset.field?.startsWith("laser_program."))
+        && input.tagName !== "TEXTAREA"
+      ) {
         input.value = pathValue(section, input.dataset.field, input.value);
       }
       input.addEventListener(eventName, (event) => {
