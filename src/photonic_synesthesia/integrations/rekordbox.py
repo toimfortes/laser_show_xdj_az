@@ -60,6 +60,20 @@ def _location_basename(location: str) -> str:
     return Path(location).name
 
 
+def _normalized_track_candidates(track_element: ET.Element) -> set[str]:
+    location = str(track_element.attrib.get("Location", ""))
+    basename = _location_basename(location)
+    title = str(track_element.attrib.get("Name", "")).strip()
+    artist = str(track_element.attrib.get("Artist", "")).strip()
+    return {
+        _normalize_text(basename),
+        _normalize_text(Path(basename).stem),
+        _normalize_text(title),
+        _normalize_text(f"{artist}{title}"),
+        _normalize_text(f"{title}{artist}"),
+    }
+
+
 def _classify_marker(name: str) -> tuple[str, int | None]:
     compact = _normalize_text(name)
     energy_match = re.search(r"e[: ]?(\d+)", name.lower())
@@ -103,7 +117,13 @@ def _parse_markers(track_element: ET.Element) -> list[RekordboxStructureMarker]:
     return markers
 
 
-def load_rekordbox_track(xml_path: str | Path, audio_file: str | Path) -> RekordboxTrack | None:
+def load_rekordbox_track(
+    xml_path: str | Path,
+    audio_file: str | Path,
+    *,
+    audio_duration_seconds: float | None = None,
+    expected_bpm: float | None = None,
+) -> RekordboxTrack | None:
     """Load the best matching Rekordbox export track for an audio file."""
     xml_file = Path(xml_path)
     audio_path = Path(audio_file)
@@ -118,53 +138,71 @@ def load_rekordbox_track(xml_path: str | Path, audio_file: str | Path) -> Rekord
     normalized_file = _normalize_text(audio_path.name)
     normalized_stem = _normalize_text(audio_path.stem)
 
-    best_track: RekordboxTrack | None = None
-    best_score = -1
+    ranked_matches: list[tuple[int, RekordboxTrack]] = []
     for track_element in collection.findall("TRACK"):
         location = str(track_element.attrib.get("Location", ""))
-        basename = _location_basename(location)
         title = str(track_element.attrib.get("Name", "")).strip()
         artist = str(track_element.attrib.get("Artist", "")).strip()
-
-        candidates = {
-            _normalize_text(basename),
-            _normalize_text(Path(basename).stem),
-            _normalize_text(title),
-            _normalize_text(f"{artist}{title}"),
-            _normalize_text(f"{title}{artist}"),
-        }
+        candidates = _normalized_track_candidates(track_element)
 
         score = 0
         if normalized_file and normalized_file in candidates:
-            score = max(score, 4)
+            score = max(score, 400)
         if normalized_stem and normalized_stem in candidates:
-            score = max(score, 3)
+            score = max(score, 320)
         if normalized_stem and any(normalized_stem and normalized_stem in item for item in candidates):
-            score = max(score, 2)
+            score = max(score, 180)
         if not score:
             continue
 
-        if score > best_score:
-            best_score = score
-            try:
-                total_time = float(track_element.attrib.get("TotalTime", "0"))
-            except ValueError:
-                total_time = 0.0
-            try:
-                average_bpm = float(track_element.attrib.get("AverageBpm", "0") or 0)
-            except ValueError:
-                average_bpm = None
-            best_track = RekordboxTrack(
-                track_id=str(track_element.attrib.get("TrackID", "")),
-                title=title or audio_path.stem,
-                artist=artist,
-                location=location,
-                total_time=total_time,
-                average_bpm=average_bpm or None,
-                markers=_parse_markers(track_element),
-            )
+        try:
+            total_time = float(track_element.attrib.get("TotalTime", "0"))
+        except ValueError:
+            total_time = 0.0
+        try:
+            average_bpm = float(track_element.attrib.get("AverageBpm", "0") or 0)
+        except ValueError:
+            average_bpm = None
 
-    return best_track
+        if audio_duration_seconds is not None and total_time > 0:
+            duration_delta = abs(total_time - audio_duration_seconds)
+            if duration_delta <= 2.0:
+                score += 60
+            elif duration_delta <= 6.0:
+                score += 30
+            elif duration_delta > 15.0:
+                continue
+        if expected_bpm is not None and average_bpm:
+            bpm_delta = abs(average_bpm - expected_bpm)
+            if bpm_delta <= 0.75:
+                score += 20
+            elif bpm_delta <= 2.0:
+                score += 10
+            elif bpm_delta > 8.0:
+                score -= 40
+
+        ranked_matches.append(
+            (
+                score,
+                RekordboxTrack(
+                    track_id=str(track_element.attrib.get("TrackID", "")),
+                    title=title or audio_path.stem,
+                    artist=artist,
+                    location=location,
+                    total_time=total_time,
+                    average_bpm=average_bpm or None,
+                    markers=_parse_markers(track_element),
+                ),
+            )
+        )
+
+    if not ranked_matches:
+        return None
+
+    ranked_matches.sort(key=lambda item: item[0], reverse=True)
+    if len(ranked_matches) > 1 and ranked_matches[1][0] == ranked_matches[0][0]:
+        return None
+    return ranked_matches[0][1]
 
 
 def find_matching_track(xml_path: str | Path, audio_file: str | Path) -> RekordboxTrack | None:

@@ -87,10 +87,12 @@ class ILDAOutputNode:
         self._ether_dream: EtherDreamClient | None = None
         self._ether_dream_faulted = False
         self._ild_timeline: list[ILDAFrame] = []
+        self._blackout_requested = False
 
     def start(self) -> None:
         self._running = True
         self._ild_timeline = []
+        self._blackout_requested = False
         if self.config.transport_type == "json" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
         if self.config.transport_type == "ild" and self._export_path is not None:
@@ -104,7 +106,23 @@ class ILDAOutputNode:
             self._ether_dream = None
         self._ether_dream_faulted = False
         self._ild_timeline = []
+        self._blackout_requested = False
         self._running = False
+
+    def request_blackout(self) -> None:
+        self._blackout_requested = True
+        if self.config.transport_type == "ether_dream" and self.fixtures:
+            try:
+                blank_frame = self._merge_frames_for_dac(
+                    [self._blank_frame_for_fixture(fixture) for fixture in self.fixtures]
+                )
+                point_rate = max(1, int(self.config.target_fps * blank_frame["point_count"]))
+                self._ensure_ether_dream_client().ensure_streaming(blank_frame, point_rate=point_rate)
+            except OSError as exc:
+                self._handle_ether_dream_error(exc)
+
+    def clear_blackout_request(self) -> None:
+        self._blackout_requested = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()
@@ -113,7 +131,10 @@ class ILDAOutputNode:
             state["processing_times"]["ilda_output"] = time.time() - start_time
             return state
 
-        frames = [self._frame_for_fixture(fixture, state) for fixture in self.fixtures]
+        if self._should_blackout(state):
+            frames = [self._blank_frame_for_fixture(fixture) for fixture in self.fixtures]
+        else:
+            frames = [self._frame_for_fixture(fixture, state) for fixture in self.fixtures]
         state["ilda_frames"] = frames
         self._export_frames(frames)
         state["processing_times"]["ilda_output"] = time.time() - start_time
@@ -159,6 +180,32 @@ class ILDAOutputNode:
                 error=str(exc),
             )
         self._ether_dream_faulted = True
+
+    def _should_blackout(self, state: PhotonicState) -> bool:
+        control_state = state["control_state"]
+        safety_state = state["safety_state"]
+        return bool(
+            self._blackout_requested
+            or control_state["blackout_active"]
+            or safety_state["emergency_stop"]
+            or not safety_state["laser_enabled"]
+        )
+
+    def _blank_frame_for_fixture(self, fixture: FixtureConfig) -> ILDAFrame:
+        profile = self.fixture_profiles[fixture.id]
+        return ILDAFrame(
+            fixture_id=fixture.id,
+            profile_name=profile.profile_name,
+            geometry_family="blank",
+            color_mode="off",
+            target_bias="mixed",
+            point_count=2,
+            repeat=True,
+            points=[
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+            ],
+        )
 
     def _frame_for_fixture(self, fixture: FixtureConfig, state: PhotonicState) -> ILDAFrame:
         profile = self.fixture_profiles[fixture.id]
@@ -289,25 +336,18 @@ class ILDAOutputNode:
             selected = dict(selected_window["look"])
             selected_index = sustain_choice
 
-        should_fill = False
         fill_every_bars = max(1, int(laser_program.get("fill_trigger_every_bars", 4)))
         total_main_bars = max(1, sum(int(window["bars"]) for window in windows))
-        current_bar = int(progress * total_main_bars)
-        if selected_role == "sustain":
-            should_fill = (
-                bool(fills)
-                and state["beat_info"]["downbeat"]
-                and role in {"build_riser", "drop_launch", "drop_variation"}
-                and (
-                    subphrase_role == "fill"
-                    or fill_pressure >= 0.62
-                    or current_bar % fill_every_bars == 0
-                )
-            )
-        if should_fill:
-            fill_index = (current_bar // fill_every_bars + selected_index) % len(fills)
-            selected = dict(fills[fill_index])
-            selected_role = "fill"
+        bars_elapsed = progress * total_main_bars
+        if selected_role == "sustain" and fills and role in {"build_riser", "drop_launch", "drop_variation"}:
+            fill_cycle = int(bars_elapsed // fill_every_bars)
+            fill_index = (fill_cycle + selected_index + (1 if fill_pressure >= 0.72 else 0)) % len(fills)
+            fill_look = fills[fill_index]
+            fill_bars = max(1, int(fill_look.get("bars", 1)))
+            cycle_progress = bars_elapsed - (fill_cycle * fill_every_bars)
+            if cycle_progress < min(fill_bars, fill_every_bars):
+                selected = dict(fill_look)
+                selected_role = "fill"
         if selected is None:
             return None
 

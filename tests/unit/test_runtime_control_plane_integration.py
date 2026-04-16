@@ -108,3 +108,31 @@ def test_shared_playback_context_is_process_local() -> None:
     assert playback.snapshot()["transport_revision"] == 1
 
     clear_shared_playback_context()
+
+
+def test_playback_snapshot_deep_copies_nested_show_sections() -> None:
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/test.mp3",
+            file_name="test.mp3",
+            duration_seconds=123.4,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "laser_program": {
+                        "sustain": [
+                            {"pattern": "fan", "bars": 4},
+                        ]
+                    },
+                }
+            ],
+        )
+    )
+
+    snapshot = playback.snapshot()
+    snapshot["show_sections"][0]["laser_program"]["sustain"][0]["pattern"] = "tunnel"
+
+    assert playback.snapshot()["show_sections"][0]["laser_program"]["sustain"][0]["pattern"] == "fan"
+
+    clear_shared_playback_context()

@@ -39,3 +39,54 @@ def test_load_rekordbox_track_matches_by_filename_and_dedupes_markers(tmp_path: 
         "outro",
     ]
     assert track.markers[2].energy_hint == 8
+
+
+def test_load_rekordbox_track_uses_duration_to_break_filename_ties(tmp_path: Path) -> None:
+    xml_path = tmp_path / "rekordbox.xml"
+    xml_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="2">
+    <TRACK TrackID="42" Name="Relax Your Mind" Artist="19_26, Yubik"
+      Location="file://localhost/C:/Music/Relax%20Your%20Mind.mp3"
+      TotalTime="324" AverageBpm="124.0" />
+    <TRACK TrackID="43" Name="Relax Your Mind (Edit)" Artist="19_26, Yubik"
+      Location="file://localhost/C:/Music/Relax%20Your%20Mind.mp3"
+      TotalTime="278" AverageBpm="124.0" />
+  </COLLECTION>
+</DJ_PLAYLISTS>
+""",
+        encoding="utf-8",
+    )
+
+    track = load_rekordbox_track(
+        xml_path,
+        tmp_path / "Relax Your Mind.mp3",
+        audio_duration_seconds=323.5,
+    )
+
+    assert track is not None
+    assert track.track_id == "42"
+
+
+def test_load_rekordbox_track_returns_none_for_ambiguous_equal_matches(tmp_path: Path) -> None:
+    xml_path = tmp_path / "rekordbox.xml"
+    xml_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="2">
+    <TRACK TrackID="42" Name="Same Song" Artist="Artist A"
+      Location="file://localhost/C:/Music/Same%20Song.mp3"
+      TotalTime="324" AverageBpm="124.0" />
+    <TRACK TrackID="43" Name="Same Song" Artist="Artist A"
+      Location="file://localhost/C:/Alt/Same%20Song.mp3"
+      TotalTime="324" AverageBpm="124.0" />
+  </COLLECTION>
+</DJ_PLAYLISTS>
+""",
+        encoding="utf-8",
+    )
+
+    track = load_rekordbox_track(xml_path, tmp_path / "Same Song.mp3")
+
+    assert track is None

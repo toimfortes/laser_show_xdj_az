@@ -152,11 +152,17 @@ class PhotonicGraph:
         dmx_output = self.nodes.get("dmx_output")
         if dmx_output is not None and hasattr(dmx_output, "request_blackout"):
             dmx_output.request_blackout()
+        ilda_output = self.nodes.get("ilda_output")
+        if ilda_output is not None and hasattr(ilda_output, "request_blackout"):
+            ilda_output.request_blackout()
 
     def _clear_blackout(self) -> None:
         dmx_output = self.nodes.get("dmx_output")
         if dmx_output is not None and hasattr(dmx_output, "clear_blackout_request"):
             dmx_output.clear_blackout_request()
+        ilda_output = self.nodes.get("ilda_output")
+        if ilda_output is not None and hasattr(ilda_output, "clear_blackout_request"):
+            ilda_output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""

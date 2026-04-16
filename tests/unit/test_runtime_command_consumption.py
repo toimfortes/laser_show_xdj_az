@@ -16,13 +16,14 @@ class _IdentityGraph:
         return state
 
 
-def test_graph_consumes_blackout_command_and_requests_dmx_blackout() -> None:
+def test_graph_consumes_blackout_command_and_requests_fixture_blackout() -> None:
     service = ControlPlaneStateService()
     dmx_output = mock.MagicMock()
+    ilda_output = mock.MagicMock()
     graph = PhotonicGraph(
         graph=_IdentityGraph(),
         settings=Settings(),
-        nodes={"dmx_output": dmx_output},
+        nodes={"dmx_output": dmx_output, "ilda_output": ilda_output},
         control_plane_service=service,
     )
 
@@ -39,6 +40,7 @@ def test_graph_consumes_blackout_command_and_requests_dmx_blackout() -> None:
 
     assert graph.state["control_state"]["blackout_active"] is True
     dmx_output.request_blackout.assert_called_once()
+    ilda_output.request_blackout.assert_called_once()
 
 
 def test_graph_consumes_scene_launch_and_hold_commands() -> None:

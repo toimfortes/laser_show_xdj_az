@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -90,7 +91,7 @@ class PlaybackContext:
                 ),
                 "waveform": list(self.waveform),
                 "structure_markers": [dict(marker) for marker in self.structure_markers],
-                "show_sections": [dict(section) for section in self.show_sections],
+                "show_sections": copy.deepcopy(self.show_sections),
                 "playhead_seconds": self.playhead_seconds,
                 "playing": self.playing,
                 "finished": self.finished,
@@ -108,7 +109,7 @@ class PlaybackContext:
             for index, section in enumerate(self.show_sections):
                 if str(section.get("id")) != section_id:
                     continue
-                updated = dict(section)
+                updated = copy.deepcopy(section)
                 for key, value in changes.items():
                     if key in {
                         "scene_id",
@@ -132,7 +133,7 @@ class PlaybackContext:
                         self._apply_nested_change(updated, key, value)
                 self.show_sections[index] = updated
                 save_payload = self._show_plan_payload_locked()
-                updated_section = dict(updated)
+                updated_section = copy.deepcopy(updated)
                 break
         if save_payload is not None and updated_section is not None:
             self._persist_show_plan(save_payload)
@@ -247,7 +248,7 @@ class PlaybackContext:
             "file_name": self.file_name,
             "duration_seconds": self.duration_seconds,
             "structure_markers": [dict(marker) for marker in self.structure_markers],
-            "show_sections": [dict(section) for section in self.show_sections],
+            "show_sections": copy.deepcopy(self.show_sections),
         }
 
     def _persist_show_plan(self, payload: dict[str, Any]) -> None:

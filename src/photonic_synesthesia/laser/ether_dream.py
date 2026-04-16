@@ -45,15 +45,19 @@ def pack_dac_point(point: ILDAPoint) -> bytes:
     # Ether Dream blanking is represented by zeroed color/intensity channels.
     # Bit 15 is reserved for point-rate changes, not shutter control.
     control = 0
-    intensity = max(point["r"], point["g"], point["b"])
+    blanked = bool(point["blanked"])
+    red = 0 if blanked else int(point["r"])
+    green = 0 if blanked else int(point["g"])
+    blue = 0 if blanked else int(point["b"])
+    intensity = 0 if blanked else max(red, green, blue)
     return struct.pack(
         "<HhhHHHHHH",
         control,
         int(point["x"]),
         int(point["y"]),
-        _ilda_to_u16_color(point["r"]),
-        _ilda_to_u16_color(point["g"]),
-        _ilda_to_u16_color(point["b"]),
+        _ilda_to_u16_color(red),
+        _ilda_to_u16_color(green),
+        _ilda_to_u16_color(blue),
         _ilda_to_u16_color(intensity),
         0,
         0,
@@ -96,6 +100,7 @@ class EtherDreamClient:
         self._socket: socket.socket | None = None
         self._prepared = False
         self._playing = False
+        self._current_point_rate: int | None = None
 
     def connect(self) -> None:
         if self._socket is not None:
@@ -116,9 +121,12 @@ class EtherDreamClient:
         self._socket = None
         self._prepared = False
         self._playing = False
+        self._current_point_rate = None
 
     def ensure_streaming(self, frame: ILDAFrame, *, point_rate: int) -> None:
         self.connect()
+        if self._playing and self._current_point_rate != point_rate:
+            self.stop()
         if not self._prepared:
             self._send(pack_prepare_command(), expected_command=0x70)
             self._prepared = True
@@ -129,6 +137,7 @@ class EtherDreamClient:
                 expected_command=0x62,
             )
             self._playing = True
+            self._current_point_rate = point_rate
 
     def stop(self) -> None:
         if self._socket is None or not (self._prepared or self._playing):
@@ -136,6 +145,7 @@ class EtherDreamClient:
         self._send(pack_stop_command(), expected_command=0x73)
         self._prepared = False
         self._playing = False
+        self._current_point_rate = None
 
     def ping(self) -> EtherDreamStatus:
         self.connect()

@@ -149,6 +149,70 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
     assert frame["target_bias"] == "ceiling"
 
 
+def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=120.0,
+            show_sections=[
+                {
+                    "id": "section_000",
+                    "label": "Drop A",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 32.0,
+                    "laser_program": {
+                        "phrase_role": "drop_variation",
+                        "zone_policy": "overhead_bias",
+                        "fill_trigger_every_bars": 4,
+                        "launch": {"pattern": "fan", "geometry_family": "fan", "bars": 2},
+                        "sustain": [
+                            {"pattern": "tunnel", "geometry_family": "tunnel", "bars": 8},
+                        ],
+                        "fills": [
+                            {"pattern": "sheet", "geometry_family": "sheet", "bars": 2},
+                        ],
+                        "release": {"pattern": "circle_trace", "geometry_family": "trace", "bars": 2},
+                    },
+                }
+            ],
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=14.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    state = create_initial_state()
+    state["current_structure"] = MusicStructure.DROP
+    state["director_state"]["subphrase_role"] = "fill"
+
+    try:
+        result = node(state)
+    finally:
+        clear_shared_playback_context()
+
+    assert result["ilda_frames"][0]["geometry_family"] == "sheet"
+
+
 def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
     fixture = FixtureConfig(
         id="laser-main",
@@ -373,3 +437,36 @@ def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
     second_client.connect.assert_called_once()
     second_client.ensure_streaming.assert_called_once()
     second_client.close.assert_called_once()
+
+
+def test_ilda_output_blackout_blanks_frames_and_streams_blank_transport() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDAOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
+            [fixture],
+            LaserSafetyConfig(),
+            fixtures_dir=Path("config/fixtures"),
+        )
+        node.start()
+        state = create_initial_state()
+        state["control_state"]["blackout_active"] = True
+        result = node(state)
+        node.stop()
+
+    frame = result["ilda_frames"][0]
+    assert frame["geometry_family"] == "blank"
+    assert all(point["blanked"] for point in frame["points"])
+    args, kwargs = fake_client.ensure_streaming.call_args
+    assert kwargs["point_rate"] == 50
+    streamed_frame = args[0]
+    assert streamed_frame["geometry_family"] == "composite"
+    assert all(point["blanked"] for point in streamed_frame["points"])

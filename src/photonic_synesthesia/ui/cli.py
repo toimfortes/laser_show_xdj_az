@@ -1718,7 +1718,11 @@ def run_file(
     matched_rekordbox_track = None
     rekordbox_source = rekordbox_xml or _discover_rekordbox_xml()
     if rekordbox_source is not None:
-        matched_rekordbox_track = load_rekordbox_track(rekordbox_source, audio_file)
+        matched_rekordbox_track = load_rekordbox_track(
+            rekordbox_source,
+            audio_file,
+            audio_duration_seconds=audio_node.duration_seconds,
+        )
         if matched_rekordbox_track is not None:
             click.echo(
                 "Rekordbox match: {artist} - {title} ({markers} markers)".format(

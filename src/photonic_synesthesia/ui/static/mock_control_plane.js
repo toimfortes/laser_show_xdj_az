@@ -1370,28 +1370,26 @@ function currentLaserProgramLook(section, visual) {
 
   const totalBars = Math.max(1, windows.reduce((sum, window) => sum + window.bars, 0));
   const fillEveryBars = Math.max(1, Number(laserProgram.fill_trigger_every_bars || 4));
-  const currentBar = Math.floor(progress * totalBars);
-  const shouldFill = (
-    selectedWindow.role === "sustain"
-    && fills.length > 0
-    && Boolean(appState.runtimeSnapshot?.semantic_frame?.downbeat)
-    && ["build_riser", "drop_launch", "drop_variation"].includes(role)
-    && (
-      subphraseRole === "fill"
-      || visual.fillPressure >= 0.62
-      || currentBar % fillEveryBars === 0
-    )
-  );
+  const barsElapsed = progress * totalBars;
 
   let selected = { ...selectedWindow.look };
   let selectedRole = selectedWindow.role;
   let selectedPath = selectedWindow.path;
-  if (shouldFill) {
-    const fillIndex = (Math.floor(currentBar / fillEveryBars) + selectedWindow.index) % fills.length;
+  if (
+    selectedWindow.role === "sustain"
+    && fills.length > 0
+    && ["build_riser", "drop_launch", "drop_variation"].includes(role)
+  ) {
+    const fillCycle = Math.floor(barsElapsed / fillEveryBars);
+    const fillIndex = (fillCycle + selectedWindow.index + (visual.fillPressure >= 0.72 ? 1 : 0)) % fills.length;
     const fillWindow = fills[fillIndex];
-    selected = { ...fillWindow.look };
-    selectedRole = "fill";
-    selectedPath = fillWindow.path;
+    const fillBars = Math.max(1, Number(fillWindow.look?.bars ?? fillWindow.bars ?? 1));
+    const cycleProgress = barsElapsed - (fillCycle * fillEveryBars);
+    if (cycleProgress < Math.min(fillBars, fillEveryBars)) {
+      selected = { ...fillWindow.look };
+      selectedRole = "fill";
+      selectedPath = fillWindow.path;
+    }
   }
 
   const zonePolicy = safeText(laserProgram.zone_policy, "");
