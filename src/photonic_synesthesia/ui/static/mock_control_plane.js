@@ -410,6 +410,85 @@ function sceneById(sceneId) {
     || appState.catalog.scene_templates[0];
 }
 
+function activeStageScene() {
+  const runtimeSceneId = appState.runtimeSnapshot?.active_scene_id;
+  if (runtimeSceneId) {
+    return sceneById(runtimeSceneId);
+  }
+  return sceneById(appState.sceneId);
+}
+
+function beatPulseFromPhase(phase) {
+  const wrapped = ((phase % 1) + 1) % 1;
+  const distance = Math.min(Math.abs(wrapped - 0.08), 1 - Math.abs(wrapped - 0.08));
+  return clamp(1 - (distance / 0.18), 0, 1) ** 2;
+}
+
+function runtimeVisualState(timeSeconds) {
+  const scene = activeStageScene();
+  const semantic = appState.runtimeSnapshot?.semantic_frame || {};
+  const director = appState.runtimeSnapshot?.director_summary || {};
+  const beatConfidence = clamp(Number(semantic.beat_confidence ?? 0), 0, 1);
+  const energy = clamp(Number(director.energy_level ?? scene.pulse ?? 0.4), 0, 1);
+  const beatPhase = clamp(
+    Number.isFinite(Number(semantic.beat_phase))
+      ? Number(semantic.beat_phase)
+      : (timeSeconds * scene.speed_multiplier * 1.4) % 1,
+    0,
+    1,
+  );
+  const beatPulse = beatPulseFromPhase(beatPhase) * Math.max(0.2, beatConfidence);
+  const structure = safeText(semantic.structure, "unknown").toLowerCase();
+  const movementStyle = safeText(director.movement_style, "steady").toLowerCase();
+  const motionScale = movementStyle === "aggressive"
+    ? 1.45
+    : movementStyle === "sparse"
+      ? 0.62
+      : 1.0;
+  const structureBoost = structure === "drop"
+    ? 1.0
+    : structure === "buildup"
+      ? 0.82
+      : structure === "breakdown"
+        ? 0.45
+        : structure === "intro"
+          ? 0.4
+          : 0.6;
+  const bpm = Number(semantic.bpm || 0);
+  const motionRate = bpm > 0
+    ? (bpm / 60) * (0.45 + scene.speed_multiplier * 0.35) * motionScale
+    : scene.speed_multiplier * motionScale;
+  const pulseMix = clamp(
+    0.25
+      + (scene.pulse * 0.24)
+      + (energy * 0.36)
+      + (beatPulse * 0.34)
+      + (structureBoost * 0.18)
+      + (semantic.downbeat ? 0.16 : 0),
+    0.12,
+    1.45,
+  );
+  const strobeBudget = clamp(Number(director.strobe_budget_hz || 0) / 12, 0, 1);
+  const strobeActive = structure === "drop"
+    && scene.strobe > 0
+    && beatPulse > 0.86
+    && strobeBudget > 0.2;
+
+  return {
+    scene,
+    energy,
+    beatPhase,
+    beatPulse,
+    beatConfidence,
+    structure,
+    motionStyle: movementStyle,
+    motionRate,
+    motionPhase: timeSeconds * motionRate,
+    pulseMix,
+    strobeActive,
+  };
+}
+
 function selectedFixture() {
   return appState.fixtures.find((fixture) => fixture.id === appState.selectedFixtureId) || null;
 }
@@ -656,16 +735,14 @@ function renderInspector() {
   });
 }
 
-function computeSceneMix(scene, timeSeconds) {
-  return 0.55 + Math.sin(timeSeconds * scene.speed_multiplier * 2.0) * scene.pulse * 0.35;
-}
-
-function fixtureOutput(fixture, timeSeconds) {
-  const scene = sceneById(appState.sceneId);
-  const mix = computeSceneMix(scene, timeSeconds);
-  const phase = timeSeconds * appState.masterSpeed * scene.speed_multiplier + fixture.phaseOffset;
-  const baseIntensity = fixture.intensity * appState.masterIntensity * mix;
-  const intensity = appState.blackout ? 0 : clamp(baseIntensity, 0, 1);
+function fixtureOutput(fixture, visual) {
+  const phase = (visual.motionPhase * appState.masterSpeed) + fixture.phaseOffset;
+  const baseIntensity = fixture.intensity
+    * appState.masterIntensity
+    * (0.24 + visual.pulseMix * 0.76)
+    * (0.5 + visual.energy * 0.7);
+  const intensityBoost = visual.strobeActive ? 1.22 : 1;
+  const intensity = appState.blackout ? 0 : clamp(baseIntensity * intensityBoost, 0, 1);
   const color = fixture.color;
 
   if (fixture.type === "laser") {
@@ -673,20 +750,22 @@ function fixtureOutput(fixture, timeSeconds) {
       type: "laser",
       color,
       intensity,
-      sweep: Math.sin(phase) * fixture.swing,
-      spread: fixture.spread,
+      sweep: Math.sin(phase * 1.1) * fixture.swing * (0.45 + visual.energy * 0.75),
+      spread: fixture.spread * (visual.structure === "drop" ? 1.35 : 0.95),
       beamCount: Number(fixture.beam_count),
+      shimmer: visual.beatPulse,
     };
   }
 
   if (fixture.type === "moving_head") {
+    const motionBias = visual.motionStyle === "sparse" ? 0.55 : visual.motionStyle === "aggressive" ? 1.25 : 1;
     return {
       type: "moving_head",
       color,
       intensity,
-      pan: fixture.pan + Math.sin(phase) * fixture.pan_range,
-      tilt: fixture.tilt + Math.cos(phase * 0.8) * fixture.tilt_range,
-      beamWidth: fixture.beam_width,
+      pan: fixture.pan + Math.sin(phase) * fixture.pan_range * motionBias,
+      tilt: fixture.tilt + Math.cos(phase * 0.82) * fixture.tilt_range * motionBias,
+      beamWidth: fixture.beam_width * (0.9 + visual.beatPulse * 0.25),
     };
   }
 
@@ -695,7 +774,7 @@ function fixtureOutput(fixture, timeSeconds) {
       type: "wash",
       color,
       intensity,
-      radius: fixture.radius * (0.9 + mix * 0.2),
+      radius: fixture.radius * (0.82 + visual.pulseMix * 0.34 + visual.beatPulse * 0.12),
     };
   }
 
@@ -705,15 +784,16 @@ function fixtureOutput(fixture, timeSeconds) {
     intensity,
     width: fixture.width,
     pixelCount: Number(fixture.pixel_count),
-    chase: (Math.sin(phase * 1.6) + 1) * 0.5,
+    chase: (visual.beatPhase + ((Math.sin(phase * 0.7) + 1) * 0.15)) % 1,
   };
 }
 
-function drawBackground(ctx, width, height) {
+function drawBackground(ctx, width, height, visual) {
+  const palette = visual.scene.palette;
   const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, "#09121f");
-  sky.addColorStop(0.58, "#162335");
-  sky.addColorStop(1, "#35261d");
+  sky.addColorStop(0, rgba(palette[0] || "#09121f", 0.24 + visual.energy * 0.14));
+  sky.addColorStop(0.58, rgba(palette[1] || "#162335", 0.16 + visual.pulseMix * 0.1));
+  sky.addColorStop(1, rgba(palette[2] || "#35261d", 0.22 + visual.beatPulse * 0.16));
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
@@ -742,12 +822,20 @@ function drawBackground(ctx, width, height) {
 
   ctx.beginPath();
   ctx.ellipse(width / 2, height - 76, width * 0.42, 70, 0, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255, 214, 153, 0.12)";
+  ctx.fillStyle = rgba(palette[1] || "#ffd699", 0.08 + visual.beatPulse * 0.12);
   ctx.fill();
+
+  if (visual.structure === "drop" || visual.structure === "buildup") {
+    const atmosphere = ctx.createRadialGradient(width / 2, height * 0.72, 20, width / 2, height * 0.72, width * 0.45);
+    atmosphere.addColorStop(0, rgba(palette[0] || "#12d8ff", 0.04 + visual.energy * 0.08));
+    atmosphere.addColorStop(1, rgba(palette[2] || "#f8961e", 0));
+    ctx.fillStyle = atmosphere;
+    ctx.fillRect(0, 0, width, height);
+  }
 
   ctx.fillStyle = "rgba(255,255,255,0.6)";
   ctx.font = "600 14px Trebuchet MS";
-  ctx.fillText("Patch surface", 82, 102);
+  ctx.fillText(`Patch surface · ${visual.scene.label}`, 82, 102);
 }
 
 function drawLaser(ctx, fixture, output, width, height) {
@@ -762,8 +850,8 @@ function drawLaser(ctx, fixture, output, width, height) {
     const targetY = height - 92 - Math.abs(centered) * 40;
     const beam = ctx.createLinearGradient(originX, originY, targetX, targetY);
     beam.addColorStop(0, rgba(output.color, 0));
-    beam.addColorStop(0.12, rgba(output.color, output.intensity * 0.22));
-    beam.addColorStop(1, rgba(output.color, output.intensity * 0.85));
+    beam.addColorStop(0.12, rgba(output.color, output.intensity * (0.18 + output.shimmer * 0.14)));
+    beam.addColorStop(1, rgba(output.color, output.intensity * (0.74 + output.shimmer * 0.18)));
     ctx.strokeStyle = beam;
     ctx.lineWidth = 2.2;
     ctx.beginPath();
@@ -862,11 +950,12 @@ function renderStage(timeMillis) {
   const width = canvas.width;
   const height = canvas.height;
   const seconds = timeMillis / 1000;
+  const visual = runtimeVisualState(seconds);
 
-  drawBackground(ctx, width, height);
+  drawBackground(ctx, width, height, visual);
 
   appState.fixtures.forEach((fixture) => {
-    const output = fixtureOutput(fixture, seconds);
+    const output = fixtureOutput(fixture, visual);
     if (fixture.type === "laser") {
       drawLaser(ctx, fixture, output, width, height);
     } else if (fixture.type === "moving_head") {
