@@ -1085,6 +1085,60 @@ function sectionVariant(section, key) {
   return section && typeof section[key] === "object" ? section[key] : {};
 }
 
+function currentLaserProgramLook(section, visual) {
+  const laserProgram = sectionVariant(section, "laser_program");
+  if (!laserProgram || Object.keys(laserProgram).length === 0) {
+    return null;
+  }
+
+  const progress = clamp(Number(visual.sectionProgress ?? 0), 0, 1);
+  const role = safeText(laserProgram.phrase_role, "");
+  const launch = typeof laserProgram.launch === "object" ? laserProgram.launch : null;
+  const release = typeof laserProgram.release === "object" ? laserProgram.release : null;
+  const sustain = Array.isArray(laserProgram.sustain) ? laserProgram.sustain.filter((item) => item && typeof item === "object") : [];
+  const fills = Array.isArray(laserProgram.fills) ? laserProgram.fills.filter((item) => item && typeof item === "object") : [];
+
+  let selected = null;
+  let selectedRole = "sustain";
+  if (progress <= 0.16 && launch) {
+    selected = { ...launch };
+    selectedRole = "launch";
+  } else if (progress >= 0.84 && release) {
+    selected = { ...release };
+    selectedRole = "release";
+  } else {
+    const shouldFill = fills.length > 0
+      && Boolean(appState.runtimeSnapshot?.semantic_frame?.downbeat)
+      && ["build_riser", "drop_launch", "drop_variation"].includes(role);
+    if (shouldFill) {
+      const fillIndex = Math.floor((visual.beatPhase * 8 + progress * fills.length * 3) % fills.length);
+      selected = { ...fills[fillIndex] };
+      selectedRole = "fill";
+    } else if (sustain.length > 0) {
+      const sustainIndex = Math.min(
+        sustain.length - 1,
+        Math.max(0, Math.floor(((progress - 0.16) / 0.68) * sustain.length)),
+      );
+      selected = { ...sustain[sustainIndex] };
+      selectedRole = "sustain";
+    }
+  }
+  if (!selected) {
+    return null;
+  }
+
+  const zonePolicy = safeText(laserProgram.zone_policy, "");
+  if (zonePolicy === "overhead_only") {
+    selected.target_bias = "ceiling";
+  } else if (zonePolicy === "overhead_bias" && selected.target_bias === "crowd") {
+    selected.target_bias = "mid_air";
+  } else if (zonePolicy === "crowd_punctuate" && selected.target_bias !== "crowd" && progress > 0.2) {
+    selected.target_bias = "mid_air";
+  }
+  selected.__role = selectedRole;
+  return selected;
+}
+
 function modulatedStrobeLevel(section, visualBase) {
   const baseLevel = clamp(Number(section?.strobe_level ?? visualBase ?? 0), 0, 1);
   const profile = sectionVariant(section, "strobe_profile");
@@ -1189,6 +1243,9 @@ function ledPatternFamily(pattern) {
 
 function describeLaserBehavior(output, visual) {
   const parts = [];
+  if (output.lookRole) {
+    parts.push(output.lookRole);
+  }
   if (output.dropMode && visual.strobeActive) {
     parts.push("drop strobe hits");
   } else if (output.dropMode) {
@@ -1778,10 +1835,17 @@ function fixtureOutput(fixture, visual) {
   if (fixture.type === "laser") {
     const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
     const rebuildMode = fixtureMode === "rebuild" || visual.structure === "build";
-    const laserPattern = String(section?.laser_pattern || "fan");
+    const activeProgramLook = currentLaserProgramLook(section, visual);
+    const laserPattern = String(activeProgramLook?.pattern || section?.laser_pattern || "fan");
     const laserVariant = sectionVariant(section, "laser_variant");
     const laserExpression = sectionVariant(section, "laser_expression");
-    const renderFamily = laserRenderFamily(laserPattern, safeText(laserExpression.geometry_family, "fan"));
+    const lookGeometry = safeText(activeProgramLook?.geometry_family, "");
+    const lookColorMode = safeText(activeProgramLook?.color_mode, "");
+    const lookTargetBias = safeText(activeProgramLook?.target_bias, "");
+    const lookDensity = clamp(Number(activeProgramLook?.density || 1), 0.35, 2);
+    const lookMotion = clamp(Number(activeProgramLook?.motion || 1), 0.35, 2);
+    const lookEmphasis = clamp(Number(activeProgramLook?.emphasis || 0.5), 0, 1);
+    const renderFamily = laserRenderFamily(laserPattern, lookGeometry || safeText(laserExpression.geometry_family, "fan"));
     const strobeRate = dropMode
       ? (3.2 + (visual.strobeLevel * 9) + (visual.dropTransitionHot ? 4.2 : 0)) * Number(laserVariant.gate_sharpness || 1)
       : 2.2 + visual.strobeLevel * 6;
@@ -1836,7 +1900,7 @@ function fixtureOutput(fixture, visual) {
         : patternFamily === "burst"
           ? Math.max(beamCount, 7)
           : beamCount;
-    const variantBeamCount = clamp(Math.round(patternBeamCount * Number(laserVariant.beam_density || 1)), 1, 10);
+    const variantBeamCount = clamp(Math.round(patternBeamCount * Number(laserVariant.beam_density || 1) * lookDensity), 1, 12);
     const patternRotation = patternFamily === "tunnel"
       ? rotation + Math.sin(phase * 1.4) * 1.2
       : patternFamily === "rake"
@@ -1852,7 +1916,7 @@ function fixtureOutput(fixture, visual) {
               : patternFamily === "sheet"
                 ? rotation * 0.1
         : rotation;
-    const variantRotation = patternRotation * Number(laserVariant.rotation_bias || 1);
+    const variantRotation = patternRotation * Number(laserVariant.rotation_bias || 1) * (0.82 + lookMotion * 0.28);
     const patternVertical = patternFamily === "rake"
       ? verticalSweep + Math.sin(phase * 2.4) * 0.34
       : patternFamily === "scan"
@@ -1866,7 +1930,7 @@ function fixtureOutput(fixture, visual) {
               : patternFamily === "sequence"
                 ? verticalSweep * 0.6
         : verticalSweep;
-    const variantVertical = patternVertical * Number(laserVariant.vertical_bias || 1);
+    const variantVertical = patternVertical * Number(laserVariant.vertical_bias || 1) * (0.82 + lookMotion * 0.24);
     const patternSweep = patternFamily === "scan"
       ? Math.sin(phase * 4.2 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.55
       : patternFamily === "tunnel"
@@ -1881,7 +1945,7 @@ function fixtureOutput(fixture, visual) {
                 ? Math.sin(phase * 1.6 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.24
                 : patternFamily === "sheet"
                   ? Math.sin(phase * 0.32 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.06
-          : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1) * Number(laserVariant.sweep_rate || 1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
+          : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1) * Number(laserVariant.sweep_rate || 1) * lookMotion) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
     const patternIntensity = patternFamily === "burst"
       ? intensity * (0.78 + visual.beatPulse * 0.35 + (visual.dropTransitionHot ? 0.18 : 0))
       : patternFamily === "array"
@@ -1893,7 +1957,7 @@ function fixtureOutput(fixture, visual) {
           : patternFamily === "sheet"
             ? intensity * 0.92
         : intensity * strobeGate;
-    const expressionGeometry = renderFamily;
+    const expressionGeometry = laserRenderFamily(laserPattern, lookGeometry || safeText(laserExpression.geometry_family, "fan"));
     const geometrySpread = expressionGeometry === "grouped"
       ? 0.82
       : expressionGeometry === "tunnel"
@@ -1911,13 +1975,19 @@ function fixtureOutput(fixture, visual) {
                   : expressionGeometry === "sheet"
                     ? 1.5
             : 1;
-    const targetBias = laserDynamicTargetBias(safeText(laserExpression.target_bias, "mid_air"), visual, dropMode);
+    const targetBias = laserDynamicTargetBias(lookTargetBias || safeText(laserExpression.target_bias, "mid_air"), visual, dropMode);
     const targetYBias = targetBias === "crowd"
       ? 0.16 + Number(laserExpression.crowd_bias || 0) * 0.2
       : targetBias === "ceiling"
         ? -0.2 - Number(laserExpression.ceiling_bias || 0) * 0.18
         : -0.02;
-    const beamColor = laserBeamColor(color, laserExpression, { phase, intensity: patternIntensity }, visual);
+    const colorExpression = {
+      ...laserExpression,
+      color_mode: lookColorMode || laserExpression.color_mode,
+      white_accent: Math.max(Number(laserExpression.white_accent || 0), lookEmphasis * 0.85),
+      color_cycle_rate: Number(laserExpression.color_cycle_rate || 1) * (0.85 + lookMotion * 0.22),
+    };
+    const beamColor = laserBeamColor(color, colorExpression, { phase, intensity: patternIntensity }, visual);
     const melodicSweepBias = 0.72 + visual.melodicSmoothness * 0.45;
     const aggressionSweepBias = 0.75 + visual.laserAggression * 0.5;
     const expressionTargetBias = targetBias === "crowd"
@@ -1937,8 +2007,8 @@ function fixtureOutput(fixture, visual) {
     return {
       type: "laser",
       color: beamColor,
-      intensity: patternIntensity * clamp(Number(laserVariant.gate_sharpness || 1), 0.55, 1.75),
-      sweep: patternSweep * Number(laserExpression.x_amplitude || 1) * aggressionSweepBias,
+      intensity: patternIntensity * clamp(Number(laserVariant.gate_sharpness || 1), 0.55, 1.75) * (0.76 + lookEmphasis * 0.4),
+      sweep: patternSweep * Number(laserExpression.x_amplitude || 1) * aggressionSweepBias * (0.8 + lookMotion * 0.28),
       spread: fixture.spread * (dropMode ? 1.85 : rebuildMode ? 1.15 : 0.95) * patternSpread * geometrySpread * Number(laserVariant.spread_scale || 1),
       beamCount: clamp(Math.round(variantBeamCount * Number(laserExpression.sweep_density || 1)), 1, 12),
       shimmer: visual.beatPulse,
@@ -1947,13 +2017,14 @@ function fixtureOutput(fixture, visual) {
       dropMode,
       pattern: laserPattern,
       variantLabel: safeText(laserVariant.label, ""),
-      expressionLabel: safeText(laserExpression.label, ""),
+      expressionLabel: safeText(activeProgramLook?.label || laserExpression.label, ""),
       geometryFamily: expressionGeometry,
       renderFamily,
       targetYBias: expressionTargetBias,
       mirror: Boolean(laserExpression.mirror),
       curveDepth,
       phase,
+      lookRole: safeText(activeProgramLook?.__role, ""),
     };
   }
 
