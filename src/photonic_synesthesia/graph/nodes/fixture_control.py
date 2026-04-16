@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import time
+from pathlib import Path
 
 from photonic_synesthesia.core.config import (
     FixtureConfig,
@@ -17,6 +18,7 @@ from photonic_synesthesia.core.config import (
 )
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
+from photonic_synesthesia.laser import build_laser_profiles
 
 logger = get_logger(__name__)
 
@@ -37,20 +39,15 @@ class LaserControlNode:
         self,
         fixtures: list[FixtureConfig],
         safety: LaserSafetyConfig,
+        fixtures_dir: Path | None = None,
     ):
         self.fixtures = [f for f in fixtures if f.type == "laser"]
         self.safety = safety
-
-        # OEM 7-channel laser map (common 4-lens RGBY units)
-        self.channel_map = {
-            "mode": 0,
-            "pattern": 1,
-            "x_pos": 2,
-            "y_pos": 3,
-            "scan_speed": 4,
-            "pattern_speed": 5,
-            "zoom": 6,
-        }
+        self.fixture_profiles = (
+            build_laser_profiles(self.fixtures, fixtures_dir or Path("config/fixtures"))
+            if self.fixtures
+            else {}
+        )
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Generate DMX commands for laser fixtures."""
@@ -101,9 +98,13 @@ class LaserControlNode:
         """Generate DMX values for a single laser fixture."""
         base = fixture.start_address
         values: dict[int, int] = {}
+        profile = self.fixture_profiles.get(fixture.id)
+        channel_map = profile.channel_map if profile is not None else {}
 
         # Mode: force manual DMX range (commonly 200-255 for this fixture class)
-        values[base + self.channel_map["mode"]] = 200
+        mode_channel = channel_map.get("mode")
+        if mode_channel is not None:
+            values[base + mode_channel] = 200
 
         # =================================================================
         # Pattern selection based on structure
@@ -117,17 +118,24 @@ class LaserControlNode:
         else:
             pattern = int((current_time * 0.5) % 16)  # Slow switching
 
-        values[base + self.channel_map["pattern"]] = pattern * 4
+        pattern_channel = channel_map.get("pattern")
+        if pattern_channel is not None:
+            values[base + pattern_channel] = pattern * 4
 
         # =================================================================
         # X/Y position movement
         # =================================================================
-        x_pos = int(128 + 100 * math.sin(current_time * bpm / 60))
-        y_pos = int(64 + 30 * math.sin(current_time * bpm / 120))
+        position_scale = 1.25 if profile and profile.control_surface == "ilda" else 1.0
+        x_pos = int(128 + 100 * position_scale * math.sin(current_time * bpm / 60))
+        y_pos = int(64 + 30 * position_scale * math.sin(current_time * bpm / 120))
         y_pos = min(y_pos, self.safety.y_axis_max)  # SAFETY: audience-height clamp
 
-        values[base + self.channel_map["x_pos"]] = x_pos
-        values[base + self.channel_map["y_pos"]] = y_pos
+        x_channel = channel_map.get("x_pos")
+        y_channel = channel_map.get("y_pos")
+        if x_channel is not None:
+            values[base + x_channel] = max(0, min(255, x_pos))
+        if y_channel is not None:
+            values[base + y_channel] = max(0, min(255, y_pos))
 
         # =================================================================
         # Scan speed and pattern play speed
@@ -146,8 +154,12 @@ class LaserControlNode:
         # check is completed during commissioning.
         scan_speed = max(scan_speed, self.safety.min_scan_speed)
 
-        values[base + self.channel_map["scan_speed"]] = scan_speed
-        values[base + self.channel_map["pattern_speed"]] = pattern_speed
+        scan_channel = channel_map.get("scan_speed")
+        pattern_speed_channel = channel_map.get("pattern_speed")
+        if scan_channel is not None:
+            values[base + scan_channel] = scan_speed
+        if pattern_speed_channel is not None:
+            values[base + pattern_speed_channel] = pattern_speed
 
         # =================================================================
         # Zoom modulation (beat/energy linked)
@@ -159,7 +171,26 @@ class LaserControlNode:
         else:
             zoom = int(64 + 32 * math.sin(current_time * 0.5))
 
-        values[base + self.channel_map["zoom"]] = zoom
+        zoom_channel = channel_map.get("zoom")
+        if zoom_channel is not None:
+            values[base + zoom_channel] = zoom
+
+        # =================================================================
+        # Optional roll axes for hybrid/adapter fixtures
+        # =================================================================
+        if structure == MusicStructure.DROP:
+            roll_speed = bpm / 60 * 3.0
+        elif structure == MusicStructure.BUILDUP:
+            roll_speed = bpm / 60 * 1.5
+        else:
+            roll_speed = bpm / 60 * 0.75
+
+        for axis_name, phase_offset in (("x_roll", 0.0), ("y_roll", 1.7), ("z_roll", 3.1)):
+            axis_channel = channel_map.get(axis_name)
+            if axis_channel is None:
+                continue
+            roll_value = int(128 + 110 * math.sin(current_time * roll_speed + phase_offset))
+            values[base + axis_channel] = max(0, min(255, roll_value))
 
         return FixtureCommand(
             fixture_id=fixture.id,

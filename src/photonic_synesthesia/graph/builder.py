@@ -267,7 +267,11 @@ def build_photonic_graph(
     nodes["scene_select"] = SceneSelectNode(settings.scene)
 
     # Fixture control nodes
-    nodes["laser_control"] = LaserControlNode(settings.fixtures, settings.safety.laser)
+    nodes["laser_control"] = LaserControlNode(
+        settings.fixtures,
+        settings.safety.laser,
+        fixtures_dir=settings.fixtures_dir,
+    )
     nodes["moving_head_control"] = MovingHeadControlNode(
         settings.fixtures, settings.safety.moving_head
     )

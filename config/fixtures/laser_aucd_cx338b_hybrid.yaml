@@ -1,0 +1,104 @@
+# AUCD CX338B-family hybrid profile.
+# This treats ILDA as the primary expressive path and the included DMX adapter
+# as a commissioning/fallback control surface until the exact DMX chart is verified.
+
+name: "AUCD CX338B Hybrid ILDA Laser"
+manufacturer: "AUCD"
+model: "CX338B"
+type: "laser"
+control_surface: "ilda"
+fallback_surface: "dmx_adapter"
+dmx_adapter_profile: "laser_generic_9ch"
+adapter_assumption: true
+manual_source: "https://manuals.plus/asin/B0F9TFPHLF"
+notes: >
+  Primary intent is procedural ILDA output. DMX fallback currently inherits the generic
+  9-channel adapter layout until the exact manual/channel chart is captured from the real unit.
+
+capabilities:
+  supports_ilda_frames: true
+  supports_dmx_macros: true
+  supports_app_control: true
+  app_name: "Light Elf"
+  expressive_priority: "ilda_primary"
+  operating_modes:
+    - app
+    - sound
+    - auto
+    - ilda
+    - dmx512
+    - master_slave
+  dmx_modes:
+    - 16
+    - 20
+  app_functions:
+    - drawn
+    - text
+    - program
+    - random
+    - animation
+    - line
+    - outdoor
+    - dmx_ilda_configuration
+  adjustable_parameters:
+    - pattern_size
+    - speed
+    - rotation
+    - movement
+    - color
+  geometry_families:
+    - fan
+    - burst
+    - tunnel
+    - cone
+    - lattice
+    - helix
+    - sky
+    - rake
+    - scan
+  color_modes:
+    - static
+    - dual_cycle
+    - morph
+    - white_hits
+  target_biases:
+    - crowd
+    - mid_air
+    - ceiling
+
+connections:
+  ilda:
+    - rj45
+    - db25
+  dmx:
+    - xlr_3pin_in
+    - xlr_3pin_out
+  power: "ac_110_240v_50_60hz"
+  rear_panel_features:
+    - lcd_display
+    - safety_key_switch
+    - ilda_in_out
+    - dmx_in_out
+
+specifications:
+  output_power_watts: 5
+  scan_speed_kpps: 25
+  scan_angle_degrees: 25
+  laser_sources:
+    red: "650nm@1W"
+    green: "532nm@0.5W"
+    blue: "450nm@3.5W"
+  dimensions_cm:
+    length: 16
+    width: 15
+    height: 12
+  weight_kg: 2
+  certifications:
+    - ce
+
+safety:
+  laser_class_reported: "class_3a_secondary_source_verify_on_unit"
+  audience_scanning_allowed: false
+  commissioning_required: true
+  enable_delay_ms: 500
+  crowd_safe_tilt_max: 100
