@@ -453,6 +453,166 @@ def _fixture_enablement(
     return lasers, movers, washes, leds
 
 
+def _pick_word(track_seed: str, token: str, words: list[str]) -> str:
+    index = int(_stable_float(f"{track_seed}:{token}") * len(words)) % len(words)
+    return words[index]
+
+
+def _variant_label(track_seed: str, token: str, base_pattern: str, adjectives: list[str], nouns: list[str]) -> str:
+    adjective = _pick_word(track_seed, f"{token}:adj", adjectives)
+    noun = _pick_word(track_seed, f"{token}:noun", nouns)
+    base = base_pattern.replace("_", " ").title()
+    return f"{adjective} {noun} {base}"
+
+
+def _strobe_profile(
+    *,
+    kind: str,
+    context: str,
+    track_seed: str,
+    ordinal: int,
+    base_level: float,
+) -> dict[str, Any]:
+    stage = _pattern_stage(kind)
+    if stage in {"intro", "breakdown", "outro"}:
+        mode = "restraint"
+    elif context == "build_riser":
+        mode = "riser"
+    elif context == "drop_launch":
+        mode = "impact"
+    elif context == "drop_variation":
+        mode = "burst"
+    else:
+        mode = "pulse"
+
+    floor = 0.0 if stage != "drop" else base_level * 0.28
+    ceiling = base_level
+    if mode == "riser":
+        floor = base_level * 0.12
+        ceiling = _clamp(base_level + 0.12, 0.0, 1.0)
+    elif mode == "impact":
+        floor = base_level * 0.24
+        ceiling = _clamp(base_level + 0.2, 0.0, 1.0)
+    elif mode == "burst":
+        floor = base_level * 0.18
+        ceiling = _clamp(base_level + 0.08, 0.0, 1.0)
+    elif mode == "restraint":
+        floor = 0.0
+        ceiling = min(base_level, 0.08 if stage == "breakdown" else 0.03)
+
+    return {
+        "mode": mode,
+        "floor": round(floor, 3),
+        "ceiling": round(ceiling, 3),
+        "rate_multiplier": round(0.8 + _stable_float(f"{track_seed}:strobe_rate:{kind}:{ordinal}") * 1.8, 3),
+        "shape": ["swell", "pulse", "gated", "burst"][int(_stable_float(f"{track_seed}:strobe_shape:{kind}:{ordinal}") * 4) % 4],
+        "label": {
+            "restraint": "restrained accents",
+            "riser": "riser escalation",
+            "impact": "impact hits",
+            "burst": "burst accents",
+            "pulse": "pulse accents",
+        }[mode],
+    }
+
+
+def _laser_variant(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    token = f"laser:{kind}:{context}:{ordinal}:{base_pattern}"
+    return {
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Helix", "Voltage", "Prism", "Skyline", "Vector", "Nova"],
+            ["Fan", "Spray", "Arc", "Rake", "Matrix", "Tunnel"],
+        ),
+        "sweep_rate": round(0.75 + _stable_float(f"{token}:sweep") * 1.6, 3),
+        "spread_scale": round(0.75 + _stable_float(f"{token}:spread") * 0.9, 3),
+        "vertical_bias": round(0.55 + _stable_float(f"{token}:vertical") * 1.5, 3),
+        "rotation_bias": round(0.55 + _stable_float(f"{token}:rotation") * 1.8, 3),
+        "beam_density": round(0.75 + _stable_float(f"{token}:density") * 1.25, 3),
+        "gate_sharpness": round(0.65 + _stable_float(f"{token}:gate") * 1.2, 3),
+    }
+
+
+def _mover_variant(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    token = f"mover:{kind}:{context}:{ordinal}:{base_pattern}"
+    return {
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Orbit", "Vector", "Mirror", "Pulse", "Ribbon", "Velocity"],
+            ["Sweep", "Trace", "Drift", "Lattice", "Arc", "Figure"],
+        ),
+        "pan_scale": round(0.72 + _stable_float(f"{token}:pan") * 0.9, 3),
+        "tilt_scale": round(0.72 + _stable_float(f"{token}:tilt") * 0.95, 3),
+        "phase_scale": round(0.75 + _stable_float(f"{token}:phase") * 1.2, 3),
+        "hit_bias": round(_stable_float(f"{token}:hit"), 3),
+        "beam_scale": round(0.82 + _stable_float(f"{token}:beam") * 0.65, 3),
+    }
+
+
+def _wash_variant(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    token = f"wash:{kind}:{context}:{ordinal}:{base_pattern}"
+    return {
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Halo", "Bloom", "Tidal", "Velvet", "Prism", "Lunar"],
+            ["Glow", "Cloud", "Bloom", "Wash", "Swell", "Haze"],
+        ),
+        "radius_scale": round(0.8 + _stable_float(f"{token}:radius") * 0.8, 3),
+        "pulse_depth": round(0.45 + _stable_float(f"{token}:pulse") * 0.9, 3),
+        "fade_bias": round(_stable_float(f"{token}:fade"), 3),
+    }
+
+
+def _led_variant(
+    *,
+    track_seed: str,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    ordinal: int,
+) -> dict[str, Any]:
+    token = f"led:{kind}:{context}:{ordinal}:{base_pattern}"
+    return {
+        "label": _variant_label(
+            track_seed,
+            token,
+            base_pattern,
+            ["Pixel", "Neon", "Spectrum", "Prism", "Voltage", "Signal"],
+            ["Rush", "Grid", "Ribbon", "Shimmer", "Surge", "Flow"],
+        ),
+        "chase_rate": round(0.75 + _stable_float(f"{token}:chase") * 1.5, 3),
+        "density": round(0.7 + _stable_float(f"{token}:density") * 1.2, 3),
+        "glow_bias": round(0.5 + _stable_float(f"{token}:glow") * 0.9, 3),
+    }
+
+
 def _default_show_sections(
     markers: list[dict[str, Any]],
     duration_seconds: float,
@@ -469,6 +629,53 @@ def _default_show_sections(
             profile=profile,
             ordinal=0,
         )
+        strobe_profile = _strobe_profile(
+            kind="drop",
+            context="drop_launch",
+            track_seed=seed,
+            ordinal=0,
+            base_level=strobe,
+        )
+        laser_pattern = _select_pattern(
+            family="laser",
+            kind="drop",
+            context="drop_launch",
+            profile=profile,
+            track_seed=seed,
+            marker_name="Auto Groove",
+            ordinal=0,
+            previous_pattern=None,
+        )
+        mover_pattern = _select_pattern(
+            family="mover",
+            kind="drop",
+            context="drop_launch",
+            profile=profile,
+            track_seed=seed,
+            marker_name="Auto Groove",
+            ordinal=0,
+            previous_pattern=None,
+        )
+        wash_pattern = _select_pattern(
+            family="wash",
+            kind="drop",
+            context="drop_launch",
+            profile=profile,
+            track_seed=seed,
+            marker_name="Auto Groove",
+            ordinal=0,
+            previous_pattern=None,
+        )
+        led_pattern = _select_pattern(
+            family="led",
+            kind="drop",
+            context="drop_launch",
+            profile=profile,
+            track_seed=seed,
+            marker_name="Auto Groove",
+            ordinal=0,
+            previous_pattern=None,
+        )
         return [
             {
                 "id": "section_000",
@@ -481,46 +688,15 @@ def _default_show_sections(
                 "intensity_multiplier": intensity,
                 "motion_multiplier": motion,
                 "strobe_level": strobe,
-                "laser_pattern": _select_pattern(
-                    family="laser",
-                    kind="drop",
-                    context="drop_launch",
-                    profile=profile,
-                    track_seed=seed,
-                    marker_name="Auto Groove",
-                    ordinal=0,
-                    previous_pattern=None,
-                ),
-                "mover_pattern": _select_pattern(
-                    family="mover",
-                    kind="drop",
-                    context="drop_launch",
-                    profile=profile,
-                    track_seed=seed,
-                    marker_name="Auto Groove",
-                    ordinal=0,
-                    previous_pattern=None,
-                ),
-                "wash_pattern": _select_pattern(
-                    family="wash",
-                    kind="drop",
-                    context="drop_launch",
-                    profile=profile,
-                    track_seed=seed,
-                    marker_name="Auto Groove",
-                    ordinal=0,
-                    previous_pattern=None,
-                ),
-                "led_pattern": _select_pattern(
-                    family="led",
-                    kind="drop",
-                    context="drop_launch",
-                    profile=profile,
-                    track_seed=seed,
-                    marker_name="Auto Groove",
-                    ordinal=0,
-                    previous_pattern=None,
-                ),
+                "strobe_profile": strobe_profile,
+                "laser_pattern": laser_pattern,
+                "laser_variant": _laser_variant(track_seed=seed, base_pattern=laser_pattern, kind="drop", context="drop_launch", ordinal=0),
+                "mover_pattern": mover_pattern,
+                "mover_variant": _mover_variant(track_seed=seed, base_pattern=mover_pattern, kind="drop", context="drop_launch", ordinal=0),
+                "wash_pattern": wash_pattern,
+                "wash_variant": _wash_variant(track_seed=seed, base_pattern=wash_pattern, kind="drop", context="drop_launch", ordinal=0),
+                "led_pattern": led_pattern,
+                "led_variant": _led_variant(track_seed=seed, base_pattern=led_pattern, kind="drop", context="drop_launch", ordinal=0),
                 "laser_enabled": True,
                 "movers_enabled": True,
                 "washes_enabled": True,
@@ -565,6 +741,13 @@ def _default_show_sections(
             energy_scale=energy_scale,
             profile=profile,
             ordinal=ordinal,
+        )
+        strobe_profile = _strobe_profile(
+            kind=kind,
+            context=context,
+            track_seed=seed,
+            ordinal=ordinal,
+            base_level=strobe_level,
         )
         laser_pattern = _select_pattern(
             family="laser",
@@ -619,6 +802,34 @@ def _default_show_sections(
             track_seed=seed,
             ordinal=ordinal,
         )
+        laser_variant = _laser_variant(
+            track_seed=seed,
+            base_pattern=laser_pattern,
+            kind=kind,
+            context=context,
+            ordinal=ordinal,
+        )
+        mover_variant = _mover_variant(
+            track_seed=seed,
+            base_pattern=mover_pattern,
+            kind=kind,
+            context=context,
+            ordinal=ordinal,
+        )
+        wash_variant = _wash_variant(
+            track_seed=seed,
+            base_pattern=wash_pattern,
+            kind=kind,
+            context=context,
+            ordinal=ordinal,
+        )
+        led_variant = _led_variant(
+            track_seed=seed,
+            base_pattern=led_pattern,
+            kind=kind,
+            context=context,
+            ordinal=ordinal,
+        )
         sections.append(
             {
                 "id": f"section_{index:03d}",
@@ -631,10 +842,15 @@ def _default_show_sections(
                 "intensity_multiplier": intensity_multiplier,
                 "motion_multiplier": motion_multiplier,
                 "strobe_level": strobe_level,
+                "strobe_profile": strobe_profile,
                 "laser_pattern": laser_pattern,
+                "laser_variant": laser_variant,
                 "mover_pattern": mover_pattern,
+                "mover_variant": mover_variant,
                 "wash_pattern": wash_pattern,
+                "wash_variant": wash_variant,
                 "led_pattern": led_pattern,
+                "led_variant": led_variant,
                 "laser_enabled": laser_enabled,
                 "movers_enabled": movers_enabled,
                 "washes_enabled": washes_enabled,

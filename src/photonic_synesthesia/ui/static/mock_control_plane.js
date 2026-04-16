@@ -339,8 +339,9 @@ function renderShowEditor() {
       section.leds_enabled ? "LEDs" : null,
     ].filter(Boolean);
     const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
-    const strobeText = section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes";
-    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · laser ${section.laser_pattern} · mover ${section.mover_pattern} · wash ${section.wash_pattern} · led ${section.led_pattern} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+    const strobeProfile = sectionVariant(section, "strobe_profile");
+    const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · laser ${safeText(section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
@@ -751,6 +752,44 @@ function triangleWave(value) {
   return 1 - Math.abs((wrapped * 2) - 1);
 }
 
+function sectionVariant(section, key) {
+  return section && typeof section[key] === "object" ? section[key] : {};
+}
+
+function modulatedStrobeLevel(section, visualBase) {
+  const baseLevel = clamp(Number(section?.strobe_level ?? visualBase ?? 0), 0, 1);
+  const profile = sectionVariant(section, "strobe_profile");
+  const floor = clamp(Number(profile.floor ?? baseLevel), 0, 1);
+  const ceiling = clamp(Number(profile.ceiling ?? baseLevel), floor, 1);
+  const rate = clamp(Number(profile.rate_multiplier ?? 1), 0.2, 4);
+  const shape = safeText(profile.shape, "pulse");
+  const mode = safeText(profile.mode, "pulse");
+  const progress = clamp(Number(section?.__sectionProgress ?? 0), 0, 1);
+  const beatPulse = clamp(Number(section?.__beatPulse ?? 0), 0, 1);
+  const energy = clamp(Number(section?.__energy ?? 0), 0, 1);
+
+  let envelope = beatPulse;
+  if (mode === "riser") {
+    envelope = clamp((progress * 0.8) + beatPulse * 0.45, 0, 1);
+  } else if (mode === "impact") {
+    envelope = clamp(Math.max(beatPulse, progress < 0.12 ? 1 - progress * 4.2 : 0) * (0.88 + energy * 0.2), 0, 1);
+  } else if (mode === "burst") {
+    envelope = clamp((triangleWave((progress * 4 + beatPulse) * rate) * 0.6) + beatPulse * 0.55, 0, 1);
+  } else if (mode === "restraint") {
+    envelope = clamp(beatPulse * 0.35, 0, 0.4);
+  }
+
+  if (shape === "swell") {
+    envelope = clamp(envelope * (0.45 + progress * 0.85), 0, 1);
+  } else if (shape === "gated") {
+    envelope = triangleWave((progress + beatPulse) * rate) > 0.55 ? envelope : envelope * 0.18;
+  } else if (shape === "burst") {
+    envelope = clamp(Math.max(envelope, beatPulse * 1.1), 0, 1);
+  }
+
+  return clamp(floor + (ceiling - floor) * envelope, 0, 1);
+}
+
 function laserPatternFamily(pattern) {
   if (["burst_fan", "starburst", "alternating_beam_groups", "shutter_hits"].includes(pattern)) {
     return "burst";
@@ -885,7 +924,7 @@ function describeFixtureActivity(fixture, output, visual) {
   }
   return {
     typeLabel: titleCaseWords(fixture.type),
-    patternLabel: titleCaseWords(output.pattern || "idle"),
+    patternLabel: safeText(output.variantLabel, titleCaseWords(output.pattern || "idle")),
     sectionLabel,
     behavior,
     intensityText,
@@ -935,6 +974,11 @@ function runtimeVisualState(timeSeconds) {
   const sectionEnd = Number(showSection?.end_seconds ?? Math.max(playbackSeconds, 1));
   const sectionSpan = Math.max(0.001, sectionEnd - sectionStart);
   const sectionProgress = clamp((playbackSeconds - sectionStart) / sectionSpan, 0, 1);
+  if (showSection) {
+    showSection.__sectionProgress = sectionProgress;
+    showSection.__beatPulse = beatPulse;
+    showSection.__energy = energy;
+  }
   const pulseMix = clamp(
     0.25
       + (scene.pulse * 0.24)
@@ -946,7 +990,7 @@ function runtimeVisualState(timeSeconds) {
     1.45,
   );
   const strobeBudget = clamp(Number(director.strobe_budget_hz || 0) / 12, 0, 1);
-  const strobeLevel = clamp(Number(showSection?.strobe_level ?? scene.strobe ?? 0), 0, 1);
+  const strobeLevel = modulatedStrobeLevel(showSection, scene.strobe ?? 0);
   const dropTransitionHot = (structure === "drop" || showSection?.fixture_mode === "peak_return")
     && sectionProgress <= 0.18;
   const strobeActive = (structure === "drop" || showSection?.fixture_mode === "peak_return")
@@ -1264,8 +1308,9 @@ function fixtureOutput(fixture, visual) {
     const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
     const rebuildMode = fixtureMode === "rebuild" || visual.structure === "build";
     const laserPattern = String(section?.laser_pattern || "fan");
+    const laserVariant = sectionVariant(section, "laser_variant");
     const strobeRate = dropMode
-      ? 3.2 + (visual.strobeLevel * 9) + (visual.dropTransitionHot ? 4.2 : 0)
+      ? (3.2 + (visual.strobeLevel * 9) + (visual.dropTransitionHot ? 4.2 : 0)) * Number(laserVariant.gate_sharpness || 1)
       : 2.2 + visual.strobeLevel * 6;
     const strobeGate = visual.strobeActive
       ? (triangleWave(phase * strobeRate) > (visual.dropTransitionHot ? 0.62 : 0.45) ? 1 : 0)
@@ -1302,6 +1347,7 @@ function fixtureOutput(fixture, visual) {
         : patternFamily === "burst"
           ? Math.max(beamCount, 7)
           : beamCount;
+    const variantBeamCount = clamp(Math.round(patternBeamCount * Number(laserVariant.beam_density || 1)), 1, 10);
     const patternRotation = patternFamily === "tunnel"
       ? rotation + Math.sin(phase * 1.4) * 1.2
       : patternFamily === "vertical"
@@ -1309,18 +1355,20 @@ function fixtureOutput(fixture, visual) {
         : patternFamily === "scan"
           ? rotation * 0.12
           : rotation;
+    const variantRotation = patternRotation * Number(laserVariant.rotation_bias || 1);
     const patternVertical = patternFamily === "vertical"
       ? verticalSweep + Math.sin(phase * 2.4) * 0.34
       : patternFamily === "scan"
         ? verticalSweep * 0.2
         : verticalSweep;
+    const variantVertical = patternVertical * Number(laserVariant.vertical_bias || 1);
     const patternSweep = patternFamily === "scan"
-      ? Math.sin(phase * 4.2) * fixture.swing * 0.55
+      ? Math.sin(phase * 4.2 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.55
       : patternFamily === "tunnel"
-        ? Math.sin(phase * 1.2) * fixture.swing * 0.18
+        ? Math.sin(phase * 1.2 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.18
         : patternFamily === "vertical"
-          ? Math.sin(phase * 0.55) * fixture.swing * 0.14
-          : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
+          ? Math.sin(phase * 0.55 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.14
+          : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1) * Number(laserVariant.sweep_rate || 1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
     const patternIntensity = patternFamily === "burst"
       ? intensity * (0.78 + visual.beatPulse * 0.35 + (visual.dropTransitionHot ? 0.18 : 0))
       : patternFamily === "scan"
@@ -1329,15 +1377,16 @@ function fixtureOutput(fixture, visual) {
     return {
       type: "laser",
       color,
-      intensity: patternIntensity,
+      intensity: patternIntensity * clamp(Number(laserVariant.gate_sharpness || 1), 0.55, 1.75),
       sweep: patternSweep,
-      spread: fixture.spread * (dropMode ? 1.85 : rebuildMode ? 1.15 : 0.95) * patternSpread,
-      beamCount: patternBeamCount,
+      spread: fixture.spread * (dropMode ? 1.85 : rebuildMode ? 1.15 : 0.95) * patternSpread * Number(laserVariant.spread_scale || 1),
+      beamCount: variantBeamCount,
       shimmer: visual.beatPulse,
-      verticalSweep: patternVertical,
-      rotation: patternRotation,
+      verticalSweep: variantVertical,
+      rotation: variantRotation,
       dropMode,
       pattern: laserPattern,
+      variantLabel: safeText(laserVariant.label, ""),
       phase,
     };
   }
@@ -1345,39 +1394,43 @@ function fixtureOutput(fixture, visual) {
   if (fixture.type === "moving_head") {
     const motionBias = visual.motionStyle === "sparse" ? 0.55 : visual.motionStyle === "aggressive" ? 1.25 : 1;
     const moverPattern = String(section?.mover_pattern || "drift");
+    const moverVariant = sectionVariant(section, "mover_variant");
+    const moverPhase = phase * Number(moverVariant.phase_scale || 1);
     const moverFamily = moverPatternFamily(moverPattern);
     const shapePan = moverFamily === "shape"
-      ? Math.sin(phase * 0.9) * Math.cos(phase * 0.46)
+      ? Math.sin(moverPhase * 0.9) * Math.cos(moverPhase * 0.46)
       : moverFamily === "cross"
-        ? Math.sign(Math.sin(phase * 1.15)) * 0.9
+        ? Math.sign(Math.sin(moverPhase * 1.15)) * 0.9
         : moverFamily === "hits"
-          ? (visual.beatPulse > 0.45 ? Math.sign(Math.sin(phase * 2.2)) : 0)
+          ? (visual.beatPulse > 0.45 + Number(moverVariant.hit_bias || 0) * 0.2 ? Math.sign(Math.sin(moverPhase * 2.2)) : 0)
           : moverFamily === "hold"
             ? 0
-            : Math.sin(phase);
+            : Math.sin(moverPhase);
     const shapeTilt = moverFamily === "shape"
-      ? Math.cos(phase * 0.7)
+      ? Math.cos(moverPhase * 0.7)
       : moverFamily === "rise"
         ? (-0.5 + visual.sectionProgress * 1.5)
         : moverFamily === "hits"
-          ? (visual.beatPulse > 0.45 ? Math.cos(phase * 2.4) : -0.1)
+          ? (visual.beatPulse > 0.45 + Number(moverVariant.hit_bias || 0) * 0.2 ? Math.cos(moverPhase * 2.4) : -0.1)
           : moverFamily === "hold"
             ? 0
-            : Math.cos(phase * 0.82);
+            : Math.cos(moverPhase * 0.82);
     return {
       type: "moving_head",
       color,
       intensity,
-      pan: fixture.pan + shapePan * fixture.pan_range * motionBias * motionGate,
-      tilt: fixture.tilt + shapeTilt * fixture.tilt_range * motionBias * motionGate,
-      beamWidth: fixture.beam_width * (moverFamily === "hits" ? 0.78 : 0.9 + visual.beatPulse * 0.25),
+      pan: fixture.pan + shapePan * fixture.pan_range * motionBias * motionGate * Number(moverVariant.pan_scale || 1),
+      tilt: fixture.tilt + shapeTilt * fixture.tilt_range * motionBias * motionGate * Number(moverVariant.tilt_scale || 1),
+      beamWidth: fixture.beam_width * (moverFamily === "hits" ? 0.78 + Number(moverVariant.hit_bias || 0) * 0.16 : 0.9 + visual.beatPulse * 0.25) * Number(moverVariant.beam_scale || 1),
       pattern: moverPattern,
+      variantLabel: safeText(moverVariant.label, ""),
       phase,
     };
   }
 
   if (fixture.type === "wash") {
     const washPattern = String(section?.wash_pattern || "ambient");
+    const washVariant = sectionVariant(section, "wash_variant");
     const washFamily = washPatternFamily(washPattern);
     const washRadius = washFamily === "punch"
       ? fixture.radius * (0.72 + visual.beatPulse * 0.55)
@@ -1389,39 +1442,42 @@ function fixtureOutput(fixture, visual) {
             ? fixture.radius * (0.86 + Math.sin(phase * 0.45) * 0.16)
             : fixture.radius * (0.82 + visual.pulseMix * 0.34 + visual.beatPulse * 0.12);
     const washIntensity = washFamily === "fade"
-      ? intensity * (1 - visual.sectionProgress * 0.55)
+      ? intensity * (1 - visual.sectionProgress * (0.35 + Number(washVariant.fade_bias || 0) * 0.45))
       : washFamily === "punch"
-        ? intensity * (0.4 + visual.beatPulse * 0.8)
-        : intensity;
+        ? intensity * (0.3 + visual.beatPulse * (0.55 + Number(washVariant.pulse_depth || 1) * 0.4))
+        : intensity * (0.75 + Number(washVariant.pulse_depth || 1) * 0.25);
     return {
       type: "wash",
       color,
       intensity: washIntensity,
-      radius: washRadius,
+      radius: washRadius * Number(washVariant.radius_scale || 1),
       pattern: washPattern,
+      variantLabel: safeText(washVariant.label, ""),
       phase,
     };
   }
 
   const ledPattern = String(section?.led_pattern || "pulse");
+  const ledVariant = sectionVariant(section, "led_variant");
   const ledFamily = ledPatternFamily(ledPattern);
   const ledChase = ledFamily === "chase"
-    ? (visual.beatPhase + ((Math.sin(phase * 1.2) + 1) * 0.22)) % 1
+    ? (visual.beatPhase + ((Math.sin(phase * 1.2 * Number(ledVariant.chase_rate || 1)) + 1) * 0.22)) % 1
     : ledFamily === "sparkle"
-      ? ((Math.sin(phase * 0.35) + 1) * 0.5)
+      ? ((Math.sin(phase * 0.35 * Number(ledVariant.chase_rate || 1)) + 1) * 0.5)
       : ledFamily === "ramp"
         ? visual.sectionProgress
         : ledFamily === "fade"
           ? 0.5
-          : (visual.beatPhase + ((Math.sin(phase * 0.7) + 1) * 0.15)) % 1;
+          : (visual.beatPhase + ((Math.sin(phase * 0.7 * Number(ledVariant.chase_rate || 1)) + 1) * 0.15)) % 1;
   return {
     type: "led_bar",
     color,
-    intensity,
+    intensity: intensity * Number(ledVariant.glow_bias || 1),
     width: fixture.width,
-    pixelCount: Number(fixture.pixel_count),
+    pixelCount: clamp(Math.round(Number(fixture.pixel_count) * Number(ledVariant.density || 1)), 2, 20),
     chase: ledChase,
     pattern: ledPattern,
+    variantLabel: safeText(ledVariant.label, ""),
     phase,
   };
 }

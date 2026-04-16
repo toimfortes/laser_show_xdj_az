@@ -20,10 +20,16 @@ def test_show_planner_varies_across_track_seed() -> None:
     signatures_a = [
         (
             section["laser_pattern"],
+            section["laser_variant"]["label"],
             section["mover_pattern"],
+            section["mover_variant"]["label"],
             section["wash_pattern"],
+            section["wash_variant"]["label"],
             section["led_pattern"],
+            section["led_variant"]["label"],
             section["strobe_level"],
+            section["strobe_profile"]["mode"],
+            section["strobe_profile"]["shape"],
             section["laser_enabled"],
             section["leds_enabled"],
         )
@@ -32,10 +38,16 @@ def test_show_planner_varies_across_track_seed() -> None:
     signatures_b = [
         (
             section["laser_pattern"],
+            section["laser_variant"]["label"],
             section["mover_pattern"],
+            section["mover_variant"]["label"],
             section["wash_pattern"],
+            section["wash_variant"]["label"],
             section["led_pattern"],
+            section["led_variant"]["label"],
             section["strobe_level"],
+            section["strobe_profile"]["mode"],
+            section["strobe_profile"]["shape"],
             section["laser_enabled"],
             section["leds_enabled"],
         )
@@ -52,17 +64,27 @@ def test_repeated_drops_get_variation() -> None:
     assert len(drops) == 2
     first_signature = (
         drops[0]["laser_pattern"],
+        drops[0]["laser_variant"]["label"],
         drops[0]["mover_pattern"],
+        drops[0]["mover_variant"]["label"],
         drops[0]["wash_pattern"],
+        drops[0]["wash_variant"]["label"],
         drops[0]["led_pattern"],
+        drops[0]["led_variant"]["label"],
         drops[0]["strobe_level"],
+        drops[0]["strobe_profile"]["shape"],
     )
     second_signature = (
         drops[1]["laser_pattern"],
+        drops[1]["laser_variant"]["label"],
         drops[1]["mover_pattern"],
+        drops[1]["mover_variant"]["label"],
         drops[1]["wash_pattern"],
+        drops[1]["wash_variant"]["label"],
         drops[1]["led_pattern"],
+        drops[1]["led_variant"]["label"],
         drops[1]["strobe_level"],
+        drops[1]["strobe_profile"]["shape"],
     )
 
     assert first_signature != second_signature
@@ -80,3 +102,7 @@ def test_build_and_drop_transitions_escalate() -> None:
     assert drop["strobe_level"] > build["strobe_level"]
     assert drop["laser_enabled"] is True
     assert breakdown["washes_enabled"] is True
+    assert build["strobe_profile"]["mode"] == "riser"
+    assert drop["strobe_profile"]["mode"] in {"impact", "burst"}
+    assert "label" in drop["laser_variant"]
+    assert drop["strobe_profile"]["ceiling"] >= drop["strobe_profile"]["floor"]
