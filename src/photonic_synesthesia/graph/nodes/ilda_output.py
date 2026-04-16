@@ -69,6 +69,7 @@ class ILDAOutputNode:
         self._running = False
         self._export_path = config.export_path
         self._ether_dream: EtherDreamClient | None = None
+        self._ether_dream_faulted = False
 
     def start(self) -> None:
         self._running = True
@@ -77,13 +78,13 @@ class ILDAOutputNode:
         if self.config.transport_type == "ild" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
         if self.config.transport_type == "ether_dream":
-            self._ether_dream = EtherDreamClient(self.config)
-            self._ether_dream.connect()
+            self._ensure_ether_dream_client()
 
     def stop(self) -> None:
         if self._ether_dream is not None:
             self._ether_dream.close()
             self._ether_dream = None
+        self._ether_dream_faulted = False
         self._running = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -107,7 +108,38 @@ class ILDAOutputNode:
             "transport_type": self.config.transport_type,
             "export_path": str(self._export_path) if self._export_path else None,
             "ether_dream_host": self.config.ether_dream_host if self.config.transport_type == "ether_dream" else None,
+            "ether_dream_faulted": self._ether_dream_faulted if self.config.transport_type == "ether_dream" else None,
         }
+
+    def _ensure_ether_dream_client(self) -> EtherDreamClient:
+        if self._ether_dream is None:
+            client = EtherDreamClient(self.config)
+            client.connect()
+            self._ether_dream = client
+            if self._ether_dream_faulted:
+                logger.info(
+                    "Ether Dream transport recovered",
+                    host=self.config.ether_dream_host,
+                    port=self.config.ether_dream_port,
+                )
+            self._ether_dream_faulted = False
+        return self._ether_dream
+
+    def _handle_ether_dream_error(self, exc: OSError) -> None:
+        if self._ether_dream is not None:
+            try:
+                self._ether_dream.close()
+            except OSError:
+                pass
+            self._ether_dream = None
+        if not self._ether_dream_faulted:
+            logger.warning(
+                "Ether Dream transport faulted; will retry on next frame",
+                host=self.config.ether_dream_host,
+                port=self.config.ether_dream_port,
+                error=str(exc),
+            )
+        self._ether_dream_faulted = True
 
     def _frame_for_fixture(self, fixture: FixtureConfig, state: PhotonicState) -> ILDAFrame:
         profile = self.fixture_profiles[fixture.id]
@@ -283,6 +315,9 @@ class ILDAOutputNode:
                 return
             self._export_path.write_bytes(encode_ild(frames))
             return
-        if self.config.transport_type == "ether_dream" and self._ether_dream is not None and frames:
-            point_rate = max(1, int(self.config.target_fps * max(frame["point_count"] for frame in frames)))
-            self._ether_dream.ensure_streaming(frames[0], point_rate=point_rate)
+        if self.config.transport_type == "ether_dream" and frames:
+            try:
+                point_rate = max(1, int(self.config.target_fps * max(frame["point_count"] for frame in frames)))
+                self._ensure_ether_dream_client().ensure_streaming(frames[0], point_rate=point_rate)
+            except OSError as exc:
+                self._handle_ether_dream_error(exc)

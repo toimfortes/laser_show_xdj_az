@@ -159,3 +159,42 @@ def test_ilda_output_streams_to_ether_dream_transport() -> None:
     _, kwargs = fake_client.ensure_streaming.call_args
     assert kwargs["point_rate"] == 600
     fake_client.close.assert_called_once()
+
+
+def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    first_client = MagicMock()
+    second_client = MagicMock()
+    first_client.ensure_streaming.side_effect = OSError("broken pipe")
+
+    with patch(
+        "photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient",
+        side_effect=[first_client, second_client],
+    ):
+        node = ILDAOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
+            [fixture],
+            LaserSafetyConfig(),
+            fixtures_dir=Path("config/fixtures"),
+        )
+        node.start()
+        state = create_initial_state()
+        node(state)
+        assert node.get_stats()["ether_dream_faulted"] is True
+
+        node(state)
+        node.stop()
+
+    first_client.connect.assert_called_once()
+    first_client.ensure_streaming.assert_called_once()
+    first_client.close.assert_called_once()
+    second_client.connect.assert_called_once()
+    second_client.ensure_streaming.assert_called_once()
+    second_client.close.assert_called_once()

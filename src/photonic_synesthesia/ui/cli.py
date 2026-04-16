@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import socket
 import sys
 import time
 from hashlib import sha1
@@ -1137,6 +1138,19 @@ def _validate_startup_config(settings: object, mock: bool = False) -> None:
                             "Set PHOTONIC_RUNTIME_FLAGS__ALLOW_UNVERIFIED_LASER_PROFILES=true only for explicit override."
                         ),
                     )
+                if resolved.control_surface == "ilda" and settings.ilda.enabled and settings.ilda.transport_type == "ether_dream":
+                    try:
+                        with socket.create_connection(
+                            (settings.ilda.ether_dream_host, settings.ilda.ether_dream_port),
+                            timeout=settings.ilda.ether_dream_timeout_s,
+                        ):
+                            pass
+                    except OSError as exc:
+                        raise ConfigError(
+                            "Ether Dream DAC is not reachable for live ILDA output: "
+                            f"{settings.ilda.ether_dream_host}:{settings.ilda.ether_dream_port} "
+                            f"({exc})"
+                        ) from exc
             channel_count = profile.get("channels")
             if isinstance(channel_count, int) and channel_count > 0:
                 end_channel = fixture.start_address + channel_count - 1
