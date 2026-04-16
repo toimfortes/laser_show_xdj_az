@@ -218,7 +218,14 @@ class PlaybackContext:
                     target[leaf] = float(value)
             except (TypeError, ValueError):
                 return
-        elif leaf in {"launch_bars", "sustain_bars", "release_bars", "normalize_after_bars"}:
+        elif leaf in {
+            "launch_bars",
+            "sustain_bars",
+            "release_bars",
+            "normalize_after_bars",
+            "bars",
+            "fill_trigger_every_bars",
+        }:
             try:
                 if isinstance(target, dict):
                     target[leaf] = int(value)

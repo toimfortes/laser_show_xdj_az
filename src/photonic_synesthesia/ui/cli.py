@@ -936,6 +936,7 @@ def _laser_look(
         "density": round(0.72 + _stable_float(f"{token}:density") * 0.95, 3),
         "motion": round(0.7 + _stable_float(f"{token}:motion") * 1.05, 3),
         "emphasis": round(0.3 + _stable_float(f"{token}:emphasis") * 0.7, 3),
+        "bars": 4,
     }
 
 
@@ -976,6 +977,7 @@ def _laser_program(
     fill_hints = _TRANSITION_PATTERN_HINTS.get(context, {}).get("laser", [])
     sustain_candidates = _dedupe([base_pattern] + all_candidates)
     fill_candidates = _dedupe(fill_hints + all_candidates[1:])
+    phrase_template = _PHRASE_ENVELOPES[stage]
 
     launch_pattern = base_pattern
     sustain_patterns = sustain_candidates[:3] if sustain_candidates else [base_pattern]
@@ -988,47 +990,65 @@ def _laser_program(
     elif stage == "intro":
         fill_patterns = sustain_patterns[:1]
 
+    sustain_bar_budget = max(1, int(phrase_template["sustain_bars"]))
+    sustain_bar_base = max(1, sustain_bar_budget // max(1, len(sustain_patterns)))
+    sustain_bar_remainder = max(0, sustain_bar_budget - sustain_bar_base * len(sustain_patterns))
+    fill_bar_base = 1 if stage in {"build", "drop"} else 2
+
+    launch_look = _laser_look(
+        track_seed=track_seed,
+        base_pattern=launch_pattern,
+        context=context,
+        kind=kind,
+        ordinal=ordinal,
+        token_suffix="launch",
+    )
+    launch_look["bars"] = max(0, int(phrase_template["launch_bars"]))
+
+    sustain_looks: list[dict[str, Any]] = []
+    for index, pattern in enumerate(sustain_patterns):
+        look = _laser_look(
+            track_seed=track_seed,
+            base_pattern=pattern,
+            context=context,
+            kind=kind,
+            ordinal=ordinal,
+            token_suffix=f"sustain_{index}",
+        )
+        look["bars"] = sustain_bar_base + (1 if index < sustain_bar_remainder else 0)
+        sustain_looks.append(look)
+
+    fill_looks: list[dict[str, Any]] = []
+    for index, pattern in enumerate(fill_patterns):
+        look = _laser_look(
+            track_seed=track_seed,
+            base_pattern=pattern,
+            context=context,
+            kind=kind,
+            ordinal=ordinal,
+            token_suffix=f"fill_{index}",
+        )
+        look["bars"] = fill_bar_base
+        fill_looks.append(look)
+
+    release_look = _laser_look(
+        track_seed=track_seed,
+        base_pattern=release_pattern,
+        context=context,
+        kind=kind,
+        ordinal=ordinal,
+        token_suffix="release",
+    )
+    release_look["bars"] = max(1, int(phrase_template["release_bars"]))
+
     return {
         "phrase_role": context,
         "zone_policy": _laser_zone_policy(kind, context),
-        "launch": _laser_look(
-            track_seed=track_seed,
-            base_pattern=launch_pattern,
-            context=context,
-            kind=kind,
-            ordinal=ordinal,
-            token_suffix="launch",
-        ),
-        "sustain": [
-            _laser_look(
-                track_seed=track_seed,
-                base_pattern=pattern,
-                context=context,
-                kind=kind,
-                ordinal=ordinal,
-                token_suffix=f"sustain_{index}",
-            )
-            for index, pattern in enumerate(sustain_patterns)
-        ],
-        "fills": [
-            _laser_look(
-                track_seed=track_seed,
-                base_pattern=pattern,
-                context=context,
-                kind=kind,
-                ordinal=ordinal,
-                token_suffix=f"fill_{index}",
-            )
-            for index, pattern in enumerate(fill_patterns)
-        ],
-        "release": _laser_look(
-            track_seed=track_seed,
-            base_pattern=release_pattern,
-            context=context,
-            kind=kind,
-            ordinal=ordinal,
-            token_suffix="release",
-        ),
+        "fill_trigger_every_bars": 2 if context in {"build_riser", "drop_launch", "drop_variation"} else 4,
+        "launch": launch_look,
+        "sustain": sustain_looks,
+        "fills": fill_looks,
+        "release": release_look,
     }
 
 

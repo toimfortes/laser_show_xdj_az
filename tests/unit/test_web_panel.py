@@ -307,6 +307,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                     "laser_program": {
                         "phrase_role": "drop_launch",
                         "zone_policy": "crowd_punctuate",
+                        "fill_trigger_every_bars": 2,
                         "launch": {
                             "pattern": "burst_fan",
                             "geometry_family": "burst",
@@ -315,6 +316,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                             "density": 1.2,
                             "motion": 1.3,
                             "emphasis": 0.9,
+                            "bars": 4,
                         },
                         "sustain": [
                             {
@@ -325,6 +327,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 1.0,
                                 "motion": 0.95,
                                 "emphasis": 0.6,
+                                "bars": 4,
                             },
                             {
                                 "pattern": "helix",
@@ -334,6 +337,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 0.92,
                                 "motion": 1.05,
                                 "emphasis": 0.52,
+                                "bars": 4,
                             }
                         ],
                         "fills": [
@@ -345,6 +349,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 1.1,
                                 "motion": 1.2,
                                 "emphasis": 0.72,
+                                "bars": 1,
                             },
                             {
                                 "pattern": "sheet",
@@ -354,6 +359,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 0.88,
                                 "motion": 0.82,
                                 "emphasis": 0.46,
+                                "bars": 1,
                             }
                         ],
                         "release": {
@@ -364,6 +370,7 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                             "density": 0.7,
                             "motion": 0.65,
                             "emphasis": 0.32,
+                            "bars": 4,
                         },
                     },
                 }
@@ -386,15 +393,20 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                 "laser_expression.phrase_envelope.sustain_intensity": 0.55,
                 "laser_expression.variation_plan": "reduce beam density\nuse overhead arcs",
                 "laser_program.zone_policy": "overhead_only",
+                "laser_program.fill_trigger_every_bars": 3,
                 "laser_program.launch.pattern": "sheet",
                 "laser_program.launch.geometry_family": "sheet",
+                "laser_program.launch.bars": 2,
                 "laser_program.sustain.0.pattern": "beam_sequence_clockwise",
                 "laser_program.sustain.0.motion": 1.15,
                 "laser_program.sustain.1.pattern": "spirograph",
                 "laser_program.sustain.1.geometry_family": "helix",
+                "laser_program.sustain.1.bars": 6,
                 "laser_program.fills.0.target_bias": "ceiling",
                 "laser_program.fills.1.pattern": "beam_fan_wide",
+                "laser_program.fills.1.bars": 2,
                 "laser_program.release.color_mode": "dual_cycle",
+                "laser_program.release.bars": 3,
             }
         },
     )
@@ -412,15 +424,20 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
         "use overhead arcs",
     ]
     assert updated["laser_program"]["zone_policy"] == "overhead_only"
+    assert updated["laser_program"]["fill_trigger_every_bars"] == 3
     assert updated["laser_program"]["launch"]["pattern"] == "sheet"
     assert updated["laser_program"]["launch"]["geometry_family"] == "sheet"
+    assert updated["laser_program"]["launch"]["bars"] == 2
     assert updated["laser_program"]["sustain"][0]["pattern"] == "beam_sequence_clockwise"
     assert updated["laser_program"]["sustain"][0]["motion"] == 1.15
     assert updated["laser_program"]["sustain"][1]["pattern"] == "spirograph"
     assert updated["laser_program"]["sustain"][1]["geometry_family"] == "helix"
+    assert updated["laser_program"]["sustain"][1]["bars"] == 6
     assert updated["laser_program"]["fills"][0]["target_bias"] == "ceiling"
     assert updated["laser_program"]["fills"][1]["pattern"] == "beam_fan_wide"
+    assert updated["laser_program"]["fills"][1]["bars"] == 2
     assert updated["laser_program"]["release"]["color_mode"] == "dual_cycle"
+    assert updated["laser_program"]["release"]["bars"] == 3
     assert get_shared_playback_context() is playback
     assert saved_payloads
     assert saved_payloads[-1]["track_key"] == "artist|track"

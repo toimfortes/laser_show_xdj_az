@@ -88,11 +88,13 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
                     "laser_program": {
                         "phrase_role": "drop_variation",
                         "zone_policy": "overhead_only",
+                        "fill_trigger_every_bars": 4,
                         "launch": {
                             "pattern": "sheet",
                             "geometry_family": "sheet",
                             "color_mode": "dual_cycle",
                             "target_bias": "crowd",
+                            "bars": 4,
                         },
                         "sustain": [
                             {
@@ -100,6 +102,14 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
                                 "geometry_family": "sequence",
                                 "color_mode": "morph",
                                 "target_bias": "crowd",
+                                "bars": 2,
+                            },
+                            {
+                                "pattern": "helix",
+                                "geometry_family": "helix",
+                                "color_mode": "dual_cycle",
+                                "target_bias": "mid_air",
+                                "bars": 6,
                             }
                         ],
                         "fills": [],
@@ -108,6 +118,7 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
                             "geometry_family": "trace",
                             "color_mode": "morph",
                             "target_bias": "mid_air",
+                            "bars": 2,
                         },
                     },
                 }
@@ -133,8 +144,8 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
         clear_shared_playback_context()
 
     frame = result["ilda_frames"][0]
-    assert frame["geometry_family"] == "sequence"
-    assert frame["color_mode"] == "morph"
+    assert frame["geometry_family"] == "helix"
+    assert frame["color_mode"] == "dual_cycle"
     assert frame["target_bias"] == "ceiling"
 
 

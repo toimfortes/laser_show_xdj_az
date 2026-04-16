@@ -248,36 +248,46 @@ class ILDAOutputNode:
         end = float(current_section.get("end_seconds", start + 1.0))
         progress = max(0.0, min(1.0, (playhead - start) / max(end - start, 1e-6)))
         role = str(laser_program.get("phrase_role", ""))
-        launch = laser_program.get("launch")
-        release = laser_program.get("release")
-        sustain = laser_program.get("sustain") or []
-        fills = laser_program.get("fills") or []
+        windows = self._program_main_windows(laser_program)
+        fills = [
+            candidate
+            for candidate in laser_program.get("fills") or []
+            if isinstance(candidate, dict)
+        ]
+        selected = None
+        selected_role = "sustain"
+        selected_index = 0
 
-        if progress <= 0.16 and isinstance(launch, dict):
-            selected = dict(launch)
-        elif progress >= 0.84 and isinstance(release, dict):
-            selected = dict(release)
-        else:
-            selected = None
+        for window in windows:
+            if window["start"] <= progress < window["end"] or (
+                progress >= 0.999 and window is windows[-1]
+            ):
+                selected = dict(window["look"])
+                selected_role = str(window["role"])
+                selected_index = int(window["index"])
+                break
+
+        if selected is None and windows:
+            fallback_window = windows[-1]
+            selected = dict(fallback_window["look"])
+            selected_role = str(fallback_window["role"])
+            selected_index = int(fallback_window["index"])
+
+        should_fill = False
+        fill_every_bars = max(1, int(laser_program.get("fill_trigger_every_bars", 4)))
+        total_main_bars = max(1, sum(int(window["bars"]) for window in windows))
+        current_bar = int(progress * total_main_bars)
+        if selected_role == "sustain":
             should_fill = (
                 bool(fills)
                 and state["beat_info"]["downbeat"]
-                and state["beat_info"]["bar_position"] in {1, 4}
                 and role in {"build_riser", "drop_launch", "drop_variation"}
+                and current_bar % fill_every_bars == 0
             )
-            if should_fill:
-                fill_index = int((state["frame_number"] + int(playhead * 8)) % len(fills))
-                candidate = fills[fill_index]
-                if isinstance(candidate, dict):
-                    selected = dict(candidate)
-            if selected is None and sustain:
-                sustain_index = min(
-                    len(sustain) - 1,
-                    max(0, int(((progress - 0.16) / 0.68) * len(sustain))),
-                )
-                candidate = sustain[sustain_index]
-                if isinstance(candidate, dict):
-                    selected = dict(candidate)
+        if should_fill:
+            fill_index = (current_bar // fill_every_bars + selected_index) % len(fills)
+            selected = dict(fills[fill_index])
+            selected_role = "fill"
         if selected is None:
             return None
 
@@ -288,7 +298,46 @@ class ILDAOutputNode:
             selected["target_bias"] = "mid_air"
         elif zone_policy == "crowd_punctuate" and selected.get("target_bias") != "crowd" and progress > 0.2:
             selected["target_bias"] = "mid_air"
+        selected["__role"] = selected_role
         return selected
+
+    @staticmethod
+    def _program_main_windows(laser_program: dict[str, Any]) -> list[dict[str, Any]]:
+        windows: list[dict[str, Any]] = []
+
+        def append_window(role: str, index: int, look: Any, fallback_bars: int) -> None:
+            if not isinstance(look, dict):
+                return
+            bars = int(look.get("bars", fallback_bars))
+            if role == "launch" and bars <= 0:
+                return
+            bars = max(1, bars) if role != "launch" else bars
+            windows.append(
+                {
+                    "role": role,
+                    "index": index,
+                    "look": look,
+                    "bars": bars,
+                }
+            )
+
+        append_window("launch", 0, laser_program.get("launch"), 0)
+        for index, look in enumerate(laser_program.get("sustain") or []):
+            append_window("sustain", index, look, 4)
+        append_window("release", 0, laser_program.get("release"), 4)
+
+        total_bars = sum(int(window["bars"]) for window in windows)
+        if total_bars <= 0:
+            return []
+
+        cursor = 0.0
+        for window in windows:
+            start = cursor / total_bars
+            cursor += int(window["bars"])
+            end = cursor / total_bars
+            window["start"] = start
+            window["end"] = end
+        return windows
 
     @staticmethod
     def _geometry_family(structure: MusicStructure, aggression: float) -> str:

@@ -694,8 +694,11 @@ function renderShowEditor() {
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
 
   const laserLookEditor = (section, slotPath, title) => `
-    <div class="laser-program-card">
-      <h4>${title}</h4>
+    <div class="laser-program-card" data-look-path="${slotPath}">
+      <div class="laser-program-card-header">
+        <h4>${title}</h4>
+        <span class="laser-program-look-state">Standby</span>
+      </div>
       <label>
         <span>Pattern</span>
         <select data-field="${slotPath}.pattern">${laserPatternOptions}</select>
@@ -724,13 +727,63 @@ function renderShowEditor() {
         <span>Emphasis</span>
         <input data-field="${slotPath}.emphasis" type="range" min="0" max="1" step="0.05" value="${pathValue(section, `${slotPath}.emphasis`, 0.5)}" />
       </label>
+      <label>
+        <span>Bars</span>
+        <input data-field="${slotPath}.bars" type="number" min="0" max="32" step="1" value="${pathValue(section, `${slotPath}.bars`, slotPath.includes(".fills.") ? 1 : 4)}" />
+      </label>
     </div>
   `;
+
+  const sectionTimelineMarkup = (section) => {
+    const windows = laserProgramMainWindows(section);
+    const fills = laserProgramFillWindows(section);
+    const fillEveryBars = Math.max(1, Number(pathValue(section, "laser_program.fill_trigger_every_bars", 4)));
+    return `
+      <div class="laser-program-timeline" data-section-id="${section.id}">
+        <div class="laser-program-track-row">
+          <span class="laser-program-track-label">Main</span>
+          <div class="laser-program-track">
+            ${windows.map((window) => `
+              <button
+                type="button"
+                class="laser-program-chip role-${window.role}"
+                data-jump-look="${section.id}|${window.path}"
+                data-look-path="${window.path}"
+                style="flex:${Math.max(1, window.bars)}"
+              >
+                <strong>${window.title}</strong>
+                <span>${safeText(window.look.pattern, "look")} · ${window.bars} bars</span>
+              </button>
+            `).join("")}
+          </div>
+        </div>
+        ${fills.length > 0 ? `
+          <div class="laser-program-track-row fills">
+            <span class="laser-program-track-label">Fills</span>
+            <div class="laser-program-track fill-track">
+              ${fills.map((window) => `
+                <button
+                  type="button"
+                  class="laser-program-chip role-fill"
+                  data-jump-look="${section.id}|${window.path}"
+                  data-look-path="${window.path}"
+                  style="flex:${Math.max(1, window.bars)}"
+                >
+                  <strong>${window.title}</strong>
+                  <span>every ${fillEveryBars} bars · ${safeText(window.look.pattern, "fill")}</span>
+                </button>
+              `).join("")}
+            </div>
+          </div>
+        ` : ""}
+      </div>
+    `;
+  };
 
   elements.showEditor.innerHTML = `
     <div class="subhead">
       <h3>Agentic Show</h3>
-      <p>Imported from Rekordbox and editable per section.</p>
+      <p>Imported from Rekordbox and editable as a phrase timeline.</p>
     </div>
     <div class="show-segment-strip">
       ${sections.map((section) => `
@@ -748,6 +801,7 @@ function renderShowEditor() {
             <span>${section.start_seconds.toFixed(1)}s - ${section.end_seconds.toFixed(1)}s</span>
           </div>
           <p class="show-pattern-summary">${patternSummary(section)}</p>
+          ${sectionTimelineMarkup(section)}
           <div class="show-section-grid">
             <label>
               <span>Scene</span>
@@ -830,6 +884,10 @@ function renderShowEditor() {
                 <span>Phrase Role</span>
                 <input data-field="laser_program.phrase_role" type="text" value="${pathValue(section, "laser_program.phrase_role", "")}" />
               </label>
+              <label class="laser-program-meta">
+                <span>Fill Cadence</span>
+                <input data-field="laser_program.fill_trigger_every_bars" type="number" min="1" max="16" step="1" value="${pathValue(section, "laser_program.fill_trigger_every_bars", 4)}" />
+              </label>
               ${laserLookEditor(section, "laser_program.launch", "Launch Look")}
               ${laserLookEditor(section, "laser_program.sustain.0", "Sustain A")}
               ${laserLookEditor(section, "laser_program.sustain.1", "Sustain B")}
@@ -880,7 +938,7 @@ function renderShowEditor() {
         const target = event.currentTarget;
         const field = target.dataset.field;
         let value = target.type === "checkbox" ? target.checked : target.value;
-        if (target.type === "range") {
+        if (target.type === "range" || target.type === "number") {
           value = Number(value);
         } else if (target.tagName === "TEXTAREA") {
           value = String(value);
@@ -903,6 +961,31 @@ function renderShowEditor() {
       });
     });
   });
+  elements.showEditor.querySelectorAll("[data-jump-look]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const [sectionId, lookPath] = safeText(button.dataset.jumpLook, "").split("|");
+      const section = sections.find((item) => item.id === sectionId);
+      if (!section || !lookPath) {
+        return;
+      }
+      const windows = [...laserProgramMainWindows(section), ...laserProgramFillWindows(section)];
+      const target = windows.find((window) => window.path === lookPath);
+      if (!target) {
+        return;
+      }
+      const sectionStart = Number(section.start_seconds || 0);
+      const sectionEnd = Number(section.end_seconds || sectionStart);
+      const sectionDuration = Math.max(0.001, sectionEnd - sectionStart);
+      let seconds = sectionStart + sectionDuration * 0.5;
+      if (target.start !== undefined && target.end !== undefined) {
+        seconds = sectionStart + sectionDuration * ((target.start + target.end) * 0.5);
+      }
+      seekPlaybackTo(seconds).catch((error) => {
+        console.error(error);
+      });
+    });
+  });
+  updateShowEditorActiveState();
 }
 
 function updateShowEditorActiveState() {
@@ -910,11 +993,23 @@ function updateShowEditorActiveState() {
   if (!elements.showEditor) {
     return;
   }
+  const visual = runtimeVisualState(performance.now() / 1000);
+  const activeLook = activeSection ? currentLaserProgramLook(activeSection, visual) : null;
   elements.showEditor.querySelectorAll(".show-section-card").forEach((card) => {
     card.classList.toggle("active", activeSection?.id === card.dataset.sectionId);
   });
   elements.showEditor.querySelectorAll(".show-segment-chip").forEach((chip) => {
     chip.classList.toggle("active", activeSection?.id === chip.dataset.jumpSection);
+  });
+  elements.showEditor.querySelectorAll(".laser-program-chip, .laser-program-card").forEach((node) => {
+    const isActive = Boolean(activeLook?.__path) && node.dataset.lookPath === activeLook.__path;
+    node.classList.toggle("active", isActive);
+  });
+  elements.showEditor.querySelectorAll(".laser-program-look-state").forEach((node) => {
+    const card = node.closest(".laser-program-card");
+    const lookPath = card?.dataset.lookPath || "";
+    const isActive = Boolean(activeLook?.__path) && activeLook.__path === lookPath;
+    node.textContent = isActive ? `Live ${titleCaseWords(activeLook.__role || "look")}` : "Standby";
   });
 }
 
@@ -981,6 +1076,19 @@ function drawPlaybackWaveform() {
     ctx.moveTo(startX, 0);
     ctx.lineTo(startX, height);
     ctx.stroke();
+
+    const windows = laserProgramMainWindows(section);
+    const roleColors = {
+      launch: "rgba(248, 94, 0, 0.9)",
+      sustain: "rgba(18, 216, 255, 0.72)",
+      release: "rgba(239, 71, 111, 0.82)",
+    };
+    windows.forEach((window) => {
+      const windowStart = startX + (endX - startX) * window.start;
+      const windowEnd = startX + (endX - startX) * window.end;
+      ctx.fillStyle = roleColors[window.role] || "rgba(255,255,255,0.55)";
+      ctx.fillRect(windowStart, height - 8, Math.max(1, windowEnd - windowStart), 6);
+    });
   });
 
   const duration = Number(appState.playback.duration_seconds || 0);
@@ -1143,6 +1251,86 @@ function sectionVariant(section, key) {
   return section && typeof section[key] === "object" ? section[key] : {};
 }
 
+function laserLookBars(look, fallback = 4, { allowZero = false } = {}) {
+  const raw = Number(look?.bars ?? fallback);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  if (allowZero) {
+    return Math.max(0, Math.round(raw));
+  }
+  return Math.max(1, Math.round(raw));
+}
+
+function laserProgramMainWindows(section) {
+  const laserProgram = sectionVariant(section, "laser_program");
+  if (!laserProgram || Object.keys(laserProgram).length === 0) {
+    return [];
+  }
+
+  const launch = typeof laserProgram.launch === "object" ? laserProgram.launch : null;
+  const release = typeof laserProgram.release === "object" ? laserProgram.release : null;
+  const sustain = Array.isArray(laserProgram.sustain) ? laserProgram.sustain.filter((item) => item && typeof item === "object") : [];
+  const windows = [];
+
+  if (launch && laserLookBars(launch, 0, { allowZero: true }) > 0) {
+    windows.push({
+      role: "launch",
+      index: 0,
+      path: "laser_program.launch",
+      title: "Launch",
+      look: launch,
+      bars: laserLookBars(launch, 0, { allowZero: true }),
+    });
+  }
+  sustain.forEach((look, index) => {
+    windows.push({
+      role: "sustain",
+      index,
+      path: `laser_program.sustain.${index}`,
+      title: `Sustain ${String.fromCharCode(65 + index)}`,
+      look,
+      bars: laserLookBars(look, 4),
+    });
+  });
+  if (release) {
+    windows.push({
+      role: "release",
+      index: 0,
+      path: "laser_program.release",
+      title: "Release",
+      look: release,
+      bars: laserLookBars(release, 4),
+    });
+  }
+
+  const totalBars = windows.reduce((sum, window) => sum + window.bars, 0);
+  if (totalBars <= 0) {
+    return [];
+  }
+
+  let cursor = 0;
+  windows.forEach((window) => {
+    window.start = cursor / totalBars;
+    cursor += window.bars;
+    window.end = cursor / totalBars;
+  });
+  return windows;
+}
+
+function laserProgramFillWindows(section) {
+  const laserProgram = sectionVariant(section, "laser_program");
+  const fills = Array.isArray(laserProgram.fills) ? laserProgram.fills.filter((item) => item && typeof item === "object") : [];
+  return fills.map((look, index) => ({
+    role: "fill",
+    index,
+    path: `laser_program.fills.${index}`,
+    title: `Fill ${String.fromCharCode(65 + index)}`,
+    look,
+    bars: laserLookBars(look, 1),
+  }));
+}
+
 function currentLaserProgramLook(section, visual) {
   const laserProgram = sectionVariant(section, "laser_program");
   if (!laserProgram || Object.keys(laserProgram).length === 0) {
@@ -1151,38 +1339,37 @@ function currentLaserProgramLook(section, visual) {
 
   const progress = clamp(Number(visual.sectionProgress ?? 0), 0, 1);
   const role = safeText(laserProgram.phrase_role, "");
-  const launch = typeof laserProgram.launch === "object" ? laserProgram.launch : null;
-  const release = typeof laserProgram.release === "object" ? laserProgram.release : null;
-  const sustain = Array.isArray(laserProgram.sustain) ? laserProgram.sustain.filter((item) => item && typeof item === "object") : [];
-  const fills = Array.isArray(laserProgram.fills) ? laserProgram.fills.filter((item) => item && typeof item === "object") : [];
+  const windows = laserProgramMainWindows(section);
+  const fills = laserProgramFillWindows(section);
 
-  let selected = null;
-  let selectedRole = "sustain";
-  if (progress <= 0.16 && launch) {
-    selected = { ...launch };
-    selectedRole = "launch";
-  } else if (progress >= 0.84 && release) {
-    selected = { ...release };
-    selectedRole = "release";
-  } else {
-    const shouldFill = fills.length > 0
-      && Boolean(appState.runtimeSnapshot?.semantic_frame?.downbeat)
-      && ["build_riser", "drop_launch", "drop_variation"].includes(role);
-    if (shouldFill) {
-      const fillIndex = Math.floor((visual.beatPhase * 8 + progress * fills.length * 3) % fills.length);
-      selected = { ...fills[fillIndex] };
-      selectedRole = "fill";
-    } else if (sustain.length > 0) {
-      const sustainIndex = Math.min(
-        sustain.length - 1,
-        Math.max(0, Math.floor(((progress - 0.16) / 0.68) * sustain.length)),
-      );
-      selected = { ...sustain[sustainIndex] };
-      selectedRole = "sustain";
-    }
-  }
-  if (!selected) {
+  let selectedWindow = windows.find((window) => (
+    progress >= window.start && (progress < window.end || (progress >= 0.999 && window === windows[windows.length - 1]))
+  )) || windows[windows.length - 1] || null;
+
+  if (!selectedWindow) {
     return null;
+  }
+
+  const totalBars = Math.max(1, windows.reduce((sum, window) => sum + window.bars, 0));
+  const fillEveryBars = Math.max(1, Number(laserProgram.fill_trigger_every_bars || 4));
+  const currentBar = Math.floor(progress * totalBars);
+  const shouldFill = (
+    selectedWindow.role === "sustain"
+    && fills.length > 0
+    && Boolean(appState.runtimeSnapshot?.semantic_frame?.downbeat)
+    && ["build_riser", "drop_launch", "drop_variation"].includes(role)
+    && currentBar % fillEveryBars === 0
+  );
+
+  let selected = { ...selectedWindow.look };
+  let selectedRole = selectedWindow.role;
+  let selectedPath = selectedWindow.path;
+  if (shouldFill) {
+    const fillIndex = (Math.floor(currentBar / fillEveryBars) + selectedWindow.index) % fills.length;
+    const fillWindow = fills[fillIndex];
+    selected = { ...fillWindow.look };
+    selectedRole = "fill";
+    selectedPath = fillWindow.path;
   }
 
   const zonePolicy = safeText(laserProgram.zone_policy, "");
@@ -1194,6 +1381,7 @@ function currentLaserProgramLook(section, visual) {
     selected.target_bias = "mid_air";
   }
   selected.__role = selectedRole;
+  selected.__path = selectedPath;
   return selected;
 }
 
