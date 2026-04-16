@@ -23,6 +23,7 @@ let playbackPollActive = false;
 let fixtureActivityRenderedAt = 0;
 let fixtureActivitySignature = "";
 let playbackHardSyncAt = 0;
+let playbackFollowEnabled = false;
 
 const PLAYBACK_POLL_MS = 250;
 const PLAYBACK_STALE_MS = 900;
@@ -396,9 +397,10 @@ function renderPlayback() {
     </div>
     <div class="playback-controls">
       <button type="button" id="sync-audio">Sync To Live</button>
+      <button type="button" id="toggle-follow">Follow Live Off</button>
       <span id="playback-status">Waiting for browser audio…</span>
     </div>
-    <audio id="track-audio" controls preload="metadata" src="${playback.audio_url}"></audio>
+    <audio id="track-audio" controls preload="auto" src="${playback.audio_url}"></audio>
     <canvas id="waveform-canvas" width="640" height="96"></canvas>
     <div id="show-editor" class="show-editor"></div>
   `;
@@ -406,11 +408,13 @@ function renderPlayback() {
   const audio = elements.playbackPanel.querySelector("#track-audio");
   const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");
   const syncButton = elements.playbackPanel.querySelector("#sync-audio");
+  const followButton = elements.playbackPanel.querySelector("#toggle-follow");
 
   elements.playbackAudio = audio;
   elements.waveformCanvas = waveformCanvas;
   elements.playbackStatus = elements.playbackPanel.querySelector("#playback-status");
   elements.playbackSyncButton = syncButton;
+  elements.playbackFollowButton = followButton;
   elements.showEditor = elements.playbackPanel.querySelector("#show-editor");
 
   syncButton.addEventListener("click", async () => {
@@ -425,16 +429,34 @@ function renderPlayback() {
     }
     syncPlaybackAudio(true);
   });
+  followButton.addEventListener("click", () => {
+    playbackFollowEnabled = !playbackFollowEnabled;
+    updatePlaybackFollowButton();
+    if (playbackFollowEnabled) {
+      syncPlaybackAudio(true);
+    } else if (audio) {
+      audio.playbackRate = 1;
+    }
+    updatePlaybackStatus();
+  });
 
   audio.addEventListener("play", () => {
-    syncPlaybackAudio(true);
+    if (playbackFollowEnabled) {
+      syncPlaybackAudio(true);
+    } else {
+      updatePlaybackStatus();
+      drawPlaybackWaveform();
+    }
   });
   audio.addEventListener("timeupdate", () => {
     updatePlaybackStatus();
     drawPlaybackWaveform();
   });
   audio.addEventListener("loadedmetadata", () => {
-    syncPlaybackAudio(true);
+    audio.playbackRate = 1;
+    if (playbackFollowEnabled) {
+      syncPlaybackAudio(true);
+    }
     updatePlaybackStatus();
     drawPlaybackWaveform();
   });
@@ -450,9 +472,19 @@ function renderPlayback() {
       console.error(error);
     });
   });
+  audio.playbackRate = 1;
   updatePlaybackStatus();
   drawPlaybackWaveform();
   renderShowEditor();
+  updatePlaybackFollowButton();
+}
+
+function updatePlaybackFollowButton() {
+  if (!elements.playbackFollowButton) {
+    return;
+  }
+  elements.playbackFollowButton.textContent = playbackFollowEnabled ? "Follow Live On" : "Follow Live Off";
+  elements.playbackFollowButton.classList.toggle("active", playbackFollowEnabled);
 }
 
 async function patchShowSection(sectionId, changes) {
@@ -968,6 +1000,7 @@ function updatePlaybackStatus() {
   const browserTime = audio ? Number(audio.currentTime || 0) : 0;
   const drift = browserTime - target;
   const section = currentShowSection(target);
+  const modeText = playbackFollowEnabled ? "follow" : "smooth";
   const stateLabel = appState.playback.finished
     ? "finished"
     : !playbackTransportIsFresh()
@@ -977,7 +1010,7 @@ function updatePlaybackStatus() {
       : "idle";
   const staleText = playbackTransportIsFresh() ? "" : ` · stale ${(playbackAnchorAgeMs() / 1000).toFixed(2)}s`;
   const sectionText = section ? ` · ${section.label}` : "";
-  elements.playbackStatus.textContent = `${stateLabel}${sectionText} · server ${target.toFixed(2)}s · browser ${browserTime.toFixed(2)}s · drift ${drift.toFixed(3)}s${staleText}`;
+  elements.playbackStatus.textContent = `${stateLabel}${sectionText} · ${modeText} · server ${target.toFixed(2)}s · browser ${browserTime.toFixed(2)}s · drift ${drift.toFixed(3)}s${staleText}`;
 }
 
 function syncPlaybackAudio(force = false) {
@@ -991,6 +1024,13 @@ function syncPlaybackAudio(force = false) {
   const current = Number(audio.currentTime || 0);
   const drift = target - current;
   const now = performance.now();
+
+  if (!playbackFollowEnabled && !force) {
+    audio.playbackRate = 1;
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+    return;
+  }
 
   if (playback.finished) {
     audio.playbackRate = 1;

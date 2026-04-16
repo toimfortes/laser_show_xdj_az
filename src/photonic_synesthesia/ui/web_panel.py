@@ -811,7 +811,12 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         media_path = Path(playback_context.file_path)
         if not media_path.is_file():
             raise HTTPException(status_code=404, detail="Playback file is missing")
-        return FileResponse(media_path)
+        media_type = "audio/mpeg" if media_path.suffix.lower() == ".mp3" else None
+        return FileResponse(
+            media_path,
+            media_type=media_type,
+            headers={"Accept-Ranges": "bytes"},
+        )
 
     @app.get("/api/mock/playback/ilda-export")
     async def mock_playback_ilda_export(session: str | None = None) -> Any:

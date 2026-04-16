@@ -256,6 +256,7 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["transport_revision"] == 1
     assert audio_response.status_code == 200
     assert audio_response.content == b"fake mp3 bytes"
+    assert audio_response.headers["accept-ranges"] == "bytes"
     assert ilda_response.status_code == 200
     assert ilda_response.content == b"ILDAdemo"
     assert stale_audio_response.status_code == 404
