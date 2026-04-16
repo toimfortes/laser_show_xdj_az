@@ -25,6 +25,120 @@ let fixtureActivitySignature = "";
 
 const PLAYBACK_POLL_MS = 250;
 const PLAYBACK_STALE_MS = 900;
+const LASER_PATTERN_OPTIONS = [
+  ["fan", "Fan"],
+  ["beam_fan_narrow", "Beam Fan Narrow"],
+  ["beam_fan_wide", "Beam Fan Wide"],
+  ["thin_scan", "Thin Scan"],
+  ["scan_slice", "Scan Slice"],
+  ["static_beam", "Static Beam"],
+  ["dual_beam", "Dual Beam"],
+  ["tri_beam", "Tri Beam"],
+  ["point_array", "Point Array"],
+  ["split_zone_beams", "Split Zone Beams"],
+  ["cross_room_fans", "Cross Room Fans"],
+  ["vertical_rake", "Vertical Rake"],
+  ["horizontal_rake", "Horizontal Rake"],
+  ["sheet", "Sheet"],
+  ["burst_fan", "Burst Fan"],
+  ["liquid_sky", "Liquid Sky"],
+  ["crisscross", "Crisscross"],
+  ["starburst", "Starburst"],
+  ["wave", "Wave"],
+  ["rotor", "Rotor"],
+  ["alternating_beam_groups", "Alternating Groups"],
+  ["shutter_hits", "Shutter Hits"],
+  ["cone", "Cone"],
+  ["tunnel", "Tunnel"],
+  ["spiral_tunnel", "Spiral Tunnel"],
+  ["spoke_wheel", "Spoke Wheel"],
+  ["circle_trace", "Circle Trace"],
+  ["vertical_line_trace", "Vertical Line Trace"],
+  ["horizontal_line_trace", "Horizontal Line Trace"],
+  ["triangle_trace", "Triangle Trace"],
+  ["square_trace", "Square Trace"],
+  ["pentagon_trace", "Pentagon Trace"],
+  ["hexagon_trace", "Hexagon Trace"],
+  ["wave_trace", "Wave Trace"],
+  ["loop_trace", "Loop Trace"],
+  ["roll_trace", "Roll Trace"],
+  ["spirograph", "Spirograph"],
+  ["helix", "Helix"],
+  ["lattice", "Lattice"],
+  ["target_step_chase", "Target Step Chase"],
+  ["target_bounce_chase", "Target Bounce Chase"],
+  ["target_rotate_chase", "Target Rotate Chase"],
+  ["target_ring_chase", "Target Ring Chase"],
+  ["target_split_chase", "Target Split Chase"],
+  ["beam_sequence_clockwise", "Sequence Clockwise"],
+  ["beam_sequence_counterclockwise", "Sequence Counterclockwise"],
+  ["mixed_beam_fx", "Mixed Beam FX"],
+];
+const LASER_PATTERN_RENDER_FAMILIES = {
+  fan: "fan",
+  beam_fan_narrow: "fan",
+  beam_fan_wide: "fan",
+  cross_room_fans: "fan",
+  thin_scan: "scan",
+  scan_slice: "scan",
+  wave: "scan",
+  vertical_rake: "rake",
+  horizontal_rake: "rake",
+  liquid_sky: "sky",
+  cone: "cone",
+  tunnel: "tunnel",
+  spiral_tunnel: "tunnel",
+  crisscross: "lattice",
+  lattice: "lattice",
+  rotor: "helix",
+  helix: "helix",
+  spirograph: "helix",
+  wave_trace: "helix",
+  loop_trace: "helix",
+  roll_trace: "helix",
+  burst_fan: "burst",
+  starburst: "burst",
+  shutter_hits: "burst",
+  mixed_beam_fx: "burst",
+  alternating_beam_groups: "grouped",
+  split_zone_beams: "grouped",
+  target_split_chase: "grouped",
+  static_beam: "array",
+  dual_beam: "array",
+  tri_beam: "array",
+  point_array: "array",
+  spoke_wheel: "array",
+  sheet: "sheet",
+  circle_trace: "trace",
+  vertical_line_trace: "trace",
+  horizontal_line_trace: "trace",
+  triangle_trace: "trace",
+  square_trace: "trace",
+  pentagon_trace: "trace",
+  hexagon_trace: "trace",
+  target_step_chase: "sequence",
+  target_bounce_chase: "sequence",
+  target_rotate_chase: "sequence",
+  target_ring_chase: "sequence",
+  beam_sequence_clockwise: "sequence",
+  beam_sequence_counterclockwise: "sequence",
+};
+const LASER_GEOMETRY_FAMILIES = new Set([
+  "fan",
+  "burst",
+  "grouped",
+  "tunnel",
+  "lattice",
+  "rake",
+  "sky",
+  "cone",
+  "scan",
+  "helix",
+  "array",
+  "sheet",
+  "trace",
+  "sequence",
+]);
 
 function qs(id) {
   return document.getElementById(id);
@@ -385,8 +499,9 @@ function renderShowEditor() {
     const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
     const strobeProfile = sectionVariant(section, "strobe_profile");
     const laserExpression = sectionVariant(section, "laser_expression");
+    const renderFamily = laserRenderFamily(section.laser_pattern, safeText(laserExpression.geometry_family, "fan"));
     const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
-    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${safeText(laserExpression.geometry_family, "fan")} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${renderFamily} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
@@ -400,21 +515,9 @@ function renderShowEditor() {
   ]
     .map(([value, label]) => `<option value="${value}">${label}</option>`)
     .join("");
-  const laserPatternOptions = [
-    ["fan", "Fan"],
-    ["thin_scan", "Thin Scan"],
-    ["vertical_rake", "Vertical Rake"],
-    ["burst_fan", "Burst Fan"],
-    ["liquid_sky", "Liquid Sky"],
-    ["crisscross", "Crisscross"],
-    ["starburst", "Starburst"],
-    ["wave", "Wave"],
-    ["rotor", "Rotor"],
-    ["alternating_beam_groups", "Alternating Groups"],
-    ["shutter_hits", "Shutter Hits"],
-    ["cone", "Cone"],
-    ["tunnel", "Tunnel"],
-  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const laserPatternOptions = LASER_PATTERN_OPTIONS
+    .map(([value, label]) => `<option value="${value}">${label}</option>`)
+    .join("");
   const moverPatternOptions = [
     ["hold", "Hold"],
     ["drift", "Drift"],
@@ -481,6 +584,10 @@ function renderShowEditor() {
     ["ceiling_bloom", "Ceiling Bloom"],
     ["line_sweep", "Line Sweep"],
     ["spiral_air_wrap", "Spiral Air Wrap"],
+    ["center_axis_hold", "Center Axis Hold"],
+    ["sheet_wall", "Sheet Wall"],
+    ["shape_trace", "Shape Trace"],
+    ["sequenced_targets", "Sequenced Targets"],
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
   const blankingStrategyOptions = [
     ["open_groove", "Open Groove"],
@@ -493,6 +600,9 @@ function renderShowEditor() {
     ["soft_sweep", "Soft Sweep"],
     ["tight_slice", "Tight Slice"],
     ["rolling_draw", "Rolling Draw"],
+    ["point_steps", "Point Steps"],
+    ["sheet_open", "Sheet Open"],
+    ["shape_draw", "Shape Draw"],
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
   const colorStrategyOptions = [
     ["slow_palette_drift", "Slow Palette Drift"],
@@ -505,6 +615,9 @@ function renderShowEditor() {
     ["halo_morph", "Halo Morph"],
     ["single_hue_focus", "Single Hue Focus"],
     ["evolving_multicolor", "Evolving Multicolor"],
+    ["target_color_steps", "Target Color Steps"],
+    ["texture_flip", "Texture Flip"],
+    ["shape_outline_morph", "Shape Outline Morph"],
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
 
   elements.showEditor.innerHTML = `
@@ -949,36 +1062,19 @@ function dropSectionEnvelope(structure, fixtureMode, sectionProgress, beatPhase,
 }
 
 function laserPatternFamily(pattern) {
-  if (["burst_fan", "starburst", "alternating_beam_groups", "shutter_hits"].includes(pattern)) {
-    return "burst";
-  }
-  if (["vertical_rake", "liquid_sky", "cone"].includes(pattern)) {
-    return "vertical";
-  }
-  if (["tunnel", "crisscross", "rotor"].includes(pattern)) {
-    return "tunnel";
-  }
-  if (["thin_scan", "wave"].includes(pattern)) {
-    return "scan";
-  }
-  return "fan";
+  return LASER_PATTERN_RENDER_FAMILIES[safeText(pattern, "fan")] || "fan";
 }
 
 function laserRenderFamily(pattern, geometryFamily) {
+  const base = safeText(pattern, "fan");
+  const fromPattern = LASER_PATTERN_RENDER_FAMILIES[base];
+  if (fromPattern) {
+    return fromPattern;
+  }
   const expression = safeText(geometryFamily, "fan");
-  if (["sky", "helix", "lattice", "rake", "tunnel", "cone", "grouped", "burst"].includes(expression)) {
+  if (LASER_GEOMETRY_FAMILIES.has(expression)) {
     return expression;
   }
-  const base = safeText(pattern, "fan");
-  if (["burst_fan", "starburst"].includes(base)) return "burst";
-  if (["alternating_beam_groups"].includes(base)) return "grouped";
-  if (["vertical_rake"].includes(base)) return "rake";
-  if (["liquid_sky"].includes(base)) return "sky";
-  if (["crisscross"].includes(base)) return "lattice";
-  if (["tunnel"].includes(base)) return "tunnel";
-  if (["cone"].includes(base)) return "cone";
-  if (["rotor"].includes(base)) return "helix";
-  if (["thin_scan", "wave", "shutter_hits"].includes(base)) return "scan";
   return "fan";
 }
 
@@ -1021,6 +1117,14 @@ function describeLaserBehavior(output, visual) {
 
   if (output.renderFamily === "sky" || output.renderFamily === "helix") {
     parts.push("aerial sweep");
+  } else if (output.renderFamily === "trace") {
+    parts.push("shape trace");
+  } else if (output.renderFamily === "sequence") {
+    parts.push("target chase");
+  } else if (output.renderFamily === "array") {
+    parts.push("beam array");
+  } else if (output.renderFamily === "sheet") {
+    parts.push("light sheet");
   } else if (output.renderFamily === "grouped" || output.renderFamily === "burst") {
     parts.push("crowd punch");
   } else if (output.renderFamily === "lattice") {
@@ -1593,6 +1697,7 @@ function fixtureOutput(fixture, visual) {
     const laserPattern = String(section?.laser_pattern || "fan");
     const laserVariant = sectionVariant(section, "laser_variant");
     const laserExpression = sectionVariant(section, "laser_expression");
+    const renderFamily = laserRenderFamily(laserPattern, safeText(laserExpression.geometry_family, "fan"));
     const strobeRate = dropMode
       ? (3.2 + (visual.strobeLevel * 9) + (visual.dropTransitionHot ? 4.2 : 0)) * Number(laserVariant.gate_sharpness || 1)
       : 2.2 + visual.strobeLevel * 6;
@@ -1617,49 +1722,94 @@ function fixtureOutput(fixture, visual) {
     const patternFamily = laserPatternFamily(laserPattern);
     const patternSpread = patternFamily === "burst"
       ? 2.05
-      : patternFamily === "vertical"
+      : patternFamily === "rake"
         ? 0.62
-        : patternFamily === "tunnel"
-          ? 1.15
-          : patternFamily === "scan"
-            ? 0.36
-            : 1.0;
+      : patternFamily === "tunnel"
+        ? 1.15
+      : patternFamily === "scan"
+        ? 0.36
+        : patternFamily === "array"
+          ? 0.48
+          : patternFamily === "sequence"
+            ? 0.58
+            : patternFamily === "trace"
+              ? 0.72
+              : patternFamily === "sheet"
+                ? 1.45
+          : 1.0;
     const patternBeamCount = patternFamily === "scan"
       ? Math.min(2, beamCount)
       : patternFamily === "tunnel"
         ? Math.max(6, beamCount)
+        : patternFamily === "array"
+          ? Math.max(3, Math.min(beamCount + 1, 9))
+          : patternFamily === "sequence"
+            ? Math.max(4, Math.min(beamCount + 2, 10))
+            : patternFamily === "trace"
+              ? 1
+              : patternFamily === "sheet"
+                ? Math.max(7, beamCount)
         : patternFamily === "burst"
           ? Math.max(beamCount, 7)
           : beamCount;
     const variantBeamCount = clamp(Math.round(patternBeamCount * Number(laserVariant.beam_density || 1)), 1, 10);
     const patternRotation = patternFamily === "tunnel"
       ? rotation + Math.sin(phase * 1.4) * 1.2
-      : patternFamily === "vertical"
+      : patternFamily === "rake"
         ? rotation * 0.2
-        : patternFamily === "scan"
-          ? rotation * 0.12
-          : rotation;
+      : patternFamily === "scan"
+        ? rotation * 0.12
+        : patternFamily === "sequence"
+          ? rotation * 0.4 + Math.sin(phase * 1.8) * 0.35
+          : patternFamily === "trace"
+            ? rotation * 0.85 + Math.sin(phase * 0.8) * 0.22
+            : patternFamily === "array"
+              ? rotation * 0.28
+              : patternFamily === "sheet"
+                ? rotation * 0.1
+        : rotation;
     const variantRotation = patternRotation * Number(laserVariant.rotation_bias || 1);
-    const patternVertical = patternFamily === "vertical"
+    const patternVertical = patternFamily === "rake"
       ? verticalSweep + Math.sin(phase * 2.4) * 0.34
       : patternFamily === "scan"
         ? verticalSweep * 0.2
+        : patternFamily === "sky"
+          ? verticalSweep + 0.18
+          : patternFamily === "trace"
+            ? verticalSweep * 0.45
+            : patternFamily === "sheet"
+              ? verticalSweep * 0.08
+              : patternFamily === "sequence"
+                ? verticalSweep * 0.6
         : verticalSweep;
     const variantVertical = patternVertical * Number(laserVariant.vertical_bias || 1);
     const patternSweep = patternFamily === "scan"
       ? Math.sin(phase * 4.2 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.55
       : patternFamily === "tunnel"
         ? Math.sin(phase * 1.2 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.18
-        : patternFamily === "vertical"
+        : patternFamily === "rake"
           ? Math.sin(phase * 0.55 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.14
+          : patternFamily === "array"
+            ? Math.sin(phase * 1.05 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.08
+            : patternFamily === "sequence"
+              ? Math.sin(phase * 2.25 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.2
+              : patternFamily === "trace"
+                ? Math.sin(phase * 1.6 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.24
+                : patternFamily === "sheet"
+                  ? Math.sin(phase * 0.32 * Number(laserVariant.sweep_rate || 1)) * fixture.swing * 0.06
           : Math.sin(phase * (dropMode ? (visual.dropTransitionHot ? 4.4 : 2.8) : 1.1) * Number(laserVariant.sweep_rate || 1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
     const patternIntensity = patternFamily === "burst"
       ? intensity * (0.78 + visual.beatPulse * 0.35 + (visual.dropTransitionHot ? 0.18 : 0))
+      : patternFamily === "array"
+        ? intensity * (0.86 + visual.beatPulse * 0.18)
       : patternFamily === "scan"
         ? intensity * 0.72
+        : patternFamily === "trace"
+          ? intensity * 0.82
+          : patternFamily === "sheet"
+            ? intensity * 0.92
         : intensity * strobeGate;
-    const expressionGeometry = safeText(laserExpression.geometry_family, "fan");
-    const renderFamily = laserRenderFamily(laserPattern, expressionGeometry);
+    const expressionGeometry = renderFamily;
     const geometrySpread = expressionGeometry === "grouped"
       ? 0.82
       : expressionGeometry === "tunnel"
@@ -1668,6 +1818,14 @@ function fixtureOutput(fixture, visual) {
           ? 0.72
           : expressionGeometry === "sky"
             ? 1.15
+            : expressionGeometry === "array"
+              ? 0.66
+              : expressionGeometry === "sequence"
+                ? 0.74
+                : expressionGeometry === "trace"
+                  ? 0.58
+                  : expressionGeometry === "sheet"
+                    ? 1.5
             : 1;
     const targetBias = laserDynamicTargetBias(safeText(laserExpression.target_bias, "mid_air"), visual, dropMode);
     const targetYBias = targetBias === "crowd"
@@ -1905,6 +2063,21 @@ function drawLaser(ctx, fixture, output, width, height) {
       return;
     }
 
+    if (renderFamily === "array") {
+      const arrayX = clamp(
+        targetX + Math.sin(output.phase * 2.2 + centered * 7) * width * 0.025,
+        60,
+        width - 60,
+      );
+      const arrayY = clamp(
+        targetY + Math.cos(output.phase * 2.8 + centered * 5) * height * 0.025,
+        70,
+        height - 90,
+      );
+      ctx.lineTo(arrayX, arrayY);
+      return;
+    }
+
     if (renderFamily === "scan") {
       const scanY = clamp(
         targetY + Math.sin(output.phase * 7.5 + centered * 9) * height * 0.04,
@@ -1921,6 +2094,57 @@ function drawLaser(ctx, fixture, output, width, height) {
         clamp(originY - height * 0.08 + centered * 18, 40, height - 60),
         scanX,
         scanY,
+      );
+      return;
+    }
+
+    if (renderFamily === "sequence") {
+      const laneIndex = Math.round((centered + 0.5) * 4);
+      const laneX = clamp(
+        width * (0.16 + laneIndex * 0.17) + Math.sin(output.phase * 2.3 + centered * 3) * width * 0.02,
+        60,
+        width - 60,
+      );
+      const laneY = clamp(
+        height * (0.3 + (laneIndex % 2) * 0.08 + (output.targetYBias || 0) * 0.12),
+        80,
+        height - 120,
+      );
+      ctx.quadraticCurveTo(
+        clamp((originX + laneX) / 2 + centered * width * 0.04, 40, width - 40),
+        clamp(controlY - height * 0.06, 40, height - 60),
+        laneX,
+        laneY,
+      );
+      return;
+    }
+
+    if (renderFamily === "trace") {
+      const radius = Math.max(width, height) * (0.12 + Math.abs(centered) * 0.06 + (output.curveDepth || 0.08));
+      const centerX = clamp(width * 0.5 + centered * width * 0.1, 80, width - 80);
+      const centerY = clamp(height * (0.42 + (output.targetYBias || 0) * 0.08), 120, height - 120);
+      const angle = output.phase * 2.4 + centered * Math.PI * 1.6;
+      const traceX = clamp(centerX + Math.cos(angle) * radius * 0.55, 60, width - 60);
+      const traceY = clamp(centerY + Math.sin(angle) * radius * 0.35, 80, height - 90);
+      ctx.bezierCurveTo(
+        clamp((originX + centerX) / 2, 40, width - 40),
+        clamp(controlY - height * 0.1, 40, height - 60),
+        clamp((centerX + traceX) / 2, 40, width - 40),
+        clamp(centerY - height * 0.05, 40, height - 60),
+        traceX,
+        traceY,
+      );
+      return;
+    }
+
+    if (renderFamily === "sheet") {
+      const sheetX = clamp(targetX + centered * width * 0.06, 50, width - 50);
+      const sheetY = clamp(height * (0.25 + (output.targetYBias || 0) * 0.08), 70, height - 130);
+      ctx.quadraticCurveTo(
+        clamp((originX + sheetX) / 2, 40, width - 40),
+        clamp(sheetY + height * 0.04, 40, height - 60),
+        sheetX,
+        sheetY,
       );
       return;
     }
@@ -2033,6 +2257,14 @@ function drawLaser(ctx, fixture, output, width, height) {
         ? Math.sin(output.phase * 1.8 + centered * Math.PI) * height * (output.curveDepth || 0.12)
         : geometryFamily === "lattice"
           ? centered * height * (output.curveDepth || 0.1)
+          : geometryFamily === "trace"
+            ? Math.cos(output.phase * 2 + centered * 4) * height * (output.curveDepth || 0.08)
+            : geometryFamily === "sequence"
+              ? centered * height * 0.04
+              : geometryFamily === "array"
+                ? 0
+                : geometryFamily === "sheet"
+                  ? -height * 0.03
           : geometryFamily === "grouped"
             ? 0
             : geometryFamily === "burst"
@@ -2056,7 +2288,13 @@ function drawLaser(ctx, fixture, output, width, height) {
     beam.addColorStop(0.12, rgba(output.color, output.intensity * (0.18 + output.shimmer * 0.14)));
     beam.addColorStop(1, rgba(output.color, output.intensity * (0.74 + output.shimmer * 0.18)));
     ctx.strokeStyle = beam;
-    ctx.lineWidth = output.dropMode ? 2.8 : 2.2;
+    ctx.lineWidth = renderFamily === "sheet"
+      ? 4.4
+      : output.dropMode
+        ? 2.8
+        : renderFamily === "array"
+          ? 2.6
+          : 2.2;
     ctx.beginPath();
     ctx.moveTo(originX, originY);
     drawBeamPath(targetX, targetY, centered, spread, rotationOffset, controlX, controlY);
@@ -2096,6 +2334,13 @@ function drawLaser(ctx, fixture, output, width, height) {
         Math.PI * 2,
       );
       ctx.stroke();
+    }
+
+    if (renderFamily === "array" || renderFamily === "trace" || renderFamily === "sequence") {
+      ctx.fillStyle = rgba(output.color, output.intensity * 0.42);
+      ctx.beginPath();
+      ctx.arc(targetX, targetY, renderFamily === "sequence" ? 4 : 3, 0, Math.PI * 2);
+      ctx.fill();
     }
 
     ctx.beginPath();

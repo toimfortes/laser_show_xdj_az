@@ -1,4 +1,4 @@
-from photonic_synesthesia.ui.cli import _default_show_sections
+from photonic_synesthesia.ui.cli import _LASER_PATTERN_POOLS, _default_show_sections
 
 
 def _markers() -> list[dict[str, object]]:
@@ -63,6 +63,16 @@ def test_show_planner_varies_across_track_seed() -> None:
     assert signatures_a != signatures_b
 
 
+def test_laser_catalog_is_substantially_expanded() -> None:
+    patterns = {
+        pattern
+        for pool in _LASER_PATTERN_POOLS.values()
+        for pattern in pool
+    }
+
+    assert len(patterns) >= 39
+
+
 def test_repeated_drops_get_variation() -> None:
     sections = _default_show_sections(_markers(), 360.0, track_seed="same-song")
     drops = [section for section in sections if section["kind"] == "drop"]
@@ -117,7 +127,7 @@ def test_build_and_drop_transitions_escalate() -> None:
     assert "label" in drop["laser_variant"]
     assert "label" in drop["laser_expression"]
     assert drop["laser_expression"]["content_family"] in {"beam", "abstract", "transition"}
-    assert drop["laser_expression"]["geometry_family"] in {"burst", "grouped", "tunnel", "lattice", "rake", "sky", "cone", "scan", "fan", "helix"}
+    assert drop["laser_expression"]["geometry_family"] in {"burst", "grouped", "tunnel", "lattice", "rake", "sky", "cone", "scan", "fan", "helix", "array", "sheet", "trace", "sequence"}
     assert drop["laser_expression"]["target_strategy"]
     assert drop["laser_expression"]["blanking_strategy"]
     assert drop["laser_expression"]["color_strategy"]

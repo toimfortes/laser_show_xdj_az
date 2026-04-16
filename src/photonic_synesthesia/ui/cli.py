@@ -30,11 +30,70 @@ _DEFAULT_REKORDBOX_XML_CANDIDATES = [
 ]
 
 _LASER_PATTERN_POOLS: dict[str, list[str]] = {
-    "intro": ["fan", "thin_scan", "wave", "liquid_sky"],
-    "build": ["vertical_rake", "cone", "wave", "rotor", "liquid_sky"],
-    "drop": ["burst_fan", "tunnel", "crisscross", "starburst", "shutter_hits", "alternating_beam_groups"],
-    "breakdown": ["thin_scan", "liquid_sky", "fan", "wave", "cone"],
-    "outro": ["fan", "thin_scan", "wave", "liquid_sky"],
+    "intro": [
+        "fan",
+        "beam_fan_narrow",
+        "dual_beam",
+        "thin_scan",
+        "wave",
+        "liquid_sky",
+        "circle_trace",
+        "pentagon_trace",
+        "wave_trace",
+        "beam_sequence_clockwise",
+    ],
+    "build": [
+        "vertical_rake",
+        "horizontal_rake",
+        "cone",
+        "wave",
+        "rotor",
+        "liquid_sky",
+        "scan_slice",
+        "spiral_tunnel",
+        "target_step_chase",
+        "target_split_chase",
+        "loop_trace",
+    ],
+    "drop": [
+        "burst_fan",
+        "tunnel",
+        "crisscross",
+        "starburst",
+        "shutter_hits",
+        "alternating_beam_groups",
+        "beam_fan_wide",
+        "split_zone_beams",
+        "point_array",
+        "spoke_wheel",
+        "target_rotate_chase",
+        "target_ring_chase",
+        "beam_sequence_counterclockwise",
+        "mixed_beam_fx",
+        "sheet",
+    ],
+    "breakdown": [
+        "thin_scan",
+        "liquid_sky",
+        "fan",
+        "wave",
+        "cone",
+        "circle_trace",
+        "square_trace",
+        "spirograph",
+        "helix",
+        "target_bounce_chase",
+    ],
+    "outro": [
+        "fan",
+        "beam_fan_narrow",
+        "tri_beam",
+        "thin_scan",
+        "wave",
+        "liquid_sky",
+        "horizontal_line_trace",
+        "beam_sequence_clockwise",
+    ],
 }
 _MOVER_PATTERN_POOLS: dict[str, list[str]] = {
     "intro": ["drift", "circle", "figure_eight", "leaf", "hold"],
@@ -68,8 +127,8 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
         "allow_intro_leds": True,
         "patterns": {
             "laser": {
-                "build": ["vertical_rake", "rotor", "cone", "wave", "liquid_sky"],
-                "drop": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "tunnel", "crisscross"],
+                "build": ["vertical_rake", "horizontal_rake", "rotor", "cone", "scan_slice", "spiral_tunnel"],
+                "drop": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "split_zone_beams", "target_rotate_chase", "sheet", "mixed_beam_fx"],
             },
             "mover": {
                 "build": ["rise", "mirror_fan", "figure_eight", "circle"],
@@ -92,10 +151,10 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
         "allow_intro_leds": False,
         "patterns": {
             "laser": {
-                "intro": ["fan", "liquid_sky", "wave"],
-                "build": ["cone", "wave", "vertical_rake", "rotor"],
-                "drop": ["burst_fan", "tunnel", "starburst", "crisscross"],
-                "breakdown": ["liquid_sky", "thin_scan", "fan"],
+                "intro": ["fan", "beam_fan_narrow", "liquid_sky", "wave", "circle_trace"],
+                "build": ["cone", "wave", "vertical_rake", "rotor", "loop_trace", "spiral_tunnel"],
+                "drop": ["burst_fan", "tunnel", "starburst", "crisscross", "beam_fan_wide", "point_array"],
+                "breakdown": ["liquid_sky", "thin_scan", "fan", "spirograph", "circle_trace"],
             },
             "mover": {
                 "build": ["mirror_fan", "figure_eight", "rise", "circle"],
@@ -122,8 +181,8 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
         "allow_intro_leds": True,
         "patterns": {
             "laser": {
-                "build": ["vertical_rake", "cone", "wave"],
-                "drop": ["shutter_hits", "alternating_beam_groups", "burst_fan", "starburst"],
+                "build": ["vertical_rake", "horizontal_rake", "cone", "scan_slice", "target_step_chase"],
+                "drop": ["shutter_hits", "alternating_beam_groups", "burst_fan", "starburst", "split_zone_beams", "target_rotate_chase", "beam_sequence_counterclockwise"],
             },
             "mover": {
                 "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "line_bounce"],
@@ -146,10 +205,10 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
         "allow_intro_leds": False,
         "patterns": {
             "laser": {
-                "intro": ["wave", "liquid_sky", "fan"],
-                "build": ["rotor", "cone", "wave", "vertical_rake"],
-                "drop": ["tunnel", "crisscross", "rotor", "burst_fan"],
-                "breakdown": ["liquid_sky", "wave", "thin_scan"],
+                "intro": ["wave", "liquid_sky", "fan", "beam_sequence_clockwise", "wave_trace"],
+                "build": ["rotor", "cone", "wave", "vertical_rake", "loop_trace", "target_bounce_chase"],
+                "drop": ["tunnel", "crisscross", "rotor", "burst_fan", "spiral_tunnel", "sheet"],
+                "breakdown": ["liquid_sky", "wave", "thin_scan", "helix", "spirograph"],
             },
             "mover": {
                 "intro": ["drift", "circle", "leaf"],
@@ -173,37 +232,37 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
 
 _TRANSITION_PATTERN_HINTS: dict[str, dict[str, list[str]]] = {
     "build_riser": {
-        "laser": ["vertical_rake", "rotor", "cone"],
+        "laser": ["vertical_rake", "horizontal_rake", "rotor", "cone", "scan_slice", "target_step_chase", "spiral_tunnel"],
         "mover": ["rise", "mirror_fan", "figure_eight"],
         "wash": ["build_ramp", "bloom", "outside_in"],
         "led": ["vertical_build", "ramp", "vertical_offset"],
     },
     "drop_launch": {
-        "laser": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups"],
+        "laser": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "split_zone_beams", "beam_fan_wide", "target_rotate_chase", "point_array"],
         "mover": ["snap_hits", "cross_sweep", "ping_pong_tilt"],
         "wash": ["drop_slam", "white_peak", "downbeat_hit"],
         "led": ["chase", "fizzle", "audio_spectrum"],
     },
     "drop_variation": {
-        "laser": ["tunnel", "crisscross", "burst_fan", "alternating_beam_groups"],
+        "laser": ["tunnel", "crisscross", "burst_fan", "alternating_beam_groups", "spiral_tunnel", "sheet", "target_ring_chase", "beam_sequence_counterclockwise"],
         "mover": ["square", "diamond", "cross_sweep", "ping_pong_tilt"],
         "wash": ["white_peak", "punch", "drop_slam"],
         "led": ["rotating_line", "snake", "audio_spectrum", "chase"],
     },
     "breakdown_release": {
-        "laser": ["thin_scan", "liquid_sky", "fan"],
+        "laser": ["thin_scan", "liquid_sky", "fan", "circle_trace", "spirograph", "target_bounce_chase"],
         "mover": ["hold", "leaf", "drift"],
         "wash": ["breakdown_glow", "fade", "ambient"],
         "led": ["sparkle", "fade", "pulse"],
     },
     "intro_set": {
-        "laser": ["fan", "thin_scan", "wave"],
+        "laser": ["fan", "beam_fan_narrow", "thin_scan", "wave", "circle_trace", "beam_sequence_clockwise"],
         "mover": ["drift", "circle", "leaf"],
         "wash": ["ambient", "breath", "center_out"],
         "led": ["pulse", "fade", "horizontal_lines"],
     },
     "outro_release": {
-        "laser": ["fan", "thin_scan", "wave"],
+        "laser": ["fan", "beam_fan_narrow", "thin_scan", "wave", "horizontal_line_trace", "beam_sequence_clockwise"],
         "mover": ["hold", "drift", "line_bounce"],
         "wash": ["fade", "ambient", "breath"],
         "led": ["fade", "horizontal_ramp", "pulse"],
@@ -280,6 +339,80 @@ _GEOMETRY_STRATEGIES: dict[str, dict[str, str]] = {
         "target_strategy": "spiral_air_wrap",
         "color_strategy": "evolving_multicolor",
     },
+    "array": {
+        "content_family": "beam",
+        "blanking_strategy": "point_steps",
+        "target_strategy": "center_axis_hold",
+        "color_strategy": "target_color_steps",
+    },
+    "sheet": {
+        "content_family": "beam",
+        "blanking_strategy": "sheet_open",
+        "target_strategy": "sheet_wall",
+        "color_strategy": "texture_flip",
+    },
+    "trace": {
+        "content_family": "abstract",
+        "blanking_strategy": "shape_draw",
+        "target_strategy": "shape_trace",
+        "color_strategy": "shape_outline_morph",
+    },
+    "sequence": {
+        "content_family": "transition",
+        "blanking_strategy": "point_steps",
+        "target_strategy": "sequenced_targets",
+        "color_strategy": "target_color_steps",
+    },
+}
+
+_LASER_PATTERN_GEOMETRY: dict[str, str] = {
+    "fan": "fan",
+    "beam_fan_narrow": "fan",
+    "beam_fan_wide": "fan",
+    "cross_room_fans": "fan",
+    "thin_scan": "scan",
+    "scan_slice": "scan",
+    "wave": "scan",
+    "vertical_rake": "rake",
+    "horizontal_rake": "rake",
+    "liquid_sky": "sky",
+    "cone": "cone",
+    "tunnel": "tunnel",
+    "spiral_tunnel": "tunnel",
+    "crisscross": "lattice",
+    "lattice": "lattice",
+    "rotor": "helix",
+    "helix": "helix",
+    "spirograph": "helix",
+    "wave_trace": "helix",
+    "loop_trace": "helix",
+    "roll_trace": "helix",
+    "burst_fan": "burst",
+    "starburst": "burst",
+    "shutter_hits": "burst",
+    "mixed_beam_fx": "burst",
+    "alternating_beam_groups": "grouped",
+    "split_zone_beams": "grouped",
+    "target_split_chase": "grouped",
+    "static_beam": "array",
+    "dual_beam": "array",
+    "tri_beam": "array",
+    "point_array": "array",
+    "spoke_wheel": "array",
+    "sheet": "sheet",
+    "circle_trace": "trace",
+    "vertical_line_trace": "trace",
+    "horizontal_line_trace": "trace",
+    "triangle_trace": "trace",
+    "square_trace": "trace",
+    "pentagon_trace": "trace",
+    "hexagon_trace": "trace",
+    "target_step_chase": "sequence",
+    "target_bounce_chase": "sequence",
+    "target_rotate_chase": "sequence",
+    "target_ring_chase": "sequence",
+    "beam_sequence_clockwise": "sequence",
+    "beam_sequence_counterclockwise": "sequence",
 }
 
 _PHRASE_ENVELOPES: dict[str, dict[str, Any]] = {
@@ -663,20 +796,7 @@ def _laser_expression(
     ordinal: int,
 ) -> dict[str, Any]:
     token = f"laser-expression:{kind}:{context}:{ordinal}:{base_pattern}"
-    geometry_family = {
-        "burst_fan": "burst",
-        "starburst": "burst",
-        "alternating_beam_groups": "grouped",
-        "shutter_hits": "grouped",
-        "tunnel": "tunnel",
-        "crisscross": "lattice",
-        "vertical_rake": "rake",
-        "liquid_sky": "sky",
-        "cone": "cone",
-        "thin_scan": "scan",
-        "wave": "scan",
-        "rotor": "helix",
-    }.get(base_pattern, "fan")
+    geometry_family = _LASER_PATTERN_GEOMETRY.get(base_pattern, "fan")
     stage = _pattern_stage(kind)
     color_mode = ["static", "morph", "white_hits", "dual_cycle"][int(_stable_float(f"{token}:color_mode") * 4) % 4]
     target_bias = ["crowd", "mid_air", "ceiling"][int(_stable_float(f"{token}:target") * 3) % 3]
