@@ -1,0 +1,60 @@
+# Minimal frontend/file-playback config for the AUCD CX338B ILDA laser.
+# Use this for `photonic run-file ... --web` testing with the browser control plane.
+
+audio:
+  sample_rate: 48000
+  block_size: 1024
+  channels: 2
+  buffer_seconds: 2.0
+  latency: "low"
+
+scene:
+  scenes_dir: "config/scenes"
+  default_scene: "idle"
+  transition_time_s: 0.5
+
+safety:
+  laser:
+    y_axis_max: 100
+    min_scan_speed: 30
+    y_channel_offset: 3
+    speed_channel_offset: 4
+    max_intensity_no_movement: 50
+    enable_delay_ms: 500
+  strobe:
+    max_rate_hz: 10.0
+    max_duration_s: 5.0
+    cooldown_s: 2.0
+  moving_head:
+    max_pan_speed: 200
+    max_tilt_speed: 200
+    home_on_error: true
+  heartbeat_timeout_s: 1.0
+  analysis_timeout_s: 2.0
+  min_beat_confidence: 0.3
+  graceful_degradation: true
+
+runtime_flags:
+  allow_unverified_laser_profiles: true
+
+ilda:
+  enabled: true
+  transport_type: "memory"
+  points_per_frame: 120
+  target_fps: 30.0
+  ether_dream_host: "127.0.0.1"
+  ether_dream_port: 7765
+  ether_dream_timeout_s: 1.0
+  ether_dream_low_water_mark: 0
+
+fixtures:
+  - id: "laser-main"
+    name: "Main Festival Laser"
+    type: "laser"
+    profile: "laser_aucd_cx338b_hybrid"
+    start_address: 1
+    enabled: true
+
+debug: false
+profile: false
+log_level: "INFO"
