@@ -72,7 +72,7 @@ class ILDAConfig(BaseModel):
     """ILDA frame generation/export configuration."""
 
     enabled: bool = True
-    transport_type: str = "memory"  # "memory", "json"
+    transport_type: str = "memory"  # "memory", "json", "ild"
     points_per_frame: int = 120
     target_fps: float = 30.0
     export_path: Path | None = None

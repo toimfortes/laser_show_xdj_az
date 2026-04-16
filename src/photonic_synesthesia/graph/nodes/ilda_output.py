@@ -11,6 +11,7 @@ from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSaf
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, MusicStructure, PhotonicState
 from photonic_synesthesia.laser import build_laser_profiles
+from photonic_synesthesia.laser.ilda_file import encode_ild
 
 logger = get_logger(__name__)
 
@@ -257,10 +258,14 @@ class ILDAOutputNode:
         return points
 
     def _export_frames(self, frames: list[ILDAFrame]) -> None:
-        if self.config.transport_type != "json" or self._export_path is None:
+        if self._export_path is None:
             return
-        payload = {
-            "generated_at": time.time(),
-            "frames": frames,
-        }
-        self._export_path.write_text(json.dumps(payload), encoding="utf-8")
+        if self.config.transport_type == "json":
+            payload = {
+                "generated_at": time.time(),
+                "frames": frames,
+            }
+            self._export_path.write_text(json.dumps(payload), encoding="utf-8")
+            return
+        if self.config.transport_type == "ild":
+            self._export_path.write_bytes(encode_ild(frames))

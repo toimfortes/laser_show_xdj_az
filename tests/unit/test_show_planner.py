@@ -116,5 +116,22 @@ def test_build_and_drop_transitions_escalate() -> None:
     assert drop["strobe_profile"]["mode"] in {"impact", "burst"}
     assert "label" in drop["laser_variant"]
     assert "label" in drop["laser_expression"]
+    assert drop["laser_expression"]["content_family"] in {"beam", "abstract", "transition"}
     assert drop["laser_expression"]["geometry_family"] in {"burst", "grouped", "tunnel", "lattice", "rake", "sky", "cone", "scan", "fan", "helix"}
+    assert drop["laser_expression"]["target_strategy"]
+    assert drop["laser_expression"]["blanking_strategy"]
+    assert drop["laser_expression"]["color_strategy"]
+    assert drop["laser_expression"]["transition_role"] in {
+        "drop_launch",
+        "drop_variation",
+        "build_riser",
+        "breakdown_release",
+        "intro_set",
+        "outro_release",
+    }
+    envelope = drop["laser_expression"]["phrase_envelope"]
+    assert envelope["launch_bars"] > 0
+    assert envelope["normalize_after_bars"] > 0
+    assert envelope["launch_intensity"] > envelope["sustain_intensity"]
+    assert len(drop["laser_expression"]["variation_plan"]) >= 2
     assert drop["strobe_profile"]["ceiling"] >= drop["strobe_profile"]["floor"]

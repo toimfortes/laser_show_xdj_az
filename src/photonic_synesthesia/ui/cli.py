@@ -208,6 +208,116 @@ _TRANSITION_PATTERN_HINTS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+_CONTENT_FAMILY_BY_CONTEXT: dict[str, str] = {
+    "intro_set": "beam",
+    "build_riser": "transition",
+    "drop_launch": "transition",
+    "drop_variation": "beam",
+    "breakdown_release": "abstract",
+    "outro_release": "beam",
+}
+
+_GEOMETRY_STRATEGIES: dict[str, dict[str, str]] = {
+    "fan": {
+        "content_family": "beam",
+        "blanking_strategy": "open_groove",
+        "target_strategy": "wide_zone_sweep",
+        "color_strategy": "slow_palette_drift",
+    },
+    "burst": {
+        "content_family": "transition",
+        "blanking_strategy": "impact_gates",
+        "target_strategy": "drop_launch_fan",
+        "color_strategy": "white_accent_launch",
+    },
+    "grouped": {
+        "content_family": "beam",
+        "blanking_strategy": "alternating_groups",
+        "target_strategy": "split_zone_hits",
+        "color_strategy": "contrast_flips",
+    },
+    "tunnel": {
+        "content_family": "beam",
+        "blanking_strategy": "breathing_aperture",
+        "target_strategy": "depth_chase",
+        "color_strategy": "center_pull_morph",
+    },
+    "lattice": {
+        "content_family": "beam",
+        "blanking_strategy": "cross_cutting",
+        "target_strategy": "cross_room_fans",
+        "color_strategy": "dual_cycle_contrast",
+    },
+    "rake": {
+        "content_family": "transition",
+        "blanking_strategy": "riser_chops",
+        "target_strategy": "vertical_pressure",
+        "color_strategy": "narrowing_palette",
+    },
+    "sky": {
+        "content_family": "abstract",
+        "blanking_strategy": "soft_air",
+        "target_strategy": "aerial_hold",
+        "color_strategy": "harmonic_morph",
+    },
+    "cone": {
+        "content_family": "abstract",
+        "blanking_strategy": "soft_sweep",
+        "target_strategy": "ceiling_bloom",
+        "color_strategy": "halo_morph",
+    },
+    "scan": {
+        "content_family": "beam",
+        "blanking_strategy": "tight_slice",
+        "target_strategy": "line_sweep",
+        "color_strategy": "single_hue_focus",
+    },
+    "helix": {
+        "content_family": "abstract",
+        "blanking_strategy": "rolling_draw",
+        "target_strategy": "spiral_air_wrap",
+        "color_strategy": "evolving_multicolor",
+    },
+}
+
+_PHRASE_ENVELOPES: dict[str, dict[str, Any]] = {
+    "intro": {
+        "launch_bars": 0,
+        "sustain_bars": 16,
+        "release_bars": 8,
+        "normalize_after_bars": 4,
+        "intensity_curve": "gentle_ramp",
+    },
+    "build": {
+        "launch_bars": 4,
+        "sustain_bars": 8,
+        "release_bars": 2,
+        "normalize_after_bars": 2,
+        "intensity_curve": "escalating_riser",
+    },
+    "drop": {
+        "launch_bars": 4,
+        "sustain_bars": 8,
+        "release_bars": 4,
+        "normalize_after_bars": 4,
+        "intensity_curve": "impact_then_settle",
+    },
+    "breakdown": {
+        "launch_bars": 0,
+        "sustain_bars": 16,
+        "release_bars": 8,
+        "normalize_after_bars": 2,
+        "intensity_curve": "floating_plateau",
+    },
+    "outro": {
+        "launch_bars": 0,
+        "sustain_bars": 8,
+        "release_bars": 8,
+        "normalize_after_bars": 2,
+        "intensity_curve": "progressive_subtraction",
+    },
+}
+
 
 def _discover_rekordbox_xml() -> Path | None:
     for candidate in _DEFAULT_REKORDBOX_XML_CANDIDATES:
@@ -565,8 +675,66 @@ def _laser_expression(
         "wave": "scan",
         "rotor": "helix",
     }.get(base_pattern, "fan")
+    stage = _pattern_stage(kind)
     color_mode = ["static", "morph", "white_hits", "dual_cycle"][int(_stable_float(f"{token}:color_mode") * 4) % 4]
     target_bias = ["crowd", "mid_air", "ceiling"][int(_stable_float(f"{token}:target") * 3) % 3]
+    strategy = _GEOMETRY_STRATEGIES.get(geometry_family, _GEOMETRY_STRATEGIES["fan"])
+    phrase_template = _PHRASE_ENVELOPES[stage]
+    content_family = strategy["content_family"]
+    if context in _CONTENT_FAMILY_BY_CONTEXT:
+        content_family = _CONTENT_FAMILY_BY_CONTEXT[context]
+    launch_intensity = 0.0
+    sustain_intensity = 0.0
+    release_intensity = 0.0
+    sustain_motion = 0.0
+    if stage == "drop":
+        launch_intensity = round(0.94 + _stable_float(f"{token}:launch_intensity") * 0.2, 3)
+        sustain_intensity = round(0.56 + _stable_float(f"{token}:sustain_intensity") * 0.22, 3)
+        release_intensity = round(0.38 + _stable_float(f"{token}:release_intensity") * 0.18, 3)
+        sustain_motion = round(0.76 + _stable_float(f"{token}:sustain_motion") * 0.35, 3)
+    elif stage == "build":
+        launch_intensity = round(0.44 + _stable_float(f"{token}:launch_intensity") * 0.18, 3)
+        sustain_intensity = round(0.62 + _stable_float(f"{token}:sustain_intensity") * 0.18, 3)
+        release_intensity = round(0.2 + _stable_float(f"{token}:release_intensity") * 0.16, 3)
+        sustain_motion = round(0.88 + _stable_float(f"{token}:sustain_motion") * 0.42, 3)
+    elif stage == "breakdown":
+        launch_intensity = round(0.18 + _stable_float(f"{token}:launch_intensity") * 0.1, 3)
+        sustain_intensity = round(0.28 + _stable_float(f"{token}:sustain_intensity") * 0.12, 3)
+        release_intensity = round(0.16 + _stable_float(f"{token}:release_intensity") * 0.1, 3)
+        sustain_motion = round(0.42 + _stable_float(f"{token}:sustain_motion") * 0.2, 3)
+    else:
+        launch_intensity = round(0.26 + _stable_float(f"{token}:launch_intensity") * 0.14, 3)
+        sustain_intensity = round(0.34 + _stable_float(f"{token}:sustain_intensity") * 0.18, 3)
+        release_intensity = round(0.22 + _stable_float(f"{token}:release_intensity") * 0.12, 3)
+        sustain_motion = round(0.54 + _stable_float(f"{token}:sustain_motion") * 0.24, 3)
+
+    variation_plan = {
+        "intro": [
+            "introduce beams sparsely",
+            "favor aerial holds over crowd hits",
+            "let colors drift slowly across phrases",
+        ],
+        "build": [
+            "tighten geometry every phrase block",
+            "increase vertical pressure into the riser",
+            "save impact gating for the handoff",
+        ],
+        "drop": [
+            "hit hard for the launch bars",
+            "normalize to a groove after the launch",
+            "rotate between chase, fan, and abstract looks mid-drop",
+        ],
+        "breakdown": [
+            "reduce beam density and keep lasers overhead",
+            "favor melodic abstracts and tunnels",
+            "avoid sustained shuttering",
+        ],
+        "outro": [
+            "strip away density",
+            "return to simple fans and scans",
+            "prepare a clean handoff for mix-out",
+        ],
+    }[stage]
     return {
         "label": _variant_label(
             track_seed,
@@ -575,9 +743,22 @@ def _laser_expression(
             ["Aerial", "Crowd", "Prism", "Helix", "Voltage", "Sky"],
             ["Engine", "Vector", "Drive", "Pulse", "Lattice", "Sweep"],
         ),
+        "content_family": content_family,
         "geometry_family": geometry_family,
         "color_mode": color_mode,
         "target_bias": target_bias,
+        "target_strategy": strategy["target_strategy"],
+        "blanking_strategy": strategy["blanking_strategy"],
+        "color_strategy": strategy["color_strategy"],
+        "phrase_envelope": {
+            **phrase_template,
+            "launch_intensity": launch_intensity,
+            "sustain_intensity": sustain_intensity,
+            "release_intensity": release_intensity,
+            "sustain_motion": sustain_motion,
+        },
+        "transition_role": context,
+        "variation_plan": variation_plan,
         "x_amplitude": round(0.72 + _stable_float(f"{token}:x_amp") * 1.1, 3),
         "y_amplitude": round(0.45 + _stable_float(f"{token}:y_amp") * 1.5, 3),
         "rotation_rate": round(0.65 + _stable_float(f"{token}:rot_rate") * 1.8, 3),
