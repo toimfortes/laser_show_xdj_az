@@ -52,6 +52,18 @@ function titleCaseWords(value) {
     .join(" ");
 }
 
+function pathValue(source, dottedPath, fallback = undefined) {
+  if (!source || !dottedPath) {
+    return fallback;
+  }
+  return dottedPath.split(".").reduce((current, key) => {
+    if (current && typeof current === "object" && key in current) {
+      return current[key];
+    }
+    return undefined;
+  }, source) ?? fallback;
+}
+
 function hexToRgb(hex) {
   const normalized = hex.replace("#", "");
   const expanded = normalized.length === 3
@@ -262,6 +274,10 @@ function renderPlayback() {
       </div>
       <span>${(playback.show_sections || []).length} sections</span>
     </div>
+    <div class="playback-artifacts">
+      <span>Autosave ${safeText(playback.show_plan_path, "pending")}</span>
+      ${playback.ilda_export_url ? `<a class="playback-export" href="${playback.ilda_export_url}">Download ${safeText(playback.ilda_transport_type, "ILDA").toUpperCase()}</a>` : "<span>No ILDA export yet</span>"}
+    </div>
     <div class="playback-controls">
       <button type="button" id="sync-audio">Sync To Live</button>
       <span id="playback-status">Waiting for browser audio…</span>
@@ -368,8 +384,9 @@ function renderShowEditor() {
     ].filter(Boolean);
     const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
     const strobeProfile = sectionVariant(section, "strobe_profile");
+    const laserExpression = sectionVariant(section, "laser_expression");
     const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
-    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${safeText(laserExpression.geometry_family, "fan")} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
@@ -443,6 +460,52 @@ function renderShowEditor() {
     ["audio_spectrum", "Audio Spectrum"],
     ["fade", "Fade"],
   ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const laserContentOptions = [
+    ["beam", "Beam"],
+    ["abstract", "Abstract"],
+    ["transition", "Transition"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const laserTargetBiasOptions = [
+    ["crowd", "Crowd"],
+    ["mid_air", "Mid Air"],
+    ["ceiling", "Ceiling"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const targetStrategyOptions = [
+    ["wide_zone_sweep", "Wide Zone Sweep"],
+    ["drop_launch_fan", "Drop Launch Fan"],
+    ["split_zone_hits", "Split Zone Hits"],
+    ["depth_chase", "Depth Chase"],
+    ["cross_room_fans", "Cross Room Fans"],
+    ["vertical_pressure", "Vertical Pressure"],
+    ["aerial_hold", "Aerial Hold"],
+    ["ceiling_bloom", "Ceiling Bloom"],
+    ["line_sweep", "Line Sweep"],
+    ["spiral_air_wrap", "Spiral Air Wrap"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const blankingStrategyOptions = [
+    ["open_groove", "Open Groove"],
+    ["impact_gates", "Impact Gates"],
+    ["alternating_groups", "Alternating Groups"],
+    ["breathing_aperture", "Breathing Aperture"],
+    ["cross_cutting", "Cross Cutting"],
+    ["riser_chops", "Riser Chops"],
+    ["soft_air", "Soft Air"],
+    ["soft_sweep", "Soft Sweep"],
+    ["tight_slice", "Tight Slice"],
+    ["rolling_draw", "Rolling Draw"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const colorStrategyOptions = [
+    ["slow_palette_drift", "Slow Palette Drift"],
+    ["white_accent_launch", "White Accent Launch"],
+    ["contrast_flips", "Contrast Flips"],
+    ["center_pull_morph", "Center Pull Morph"],
+    ["dual_cycle_contrast", "Dual Cycle Contrast"],
+    ["narrowing_palette", "Narrowing Palette"],
+    ["harmonic_morph", "Harmonic Morph"],
+    ["halo_morph", "Halo Morph"],
+    ["single_hue_focus", "Single Hue Focus"],
+    ["evolving_multicolor", "Evolving Multicolor"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
 
   elements.showEditor.innerHTML = `
     <div class="subhead">
@@ -502,6 +565,42 @@ function renderShowEditor() {
               <span>LED Pattern</span>
               <select data-field="led_pattern">${ledPatternOptions}</select>
             </label>
+            <label>
+              <span>Laser Family</span>
+              <select data-field="laser_expression.content_family">${laserContentOptions}</select>
+            </label>
+            <label>
+              <span>Target Bias</span>
+              <select data-field="laser_expression.target_bias">${laserTargetBiasOptions}</select>
+            </label>
+            <label>
+              <span>Target Strategy</span>
+              <select data-field="laser_expression.target_strategy">${targetStrategyOptions}</select>
+            </label>
+            <label>
+              <span>Blanking</span>
+              <select data-field="laser_expression.blanking_strategy">${blankingStrategyOptions}</select>
+            </label>
+            <label>
+              <span>Color Strategy</span>
+              <select data-field="laser_expression.color_strategy">${colorStrategyOptions}</select>
+            </label>
+            <label>
+              <span>Launch</span>
+              <input data-field="laser_expression.phrase_envelope.launch_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.launch_intensity", 1)}" />
+            </label>
+            <label>
+              <span>Sustain</span>
+              <input data-field="laser_expression.phrase_envelope.sustain_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.sustain_intensity", 0.7)}" />
+            </label>
+            <label>
+              <span>Release</span>
+              <input data-field="laser_expression.phrase_envelope.release_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.release_intensity", 0.4)}" />
+            </label>
+            <label class="show-variation-plan">
+              <span>Variation Plan</span>
+              <textarea data-field="laser_expression.variation_plan" rows="3">${(pathValue(section, "laser_expression.variation_plan", []) || []).join("\n")}</textarea>
+            </label>
             <div class="show-toggle-row">
               <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
               <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers</label>
@@ -519,7 +618,7 @@ function renderShowEditor() {
     if (!section) {
       return;
     }
-    card.querySelectorAll("select,input").forEach((input) => {
+    card.querySelectorAll("select,input,textarea").forEach((input) => {
       const eventName = input.type === "range" ? "input" : "change";
       if (input.dataset.field === "scene_id") {
         input.value = section.scene_id;
@@ -535,12 +634,17 @@ function renderShowEditor() {
       ) {
         input.value = section[input.dataset.field];
       }
+      if (input.dataset.field?.startsWith("laser_expression.") && input.tagName !== "TEXTAREA") {
+        input.value = pathValue(section, input.dataset.field, input.value);
+      }
       input.addEventListener(eventName, (event) => {
         const target = event.currentTarget;
         const field = target.dataset.field;
         let value = target.type === "checkbox" ? target.checked : target.value;
         if (target.type === "range") {
           value = Number(value);
+        } else if (target.tagName === "TEXTAREA") {
+          value = String(value);
         }
         patchShowSection(section.id, { [field]: value }).catch((error) => {
           console.error(error);

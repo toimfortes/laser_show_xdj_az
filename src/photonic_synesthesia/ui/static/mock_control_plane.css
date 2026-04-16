@@ -260,6 +260,24 @@ select {
   text-align: right;
 }
 
+.playback-artifacts {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.playback-export {
+  color: var(--ink);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .playback-panel audio,
 #waveform-canvas {
   width: 100%;
@@ -321,13 +339,24 @@ select {
 }
 
 .show-section-grid input,
-.show-section-grid select {
+.show-section-grid select,
+.show-section-grid textarea {
   width: 100%;
   padding: 8px 10px;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.08);
   color: var(--ink);
+}
+
+.show-section-grid textarea {
+  resize: vertical;
+  min-height: 72px;
+  font-family: inherit;
+}
+
+.show-variation-plan {
+  grid-column: 1 / -1;
 }
 
 .show-toggle-row {

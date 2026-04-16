@@ -1267,6 +1267,11 @@ def run_file(
     from photonic_synesthesia.graph import build_photonic_graph
     from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
     from photonic_synesthesia.integrations import load_rekordbox_track
+    from photonic_synesthesia.integrations.show_plans import (
+        ilda_export_path,
+        load_show_plan,
+        save_show_plan,
+    )
     from photonic_synesthesia.platform import (
         ControlPlaneStateService,
         PlaybackContext,
@@ -1327,6 +1332,33 @@ def run_file(
             click.echo(f"Rekordbox XML: {rekordbox_source}")
             click.echo()
 
+    track_key = (
+        f"{matched_rekordbox_track.artist or ''}|{matched_rekordbox_track.title}"
+        if matched_rekordbox_track
+        else audio_file.stem
+    )
+    persisted_show_plan = load_show_plan(track_key)
+    active_show_sections = (
+        list(persisted_show_plan.get("show_sections", []))
+        if persisted_show_plan and isinstance(persisted_show_plan.get("show_sections"), list)
+        else _default_show_sections(
+            [
+                {
+                    "name": marker.name,
+                    "kind": marker.kind,
+                    "start_seconds": round(marker.start_seconds, 3),
+                    "energy_hint": marker.energy_hint,
+                }
+                for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
+            ],
+            audio_node.duration_seconds if web_mode else 0.0,
+            track_seed=track_key,
+        )
+    )
+    settings.ilda.enabled = True
+    settings.ilda.transport_type = "ild"
+    settings.ilda.export_path = ilda_export_path(track_key)
+
     graph = None
     web_server = None
     web_thread = None
@@ -1350,6 +1382,7 @@ def run_file(
                     duration_seconds=audio_node.duration_seconds,
                     track_title=matched_rekordbox_track.title if matched_rekordbox_track else audio_file.stem,
                     track_artist=matched_rekordbox_track.artist if matched_rekordbox_track else "",
+                    track_key=track_key,
                     waveform=audio_node.waveform_preview(),
                     structure_markers=[
                         {
@@ -1360,26 +1393,19 @@ def run_file(
                         }
                         for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
                     ],
-                    show_sections=_default_show_sections(
-                        [
-                            {
-                                "name": marker.name,
-                                "kind": marker.kind,
-                                "start_seconds": round(marker.start_seconds, 3),
-                                "energy_hint": marker.energy_hint,
-                            }
-                            for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
-                        ],
-                        audio_node.duration_seconds,
-                        track_seed=(
-                            f"{matched_rekordbox_track.artist or ''}|{matched_rekordbox_track.title}"
-                            if matched_rekordbox_track
-                            else audio_file.stem
-                        ),
+                    show_sections=active_show_sections,
+                    show_plan_path=str(
+                        persisted_show_plan.get("saved_path", "")
+                        if persisted_show_plan and persisted_show_plan.get("saved_path")
+                        else ""
                     ),
+                    ilda_transport_type=settings.ilda.transport_type,
+                    ilda_export_path=str(settings.ilda.export_path or ""),
                     _seek_callback=audio_node.seek,
+                    _save_callback=lambda payload: str(save_show_plan(track_key, payload)),
                 )
             )
+            playback_context.persist_current_show_plan()
             playback_context.update_transport(
                 playhead_seconds=0.0,
                 playing=False,

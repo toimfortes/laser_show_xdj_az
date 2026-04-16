@@ -813,6 +813,20 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Playback file is missing")
         return FileResponse(media_path)
 
+    @app.get("/api/mock/playback/ilda-export")
+    async def mock_playback_ilda_export(session: str | None = None) -> Any:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        if session is not None and session != playback_context.session_id:
+            raise HTTPException(status_code=404, detail="Playback session is no longer active")
+        export_path = Path(playback_context.ilda_export_path)
+        if not playback_context.ilda_export_path or not export_path.is_file():
+            raise HTTPException(status_code=404, detail="No ILDA export is available")
+        media_type = "application/octet-stream"
+        filename = export_path.name
+        return FileResponse(export_path, media_type=media_type, filename=filename)
+
     @app.patch("/api/mock/playback/show-sections/{section_id}")
     async def update_playback_show_section(
         section_id: str, request: PlaybackShowSectionUpdateRequest

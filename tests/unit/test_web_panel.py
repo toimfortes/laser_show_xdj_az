@@ -28,6 +28,7 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/universes" in routes
     assert "/api/mock/playback" in routes
     assert "/api/mock/playback/audio" in routes
+    assert "/api/mock/playback/ilda-export" in routes
     assert "/api/mock/playback/seek" in routes
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
@@ -38,6 +39,18 @@ def test_live_state_endpoint_reflects_runtime_ingest() -> None:
     services = ControlPlaneStateService()
     state = create_initial_state()
     state["scene_state"]["current_scene"] = "intro_ambient"
+    state["ilda_frames"] = [
+        {
+            "fixture_id": "laser-main",
+            "profile_name": "laser_aucd_cx338b_hybrid",
+            "geometry_family": "burst",
+            "color_mode": "white_hits",
+            "target_bias": "crowd",
+            "point_count": 2,
+            "repeat": True,
+            "points": [],
+        }
+    ]
     services.update_from_photonic_state(state)
 
     app = create_app(services=services)
@@ -49,6 +62,8 @@ def test_live_state_endpoint_reflects_runtime_ingest() -> None:
     body = response.json()
     assert body["active_scene_id"] == "intro_ambient"
     assert body["diagnostics"]["runtime_source"] == "graph"
+    assert body["diagnostics"]["ilda_frame_count"] == 1
+    assert body["diagnostics"]["ilda_geometry_families"] == ["burst"]
 
 
 def test_root_page_exposes_mock_visualizer_shell() -> None:
@@ -152,6 +167,8 @@ def test_live_websocket_streams_snapshot_payload() -> None:
 def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     audio_path = tmp_path / "track.mp3"
     audio_path.write_bytes(b"fake mp3 bytes")
+    ilda_path = tmp_path / "track.ild"
+    ilda_path.write_bytes(b"ILDAdemo")
 
     clear_shared_playback_context()
     shared_playback = set_shared_playback_context(
@@ -161,7 +178,11 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
             track_title="Relax Your Mind",
             track_artist="19_26, Yubik",
             duration_seconds=12.5,
+            track_key="19_26|Relax Your Mind",
             waveform=[0.1, 0.5, 0.2],
+            show_plan_path=str(tmp_path / "show_plan.json"),
+            ilda_transport_type="ild",
+            ilda_export_path=str(ilda_path),
             structure_markers=[
                 {"name": "Intro E:6", "kind": "intro", "start_seconds": 0.0, "energy_hint": 6},
                 {"name": "Drop E:8", "kind": "drop", "start_seconds": 4.0, "energy_hint": 8},
@@ -200,6 +221,7 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     metadata_response = client.get("/api/mock/playback")
     metadata = metadata_response.json()
     audio_response = client.get(metadata["audio_url"])
+    ilda_response = client.get(metadata["ilda_export_url"])
     stale_audio_response = client.get("/api/mock/playback/audio?session=stale-session")
 
     assert metadata_response.status_code == 200
@@ -207,7 +229,10 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["file_name"] == "track.mp3"
     assert metadata["track_title"] == "Relax Your Mind"
     assert metadata["track_artist"] == "19_26, Yubik"
+    assert metadata["track_key"] == "19_26|Relax Your Mind"
     assert metadata["waveform"] == [0.1, 0.5, 0.2]
+    assert metadata["ilda_transport_type"] == "ild"
+    assert metadata["ilda_export_available"] is True
     assert len(metadata["structure_markers"]) == 2
     assert metadata["show_sections"][0]["scene_id"] == "intro_ambient"
     assert metadata["playhead_seconds"] == 3.25
@@ -217,6 +242,8 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["transport_revision"] == 1
     assert audio_response.status_code == 200
     assert audio_response.content == b"fake mp3 bytes"
+    assert ilda_response.status_code == 200
+    assert ilda_response.content == b"ILDAdemo"
     assert stale_audio_response.status_code == 404
 
     clear_shared_playback_context()
@@ -225,6 +252,81 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
 def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> None:
     audio_path = tmp_path / "track.mp3"
     audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    saved_payloads: list[dict[str, object]] = []
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=12.5,
+            track_key="artist|track",
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Drop E:8",
+                    "kind": "drop",
+                    "start_seconds": 4.0,
+                    "end_seconds": 8.0,
+                    "scene_id": "drop_intense",
+                    "fixture_mode": "peak_return",
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 1.0,
+                    "strobe_level": 0.2,
+                    "laser_enabled": True,
+                    "movers_enabled": True,
+                    "washes_enabled": True,
+                    "leds_enabled": True,
+                    "laser_expression": {
+                        "content_family": "transition",
+                        "target_strategy": "drop_launch_fan",
+                        "blanking_strategy": "impact_gates",
+                        "color_strategy": "white_accent_launch",
+                        "phrase_envelope": {
+                            "launch_intensity": 1.05,
+                            "sustain_intensity": 0.64,
+                            "release_intensity": 0.42,
+                        },
+                        "variation_plan": ["hit hard", "settle down"],
+                    },
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/show-sections/section_001",
+        json={
+            "changes": {
+                "scene_id": "break_sweep",
+                "motion_multiplier": 1.45,
+                "laser_enabled": False,
+                "laser_expression.content_family": "abstract",
+                "laser_expression.target_strategy": "aerial_hold",
+                "laser_expression.phrase_envelope.sustain_intensity": 0.55,
+                "laser_expression.variation_plan": "reduce beam density\nuse overhead arcs",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    updated = response.json()["show_sections"][0]
+    assert updated["scene_id"] == "break_sweep"
+    assert updated["motion_multiplier"] == 1.45
+    assert updated["laser_enabled"] is False
+    assert updated["laser_expression"]["content_family"] == "abstract"
+    assert updated["laser_expression"]["target_strategy"] == "aerial_hold"
+    assert updated["laser_expression"]["phrase_envelope"]["sustain_intensity"] == 0.55
+    assert updated["laser_expression"]["variation_plan"] == [
+        "reduce beam density",
+        "use overhead arcs",
+    ]
+    assert get_shared_playback_context() is playback
+    assert saved_payloads
+    assert saved_payloads[-1]["track_key"] == "artist|track"
 
     clear_shared_playback_context()
 

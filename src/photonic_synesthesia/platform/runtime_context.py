@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -25,10 +26,14 @@ class PlaybackContext:
     duration_seconds: float
     track_title: str = ""
     track_artist: str = ""
+    track_key: str = ""
     session_id: str = field(default_factory=lambda: uuid4().hex)
     waveform: list[float] = field(default_factory=list)
     structure_markers: list[dict[str, Any]] = field(default_factory=list)
     show_sections: list[dict[str, Any]] = field(default_factory=list)
+    show_plan_path: str = ""
+    ilda_transport_type: str = "memory"
+    ilda_export_path: str = ""
     playhead_seconds: float = 0.0
     playing: bool = False
     finished: bool = False
@@ -37,6 +42,7 @@ class PlaybackContext:
     server_time: float = 0.0
     transport_revision: int = 0
     _seek_callback: Callable[[float], float] | None = field(default=None, repr=False)
+    _save_callback: Callable[[dict[str, Any]], str | None] | None = field(default=None, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def update_transport(
@@ -61,14 +67,25 @@ class PlaybackContext:
     def snapshot(self) -> dict[str, Any]:
         """Return a thread-safe snapshot for API responses."""
         with self._lock:
+            export_available = bool(self.ilda_export_path and Path(self.ilda_export_path).is_file())
             return {
                 "available": True,
                 "session_id": self.session_id,
                 "file_name": self.file_name,
                 "track_title": self.track_title or self.file_name,
                 "track_artist": self.track_artist,
+                "track_key": self.track_key,
                 "duration_seconds": self.duration_seconds,
                 "audio_url": f"/api/mock/playback/audio?session={self.session_id}",
+                "show_plan_path": self.show_plan_path,
+                "ilda_transport_type": self.ilda_transport_type,
+                "ilda_export_path": self.ilda_export_path,
+                "ilda_export_available": export_available,
+                "ilda_export_url": (
+                    f"/api/mock/playback/ilda-export?session={self.session_id}"
+                    if export_available
+                    else None
+                ),
                 "waveform": list(self.waveform),
                 "structure_markers": [dict(marker) for marker in self.structure_markers],
                 "show_sections": [dict(section) for section in self.show_sections],
@@ -83,6 +100,8 @@ class PlaybackContext:
 
     def update_show_section(self, section_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         """Update one editable show section in-place."""
+        save_payload: dict[str, Any] | None = None
+        updated_section: dict[str, Any] | None = None
         with self._lock:
             for index, section in enumerate(self.show_sections):
                 if str(section.get("id")) != section_id:
@@ -107,9 +126,98 @@ class PlaybackContext:
                             continue
                     elif key == "label":
                         updated[key] = str(value)
+                    elif "." in key:
+                        self._apply_nested_change(updated, key, value)
                 self.show_sections[index] = updated
-                return dict(updated)
-        return None
+                save_payload = self._show_plan_payload_locked()
+                updated_section = dict(updated)
+                break
+        if save_payload is not None and updated_section is not None:
+            self._persist_show_plan(save_payload)
+        return updated_section
+
+    @staticmethod
+    def _apply_nested_change(section: dict[str, Any], dotted_key: str, value: Any) -> None:
+        target = section
+        parts = dotted_key.split(".")
+        for part in parts[:-1]:
+            current = target.get(part)
+            if not isinstance(current, dict):
+                current = {}
+                target[part] = current
+            target = current
+        leaf = parts[-1]
+        if leaf in {
+            "content_family",
+            "geometry_family",
+            "color_mode",
+            "target_bias",
+            "target_strategy",
+            "blanking_strategy",
+            "color_strategy",
+            "transition_role",
+            "label",
+            "intensity_curve",
+        }:
+            target[leaf] = str(value)
+        elif leaf in {"mirror"}:
+            target[leaf] = bool(value)
+        elif leaf in {
+            "x_amplitude",
+            "y_amplitude",
+            "rotation_rate",
+            "sweep_density",
+            "color_cycle_rate",
+            "white_accent",
+            "crowd_bias",
+            "ceiling_bias",
+            "launch_intensity",
+            "sustain_intensity",
+            "release_intensity",
+            "sustain_motion",
+        }:
+            try:
+                target[leaf] = float(value)
+            except (TypeError, ValueError):
+                return
+        elif leaf in {"launch_bars", "sustain_bars", "release_bars", "normalize_after_bars"}:
+            try:
+                target[leaf] = int(value)
+            except (TypeError, ValueError):
+                return
+        elif leaf == "variation_plan":
+            if isinstance(value, list):
+                target[leaf] = [str(item) for item in value]
+            else:
+                target[leaf] = [line.strip() for line in str(value).splitlines() if line.strip()]
+
+    def _show_plan_payload_locked(self) -> dict[str, Any]:
+        return {
+            "track_key": self.track_key,
+            "track_title": self.track_title,
+            "track_artist": self.track_artist,
+            "file_name": self.file_name,
+            "duration_seconds": self.duration_seconds,
+            "structure_markers": [dict(marker) for marker in self.structure_markers],
+            "show_sections": [dict(section) for section in self.show_sections],
+        }
+
+    def _persist_show_plan(self, payload: dict[str, Any]) -> None:
+        callback = self._save_callback
+        if callback is None:
+            return
+        result = callback(payload)
+        if result:
+            with self._lock:
+                self.show_plan_path = str(result)
+
+    def persist_current_show_plan(self) -> str | None:
+        """Persist the current show plan if a callback is configured."""
+        with self._lock:
+            payload = self._show_plan_payload_locked()
+        self._persist_show_plan(payload)
+        with self._lock:
+            return self.show_plan_path or None
 
     def request_seek(self, position_seconds: float) -> float:
         """Seek the backing transport and refresh exported playhead state."""

@@ -227,6 +227,11 @@ class ControlPlaneStateService:
                 "sensor_status": dict(state["sensor_status"]),
                 "processing_times": dict(state["processing_times"]),
                 "dmx_universe_size": len(state["dmx_universe"]),
+                "ilda_frame_count": len(state["ilda_frames"]),
+                "ilda_geometry_families": [
+                    str(frame["geometry_family"]) for frame in state["ilda_frames"]
+                ],
+                "ilda_fixture_ids": [str(frame["fixture_id"]) for frame in state["ilda_frames"]],
             }
 
         self.publish_event(

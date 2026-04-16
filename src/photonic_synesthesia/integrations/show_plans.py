@@ -15,6 +15,13 @@ def show_plan_root() -> Path:
     return base / "photonic_synesthesia" / "show_plans"
 
 
+def ilda_export_root() -> Path:
+    """Return the user-local root directory for generated ILDA exports."""
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    base = Path(xdg_data_home) if xdg_data_home else (Path.home() / ".local" / "share")
+    return base / "photonic_synesthesia" / "ilda_exports"
+
+
 def sanitize_show_plan_key(value: str) -> str:
     """Normalize a track key into a filesystem-safe stem."""
     cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in value.strip())
@@ -25,6 +32,11 @@ def sanitize_show_plan_key(value: str) -> str:
 def show_plan_path(track_key: str) -> Path:
     """Return the JSON path for a persisted show plan."""
     return show_plan_root() / f"{sanitize_show_plan_key(track_key)}.json"
+
+
+def ilda_export_path(track_key: str) -> Path:
+    """Return the `.ild` path for a generated ILDA export."""
+    return ilda_export_root() / f"{sanitize_show_plan_key(track_key)}.ild"
 
 
 def load_show_plan(track_key: str) -> dict[str, Any] | None:
