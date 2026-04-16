@@ -897,6 +897,14 @@ function describeLaserBehavior(output, visual) {
     parts.push("texture sweep");
   }
 
+  if (output.geometryFamily === "sky" || output.geometryFamily === "helix") {
+    parts.push("aerial sweep");
+  } else if (output.geometryFamily === "grouped" || output.geometryFamily === "burst") {
+    parts.push("crowd punch");
+  } else if (output.geometryFamily === "lattice") {
+    parts.push("cross lattice");
+  }
+
   if (Math.abs(output.verticalSweep || 0) > 0.24) {
     parts.push("up/down rake");
   }
@@ -1023,6 +1031,19 @@ function laserBeamColor(baseColor, laserExpression, output, visual) {
     return mixColor(baseColor, alt, mix);
   }
   return hexToRgb(baseColor);
+}
+
+function laserDynamicTargetBias(targetBias, visual, dropMode) {
+  if (dropMode && visual.laserAggression > 0.58) {
+    return "crowd";
+  }
+  if (!dropMode && visual.melodicSmoothness > 0.7 && visual.tonalStability > 0.6) {
+    return "ceiling";
+  }
+  if (visual.melodicSmoothness > visual.laserAggression + 0.12) {
+    return "mid_air";
+  }
+  return targetBias;
 }
 
 function runtimeVisualState(timeSeconds) {
@@ -1503,7 +1524,7 @@ function fixtureOutput(fixture, visual) {
           : expressionGeometry === "sky"
             ? 1.15
             : 1;
-    const targetBias = safeText(laserExpression.target_bias, "mid_air");
+    const targetBias = laserDynamicTargetBias(safeText(laserExpression.target_bias, "mid_air"), visual, dropMode);
     const targetYBias = targetBias === "crowd"
       ? 0.16 + Number(laserExpression.crowd_bias || 0) * 0.2
       : targetBias === "ceiling"
@@ -1517,6 +1538,15 @@ function fixtureOutput(fixture, visual) {
       : targetBias === "ceiling"
         ? targetYBias - visual.melodicSmoothness * 0.08
         : targetYBias - visual.melodicSmoothness * 0.03 + visual.laserAggression * 0.02;
+    const curveDepth = expressionGeometry === "sky"
+      ? 0.22 + visual.melodicSmoothness * 0.18
+      : expressionGeometry === "helix"
+        ? 0.18 + visual.colorDrive * 0.16
+        : expressionGeometry === "lattice"
+          ? 0.12 + visual.harmonicChange * 0.12
+          : expressionGeometry === "grouped"
+            ? 0.05
+            : 0.08 + visual.pitchSalience * 0.08;
     return {
       type: "laser",
       color: beamColor,
@@ -1531,8 +1561,10 @@ function fixtureOutput(fixture, visual) {
       pattern: laserPattern,
       variantLabel: safeText(laserVariant.label, ""),
       expressionLabel: safeText(laserExpression.label, ""),
+      geometryFamily: expressionGeometry,
       targetYBias: expressionTargetBias,
       mirror: Boolean(laserExpression.mirror),
+      curveDepth,
       phase,
     };
   }
@@ -1719,6 +1751,7 @@ function drawLaser(ctx, fixture, output, width, height) {
   const originY = fixture.y * height;
   const count = Math.max(1, output.beamCount);
   const rotation = output.rotation || 0;
+  const geometryFamily = safeText(output.geometryFamily, "fan");
   for (let index = 0; index < count; index += 1) {
     const centered = count === 1 ? 0 : (index / (count - 1)) - 0.5;
     const mirrored = output.mirror && centered > 0 ? -centered : centered;
@@ -1732,6 +1765,30 @@ function drawLaser(ctx, fixture, output, width, height) {
       90,
       height - 82,
     );
+    const familyCurve = geometryFamily === "sky"
+      ? -height * (output.curveDepth || 0.12)
+      : geometryFamily === "helix"
+        ? Math.sin(output.phase * 1.8 + centered * Math.PI) * height * (output.curveDepth || 0.12)
+        : geometryFamily === "lattice"
+          ? centered * height * (output.curveDepth || 0.1)
+          : geometryFamily === "grouped"
+            ? 0
+            : geometryFamily === "burst"
+              ? -Math.abs(centered) * height * (output.curveDepth || 0.08)
+              : -height * (output.curveDepth || 0.08) * 0.4;
+    const controlX = clamp(
+      (originX + targetX) / 2
+        + rotationOffset * 0.4
+        + (geometryFamily === "lattice" ? centered * width * 0.08 : 0)
+        + (geometryFamily === "helix" ? Math.cos(output.phase * 2.1 + centered * 4) * width * 0.04 : 0),
+      40,
+      width - 40,
+    );
+    const controlY = clamp(
+      ((originY + targetY) / 2) + familyCurve,
+      40,
+      height - 60,
+    );
     const beam = ctx.createLinearGradient(originX, originY, targetX, targetY);
     beam.addColorStop(0, rgba(output.color, 0));
     beam.addColorStop(0.12, rgba(output.color, output.intensity * (0.18 + output.shimmer * 0.14)));
@@ -1740,7 +1797,11 @@ function drawLaser(ctx, fixture, output, width, height) {
     ctx.lineWidth = output.dropMode ? 2.8 : 2.2;
     ctx.beginPath();
     ctx.moveTo(originX, originY);
-    ctx.lineTo(targetX, targetY);
+    if (geometryFamily === "grouped") {
+      ctx.lineTo(targetX, targetY);
+    } else {
+      ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
+    }
     ctx.stroke();
 
     if (output.dropMode) {
@@ -1748,7 +1809,22 @@ function drawLaser(ctx, fixture, output, width, height) {
       ctx.lineWidth = 6;
       ctx.beginPath();
       ctx.moveTo(originX, originY);
-      ctx.lineTo(targetX, targetY);
+      if (geometryFamily === "grouped") {
+        ctx.lineTo(targetX, targetY);
+      } else {
+        ctx.quadraticCurveTo(controlX, controlY, targetX, targetY);
+      }
+      ctx.stroke();
+    }
+
+    if (geometryFamily === "lattice" && Math.abs(centered) > 0.12) {
+      const crossX = clamp(originX - spread + sweep - rotationOffset, 60, width - 60);
+      const crossControlX = clamp((originX + crossX) / 2 - centered * width * 0.08, 40, width - 40);
+      ctx.strokeStyle = rgba(output.color, output.intensity * 0.32);
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(originX, originY);
+      ctx.quadraticCurveTo(crossControlX, controlY, crossX, targetY);
       ctx.stroke();
     }
 
