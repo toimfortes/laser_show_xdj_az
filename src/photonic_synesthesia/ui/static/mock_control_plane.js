@@ -298,6 +298,17 @@ function renderShowEditor() {
   }
 
   const activeSection = currentShowSection();
+  const patternSummary = (section) => {
+    const families = [
+      section.laser_enabled ? "lasers" : null,
+      section.movers_enabled ? "movers" : null,
+      section.washes_enabled ? "washes" : null,
+      section.leds_enabled ? "LEDs" : null,
+    ].filter(Boolean);
+    const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
+    const strobeText = section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes";
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+  };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
     .join("");
@@ -316,6 +327,14 @@ function renderShowEditor() {
       <h3>Agentic Show</h3>
       <p>Imported from Rekordbox and editable per section.</p>
     </div>
+    <div class="show-segment-strip">
+      ${sections.map((section) => `
+        <button type="button" class="show-segment-chip${activeSection?.id === section.id ? " active" : ""}" data-jump-section="${section.id}">
+          <strong>${section.label}</strong>
+          <span>${section.start_seconds.toFixed(1)}s</span>
+        </button>
+      `).join("")}
+    </div>
     <div class="show-section-list">
       ${sections.map((section) => `
         <div class="show-section-card${activeSection?.id === section.id ? " active" : ""}" data-section-id="${section.id}">
@@ -323,6 +342,7 @@ function renderShowEditor() {
             <strong>${section.label}</strong>
             <span>${section.start_seconds.toFixed(1)}s - ${section.end_seconds.toFixed(1)}s</span>
           </div>
+          <p class="show-pattern-summary">${patternSummary(section)}</p>
           <div class="show-section-grid">
             <label>
               <span>Scene</span>
@@ -382,6 +402,21 @@ function renderShowEditor() {
       });
     });
   });
+
+  elements.showEditor.querySelectorAll("[data-jump-section]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const section = sections.find((item) => item.id === button.dataset.jumpSection);
+      if (!section) {
+        return;
+      }
+      if (elements.playbackAudio && Number.isFinite(section.start_seconds)) {
+        elements.playbackAudio.currentTime = Number(section.start_seconds);
+        updatePlaybackStatus();
+        drawPlaybackWaveform();
+        updateShowEditorActiveState();
+      }
+    });
+  });
 }
 
 function updateShowEditorActiveState() {
@@ -391,6 +426,9 @@ function updateShowEditorActiveState() {
   }
   elements.showEditor.querySelectorAll(".show-section-card").forEach((card) => {
     card.classList.toggle("active", activeSection?.id === card.dataset.sectionId);
+  });
+  elements.showEditor.querySelectorAll(".show-segment-chip").forEach((chip) => {
+    chip.classList.toggle("active", activeSection?.id === chip.dataset.jumpSection);
   });
 }
 
@@ -437,6 +475,27 @@ function drawPlaybackWaveform() {
       ctx.fillRect(x, (height / 2) - amplitude, Math.max(1, barWidth - 1), amplitude * 2);
     });
   }
+
+  const sections = appState.playback?.show_sections || [];
+  sections.forEach((section, index) => {
+    const duration = Number(appState.playback.duration_seconds || 0);
+    if (duration <= 0) {
+      return;
+    }
+    const startX = clamp((Number(section.start_seconds) / duration) * width, 0, width);
+    const endX = clamp((Number(section.end_seconds) / duration) * width, startX + 1, width);
+    const stripeColor = index % 2 === 0 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.10)";
+    ctx.fillStyle = stripeColor;
+    ctx.fillRect(startX, 0, Math.max(1, endX - startX), 12);
+    ctx.fillStyle = "rgba(255,255,255,0.78)";
+    ctx.font = "600 10px Trebuchet MS";
+    ctx.fillText(section.kind.toUpperCase(), Math.min(startX + 4, width - 52), 10);
+    ctx.strokeStyle = "rgba(255,255,255,0.22)";
+    ctx.beginPath();
+    ctx.moveTo(startX, 0);
+    ctx.lineTo(startX, height);
+    ctx.stroke();
+  });
 
   const duration = Number(appState.playback.duration_seconds || 0);
   const audio = elements.playbackAudio;

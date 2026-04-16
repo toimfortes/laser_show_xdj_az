@@ -1,10 +1,10 @@
 :root {
-  color-scheme: light;
-  --paper: #f5f1e8;
-  --paper-2: #fffaf2;
-  --ink: #1d2433;
-  --muted: #556072;
-  --line: rgba(35, 42, 58, 0.12);
+  color-scheme: dark;
+  --paper: rgba(18, 24, 34, 0.92);
+  --paper-2: rgba(24, 31, 44, 0.94);
+  --ink: #f2f5f9;
+  --muted: #9aa7bb;
+  --line: rgba(181, 196, 214, 0.14);
   --accent: #007ea7;
   --accent-2: #f85e00;
   --accent-3: #ef476f;
@@ -13,7 +13,7 @@
   --mover: #ff7a18;
   --wash: #ff4d6d;
   --bar: #7cf29c;
-  --shadow: 0 24px 60px rgba(40, 36, 28, 0.14);
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
 }
 
 * {
@@ -25,9 +25,9 @@ body {
   font-family: "Trebuchet MS", "Segoe UI", sans-serif;
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgba(0, 126, 167, 0.18), transparent 28%),
-    radial-gradient(circle at top right, rgba(248, 94, 0, 0.18), transparent 26%),
-    linear-gradient(180deg, #faf7ef 0%, #efe8db 100%);
+    radial-gradient(circle at top left, rgba(0, 126, 167, 0.12), transparent 24%),
+    radial-gradient(circle at top right, rgba(248, 94, 0, 0.10), transparent 24%),
+    linear-gradient(180deg, #020406 0%, #080b12 52%, #020406 100%);
 }
 
 button,
@@ -87,8 +87,8 @@ select {
 
 .metric-card,
 .panel {
-  background: rgba(255, 250, 242, 0.86);
-  border: 1px solid rgba(255, 255, 255, 0.85);
+  background: linear-gradient(180deg, rgba(17, 24, 35, 0.94), rgba(12, 18, 28, 0.94));
+  border: 1px solid rgba(255, 255, 255, 0.07);
   box-shadow: var(--shadow);
   backdrop-filter: blur(14px);
 }
@@ -218,7 +218,7 @@ select {
   gap: 10px;
   padding: 14px;
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--line);
 }
 
@@ -247,10 +247,11 @@ select {
 
 .playback-controls button {
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   padding: 8px 12px;
   cursor: pointer;
+  color: var(--ink);
 }
 
 .playback-controls span {
@@ -285,14 +286,14 @@ select {
   border: 1px solid var(--line);
   border-radius: 16px;
   padding: 12px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.05);
   display: grid;
   gap: 10px;
 }
 
 .show-section-card.active {
   border-color: rgba(248, 94, 0, 0.4);
-  background: linear-gradient(135deg, rgba(248, 94, 0, 0.08), rgba(255, 255, 255, 0.88));
+  background: linear-gradient(135deg, rgba(248, 94, 0, 0.12), rgba(255, 255, 255, 0.06));
 }
 
 .show-section-header {
@@ -325,7 +326,8 @@ select {
   padding: 8px 10px;
   border-radius: 12px;
   border: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
 }
 
 .show-toggle-row {
@@ -413,12 +415,13 @@ select {
 
 .fixture-row button {
   padding: 8px 10px;
-  background: white;
+  background: rgba(255, 255, 255, 0.08);
   border: 1px solid var(--line);
+  color: var(--ink);
 }
 
 .preview-panel {
-  background: linear-gradient(180deg, rgba(255, 251, 243, 0.88), rgba(246, 239, 228, 0.86));
+  background: linear-gradient(180deg, rgba(9, 13, 20, 0.96), rgba(6, 10, 16, 0.96));
 }
 
 #stage-canvas {
@@ -471,10 +474,10 @@ select {
 
 .inspector-empty {
   padding: 18px;
-  border: 1px dashed rgba(29, 36, 51, 0.25);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
   border-radius: 18px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .inspector-grid {
