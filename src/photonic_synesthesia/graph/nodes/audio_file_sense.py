@@ -83,6 +83,26 @@ class AudioFileSenseNode:
             duration_seconds=self.duration_seconds,
         )
 
+    def seek(self, position_seconds: float) -> float:
+        """Seek playback to an absolute position in seconds."""
+        if self.sample_rate <= 0 or self._samples.size == 0:
+            return 0.0
+        target_seconds = max(0.0, min(float(position_seconds), self.duration_seconds))
+        target_index = min(len(self._samples), max(0, int(target_seconds * self.sample_rate)))
+        self._position = target_index
+        self._buffer.clear()
+        if target_index >= len(self._samples):
+            self._running = False
+        else:
+            self._running = True
+        logger.info(
+            "Audio file playback seeked",
+            file_path=str(self.file_path),
+            playhead_seconds=self.playhead_seconds,
+            duration_seconds=self.duration_seconds,
+        )
+        return self.playhead_seconds
+
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Append the next decoded chunk to the rolling analysis buffer."""
         state["timestamp"] = time.time()

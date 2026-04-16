@@ -40,3 +40,17 @@ def test_audio_file_sense_streams_chunks_from_decoded_file(tmp_path: Path) -> No
     assert node.playhead_seconds == node.duration_seconds
 
     node.stop()
+
+
+def test_audio_file_sense_seek_repositions_playhead(tmp_path: Path) -> None:
+    audio_path = tmp_path / "fixture.wav"
+    _write_test_wave(audio_path, sample_rate=8000, duration_s=1.0)
+
+    node = AudioFileSenseNode(audio_path, sample_rate=8000, chunk_size=400, buffer_seconds=0.2)
+    node.start()
+
+    position = node.seek(0.5)
+
+    assert 0.49 <= position <= 0.51
+    assert 0.49 <= node.playhead_seconds <= 0.51
+    assert node.finished is False

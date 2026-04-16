@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any
@@ -35,6 +36,7 @@ class PlaybackContext:
     speed: float = 1.0
     server_time: float = 0.0
     transport_revision: int = 0
+    _seek_callback: Callable[[float], float] | None = field(default=None, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def update_transport(
@@ -87,7 +89,14 @@ class PlaybackContext:
                     continue
                 updated = dict(section)
                 for key, value in changes.items():
-                    if key in {"scene_id", "fixture_mode"}:
+                    if key in {
+                        "scene_id",
+                        "fixture_mode",
+                        "laser_pattern",
+                        "mover_pattern",
+                        "wash_pattern",
+                        "led_pattern",
+                    }:
                         updated[key] = str(value)
                     elif key in {"laser_enabled", "movers_enabled", "washes_enabled", "leds_enabled"}:
                         updated[key] = bool(value)
@@ -101,6 +110,19 @@ class PlaybackContext:
                 self.show_sections[index] = updated
                 return dict(updated)
         return None
+
+    def request_seek(self, position_seconds: float) -> float:
+        """Seek the backing transport and refresh exported playhead state."""
+        callback = self._seek_callback
+        if callback is None:
+            raise RuntimeError("Playback transport is not seekable")
+        new_position = callback(position_seconds)
+        with self._lock:
+            self.playhead_seconds = max(0.0, min(float(new_position), self.duration_seconds))
+            self.finished = self.playhead_seconds >= self.duration_seconds
+            self.server_time = time.time()
+            self.transport_revision += 1
+            return self.playhead_seconds
 
 
 def get_shared_control_plane_service(create: bool = False) -> ControlPlaneStateService | None:

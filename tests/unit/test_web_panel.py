@@ -5,6 +5,7 @@ from photonic_synesthesia.platform import (
     ControlPlaneStateService,
     PlaybackContext,
     clear_shared_playback_context,
+    get_shared_playback_context,
     set_shared_playback_context,
 )
 from photonic_synesthesia.ui.web_panel import create_app
@@ -27,6 +28,7 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/universes" in routes
     assert "/api/mock/playback" in routes
     assert "/api/mock/playback/audio" in routes
+    assert "/api/mock/playback/seek" in routes
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
     assert "/api/mock/masters" in routes
@@ -223,6 +225,39 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
 def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> None:
     audio_path = tmp_path / "track.mp3"
     audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+
+
+def test_playback_seek_endpoint_updates_shared_playhead(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=20.0,
+            _seek_callback=lambda seconds: float(seconds),
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=0.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.post("/api/mock/playback/seek", json={"seconds": 7.5})
+
+    assert response.status_code == 200
+    assert response.json()["playhead_seconds"] == 7.5
+    assert get_shared_playback_context() is playback
+    assert playback.snapshot()["playhead_seconds"] == 7.5
 
     clear_shared_playback_context()
     set_shared_playback_context(

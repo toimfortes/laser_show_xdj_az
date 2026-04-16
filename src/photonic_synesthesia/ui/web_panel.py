@@ -701,6 +701,9 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     class PlaybackShowSectionUpdateRequest(BaseModel):
         changes: dict[str, Any]
 
+    class PlaybackSeekRequest(BaseModel):
+        seconds: float
+
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
         version=__version__,
@@ -814,6 +817,17 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         section = playback_context.update_show_section(section_id, request.changes)
         if section is None:
             raise HTTPException(status_code=404, detail="Show section not found")
+        return playback_context.snapshot()
+
+    @app.post("/api/mock/playback/seek")
+    async def seek_playback(request: PlaybackSeekRequest) -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        try:
+            playback_context.request_seek(request.seconds)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return playback_context.snapshot()
 
     @app.post("/api/mock/fixtures")

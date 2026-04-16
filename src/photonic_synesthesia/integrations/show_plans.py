@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 def show_plan_root() -> Path:
@@ -32,7 +32,7 @@ def load_show_plan(track_key: str) -> dict[str, Any] | None:
     path = show_plan_path(track_key)
     if not path.is_file():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 def save_show_plan(track_key: str, payload: dict[str, Any]) -> Path:

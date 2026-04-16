@@ -11,6 +11,7 @@ import logging
 import signal
 import sys
 import time
+from hashlib import sha1
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,35 @@ _DEFAULT_REKORDBOX_XML_CANDIDATES = [
     Path.home() / "Documents" / "DJ" / "dj-agent" / "rekordbox.xml",
     Path.home() / "Documents" / "rekordbox.xml",
 ]
+
+_LASER_PATTERN_POOLS: dict[str, list[str]] = {
+    "intro": ["fan", "thin_scan", "wave", "liquid_sky"],
+    "build": ["vertical_rake", "cone", "wave", "rotor"],
+    "drop": ["burst_fan", "tunnel", "crisscross", "starburst", "shutter_hits", "alternating_beam_groups"],
+    "breakdown": ["thin_scan", "liquid_sky", "fan", "wave"],
+    "outro": ["fan", "thin_scan", "wave"],
+}
+_MOVER_PATTERN_POOLS: dict[str, list[str]] = {
+    "intro": ["drift", "circle", "figure_eight", "leaf"],
+    "build": ["rise", "circle", "figure_eight", "mirror_fan"],
+    "drop": ["cross_sweep", "snap_hits", "ping_pong_tilt", "square", "diamond"],
+    "breakdown": ["hold", "drift", "leaf"],
+    "outro": ["drift", "hold", "line_bounce"],
+}
+_WASH_PATTERN_POOLS: dict[str, list[str]] = {
+    "intro": ["ambient", "breath", "gradient_roll", "center_out"],
+    "build": ["bloom", "build_ramp", "center_out", "outside_in"],
+    "drop": ["punch", "downbeat_hit", "white_peak", "drop_slam"],
+    "breakdown": ["ambient", "breakdown_glow", "fade"],
+    "outro": ["fade", "ambient", "breath"],
+}
+_LED_PATTERN_POOLS: dict[str, list[str]] = {
+    "intro": ["pulse", "sparkle", "horizontal_lines", "fade"],
+    "build": ["ramp", "vertical_build", "vertical_offset", "snake"],
+    "drop": ["chase", "rotating_line", "audio_spectrum", "fizzle", "snake"],
+    "breakdown": ["sparkle", "pulse", "fade"],
+    "outro": ["fade", "horizontal_ramp", "pulse"],
+}
 
 
 def _discover_rekordbox_xml() -> Path | None:
@@ -58,6 +88,44 @@ def _fixture_mode_for_marker_kind(kind: str) -> str:
     return "intro"
 
 
+def _laser_pattern_for_marker_kind(kind: str) -> str:
+    return _choose_pattern(_LASER_PATTERN_POOLS, kind, "laser")
+
+
+def _mover_pattern_for_marker_kind(kind: str) -> str:
+    return _choose_pattern(_MOVER_PATTERN_POOLS, kind, "mover")
+
+
+def _wash_pattern_for_marker_kind(kind: str) -> str:
+    return _choose_pattern(_WASH_PATTERN_POOLS, kind, "wash")
+
+
+def _led_pattern_for_marker_kind(kind: str) -> str:
+    return _choose_pattern(_LED_PATTERN_POOLS, kind, "led")
+
+
+def _pattern_stage(kind: str) -> str:
+    if kind == "drop":
+        return "drop"
+    if kind == "build":
+        return "build"
+    if kind in {"breakdown", "bridge", "verse", "vocal"}:
+        return "breakdown"
+    if kind == "outro":
+        return "outro"
+    return "intro"
+
+
+def _choose_pattern(pools: dict[str, list[str]], kind: str, family: str, seed: str | None = None) -> str:
+    stage = _pattern_stage(kind)
+    candidates = pools.get(stage) or pools["intro"]
+    if len(candidates) == 1:
+        return candidates[0]
+    digest = sha1(f"{family}:{stage}:{seed or kind}".encode()).digest()
+    index = int.from_bytes(digest[:2], "big") % len(candidates)
+    return candidates[index]
+
+
 def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: float) -> list[dict[str, Any]]:
     if not markers:
         return [
@@ -72,6 +140,10 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
                 "intensity_multiplier": 1.0,
                 "motion_multiplier": 1.0,
                 "strobe_level": 0.1,
+                "laser_pattern": "burst_fan",
+                "mover_pattern": "cross_sweep",
+                "wash_pattern": "punch",
+                "led_pattern": "chase",
                 "laser_enabled": True,
                 "movers_enabled": True,
                 "washes_enabled": True,
@@ -102,6 +174,10 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
                 "intensity_multiplier": round(energy_scale, 3),
                 "motion_multiplier": round(0.75 + energy_scale * 0.6, 3),
                 "strobe_level": round(0.32 if kind == "drop" else 0.08 if kind == "build" else 0.0, 3),
+                "laser_pattern": _choose_pattern(_LASER_PATTERN_POOLS, kind, "laser", str(marker["name"])),
+                "mover_pattern": _choose_pattern(_MOVER_PATTERN_POOLS, kind, "mover", str(marker["name"])),
+                "wash_pattern": _choose_pattern(_WASH_PATTERN_POOLS, kind, "wash", str(marker["name"])),
+                "led_pattern": _choose_pattern(_LED_PATTERN_POOLS, kind, "led", str(marker["name"])),
                 "laser_enabled": kind not in {"breakdown", "vocal", "verse", "outro"},
                 "movers_enabled": kind not in {"outro"},
                 "washes_enabled": True,
@@ -385,6 +461,7 @@ def run_file(
                         ],
                         audio_node.duration_seconds,
                     ),
+                    _seek_callback=audio_node.seek,
                 )
             )
             playback_context.update_transport(

@@ -271,6 +271,14 @@ function renderPlayback() {
     updatePlaybackStatus();
     drawPlaybackWaveform();
   });
+  waveformCanvas.addEventListener("click", (event) => {
+    const rect = waveformCanvas.getBoundingClientRect();
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const duration = Number(playback.duration_seconds || 0);
+    seekPlaybackTo(duration * ratio).catch((error) => {
+      console.error(error);
+    });
+  });
   updatePlaybackStatus();
   drawPlaybackWaveform();
   renderShowEditor();
@@ -283,6 +291,20 @@ async function patchShowSection(sectionId, changes) {
   });
   applyPlaybackState(playback);
   renderPlayback();
+}
+
+async function seekPlaybackTo(seconds) {
+  const playback = await api("/api/mock/playback/seek", {
+    method: "POST",
+    body: { seconds },
+  });
+  applyPlaybackState(playback);
+  if (elements.playbackAudio) {
+    elements.playbackAudio.currentTime = Number(playback.playhead_seconds || 0);
+  }
+  updatePlaybackStatus();
+  drawPlaybackWaveform();
+  updateShowEditorActiveState();
 }
 
 function renderShowEditor() {
@@ -307,7 +329,7 @@ function renderShowEditor() {
     ].filter(Boolean);
     const familyText = families.length > 0 ? families.join(", ") : "all fixtures muted";
     const strobeText = section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes";
-    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
+    return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · laser ${section.laser_pattern} · mover ${section.mover_pattern} · wash ${section.wash_pattern} · led ${section.led_pattern} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
   const sceneOptions = appState.catalog.scene_templates
     .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
@@ -321,6 +343,66 @@ function renderShowEditor() {
   ]
     .map(([value, label]) => `<option value="${value}">${label}</option>`)
     .join("");
+  const laserPatternOptions = [
+    ["fan", "Fan"],
+    ["thin_scan", "Thin Scan"],
+    ["vertical_rake", "Vertical Rake"],
+    ["burst_fan", "Burst Fan"],
+    ["liquid_sky", "Liquid Sky"],
+    ["crisscross", "Crisscross"],
+    ["starburst", "Starburst"],
+    ["wave", "Wave"],
+    ["rotor", "Rotor"],
+    ["alternating_beam_groups", "Alternating Groups"],
+    ["shutter_hits", "Shutter Hits"],
+    ["cone", "Cone"],
+    ["tunnel", "Tunnel"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const moverPatternOptions = [
+    ["hold", "Hold"],
+    ["drift", "Drift"],
+    ["rise", "Rise"],
+    ["cross_sweep", "Cross Sweep"],
+    ["circle", "Circle"],
+    ["figure_eight", "Figure Eight"],
+    ["leaf", "Leaf"],
+    ["mirror_fan", "Mirror Fan"],
+    ["square", "Square"],
+    ["diamond", "Diamond"],
+    ["line_bounce", "Line Bounce"],
+    ["ping_pong_tilt", "Ping Pong Tilt"],
+    ["snap_hits", "Snap Hits"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const washPatternOptions = [
+    ["ambient", "Ambient"],
+    ["bloom", "Bloom"],
+    ["breath", "Breath"],
+    ["punch", "Punch"],
+    ["downbeat_hit", "Downbeat Hit"],
+    ["gradient_roll", "Gradient Roll"],
+    ["center_out", "Center Out"],
+    ["outside_in", "Outside In"],
+    ["breakdown_glow", "Breakdown Glow"],
+    ["build_ramp", "Build Ramp"],
+    ["drop_slam", "Drop Slam"],
+    ["white_peak", "White Peak"],
+    ["fade", "Fade"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
+  const ledPatternOptions = [
+    ["pulse", "Pulse"],
+    ["chase", "Chase"],
+    ["sparkle", "Sparkle"],
+    ["ramp", "Ramp"],
+    ["snake", "Snake"],
+    ["fizzle", "Fizzle"],
+    ["vertical_build", "Vertical Build"],
+    ["vertical_offset", "Vertical Offset"],
+    ["horizontal_lines", "Horizontal Lines"],
+    ["horizontal_ramp", "Horizontal Ramp"],
+    ["rotating_line", "Rotating Line"],
+    ["audio_spectrum", "Audio Spectrum"],
+    ["fade", "Fade"],
+  ].map(([value, label]) => `<option value="${value}">${label}</option>`).join("");
 
   elements.showEditor.innerHTML = `
     <div class="subhead">
@@ -364,6 +446,22 @@ function renderShowEditor() {
               <span>Strobe</span>
               <input data-field="strobe_level" type="range" min="0" max="1" step="0.05" value="${section.strobe_level}" />
             </label>
+            <label>
+              <span>Laser Pattern</span>
+              <select data-field="laser_pattern">${laserPatternOptions}</select>
+            </label>
+            <label>
+              <span>Mover Pattern</span>
+              <select data-field="mover_pattern">${moverPatternOptions}</select>
+            </label>
+            <label>
+              <span>Wash Pattern</span>
+              <select data-field="wash_pattern">${washPatternOptions}</select>
+            </label>
+            <label>
+              <span>LED Pattern</span>
+              <select data-field="led_pattern">${ledPatternOptions}</select>
+            </label>
             <div class="show-toggle-row">
               <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
               <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers</label>
@@ -389,6 +487,14 @@ function renderShowEditor() {
       if (input.dataset.field === "fixture_mode") {
         input.value = section.fixture_mode;
       }
+      if (
+        input.dataset.field === "laser_pattern"
+        || input.dataset.field === "mover_pattern"
+        || input.dataset.field === "wash_pattern"
+        || input.dataset.field === "led_pattern"
+      ) {
+        input.value = section[input.dataset.field];
+      }
       input.addEventListener(eventName, (event) => {
         const target = event.currentTarget;
         const field = target.dataset.field;
@@ -409,12 +515,9 @@ function renderShowEditor() {
       if (!section) {
         return;
       }
-      if (elements.playbackAudio && Number.isFinite(section.start_seconds)) {
-        elements.playbackAudio.currentTime = Number(section.start_seconds);
-        updatePlaybackStatus();
-        drawPlaybackWaveform();
-        updateShowEditorActiveState();
-      }
+      seekPlaybackTo(Number(section.start_seconds)).catch((error) => {
+        console.error(error);
+      });
     });
   });
 }
@@ -630,6 +733,52 @@ function beatPulseFromPhase(phase) {
   const wrapped = ((phase % 1) + 1) % 1;
   const distance = Math.min(Math.abs(wrapped - 0.08), 1 - Math.abs(wrapped - 0.08));
   return clamp(1 - (distance / 0.18), 0, 1) ** 2;
+}
+
+function triangleWave(value) {
+  const wrapped = ((value % 1) + 1) % 1;
+  return 1 - Math.abs((wrapped * 2) - 1);
+}
+
+function laserPatternFamily(pattern) {
+  if (["burst_fan", "starburst", "alternating_beam_groups", "shutter_hits"].includes(pattern)) {
+    return "burst";
+  }
+  if (["vertical_rake", "liquid_sky", "cone"].includes(pattern)) {
+    return "vertical";
+  }
+  if (["tunnel", "crisscross", "rotor"].includes(pattern)) {
+    return "tunnel";
+  }
+  if (["thin_scan", "wave"].includes(pattern)) {
+    return "scan";
+  }
+  return "fan";
+}
+
+function moverPatternFamily(pattern) {
+  if (["hold"].includes(pattern)) return "hold";
+  if (["rise", "ping_pong_tilt"].includes(pattern)) return "rise";
+  if (["cross_sweep", "mirror_fan", "line_bounce"].includes(pattern)) return "cross";
+  if (["circle", "figure_eight", "leaf", "square", "diamond"].includes(pattern)) return "shape";
+  if (["snap_hits"].includes(pattern)) return "hits";
+  return "drift";
+}
+
+function washPatternFamily(pattern) {
+  if (["fade", "breakdown_glow"].includes(pattern)) return "fade";
+  if (["bloom", "build_ramp", "center_out", "outside_in", "gradient_roll"].includes(pattern)) return "bloom";
+  if (["punch", "downbeat_hit", "drop_slam", "white_peak"].includes(pattern)) return "punch";
+  if (["breath"].includes(pattern)) return "breath";
+  return "ambient";
+}
+
+function ledPatternFamily(pattern) {
+  if (["chase", "snake", "rotating_line"].includes(pattern)) return "chase";
+  if (["sparkle", "fizzle", "audio_spectrum"].includes(pattern)) return "sparkle";
+  if (["ramp", "vertical_build", "vertical_offset", "horizontal_ramp", "horizontal_lines"].includes(pattern)) return "ramp";
+  if (["fade"].includes(pattern)) return "fade";
+  return "pulse";
 }
 
 function runtimeVisualState(timeSeconds) {
@@ -997,54 +1146,173 @@ function fixtureOutput(fixture, visual) {
   const color = fixture.color;
 
   if (fixture.type === "laser") {
+    const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
+    const rebuildMode = fixtureMode === "rebuild" || visual.structure === "build";
+    const laserPattern = String(section?.laser_pattern || "fan");
+    const strobeGate = visual.strobeActive
+      ? (triangleWave(phase * (2.2 + visual.strobeLevel * 6)) > 0.45 ? 1 : 0)
+      : dropMode
+        ? (triangleWave(phase * 0.9) > 0.14 ? 1 : 0.18)
+        : 1;
+    const verticalSweep = dropMode
+      ? Math.sin(phase * 1.7) * 0.42 + Math.cos(phase * 3.4) * 0.18
+      : rebuildMode
+        ? Math.sin(phase * 0.8) * 0.26
+        : Math.sin(phase * 0.45) * 0.12;
+    const rotation = dropMode
+      ? Math.sin(phase * 0.92) * 0.9
+      : rebuildMode
+        ? Math.sin(phase * 0.55) * 0.35
+        : Math.sin(phase * 0.22) * 0.12;
+    const beamCount = dropMode
+      ? Number(fixture.beam_count) + (visual.beatPulse > 0.72 ? 2 : 0)
+      : Number(fixture.beam_count);
+    const patternFamily = laserPatternFamily(laserPattern);
+    const patternSpread = patternFamily === "burst"
+      ? 2.05
+      : patternFamily === "vertical"
+        ? 0.62
+        : patternFamily === "tunnel"
+          ? 1.15
+          : patternFamily === "scan"
+            ? 0.36
+            : 1.0;
+    const patternBeamCount = patternFamily === "scan"
+      ? Math.min(2, beamCount)
+      : patternFamily === "tunnel"
+        ? Math.max(6, beamCount)
+        : patternFamily === "burst"
+          ? Math.max(beamCount, 7)
+          : beamCount;
+    const patternRotation = patternFamily === "tunnel"
+      ? rotation + Math.sin(phase * 1.4) * 1.2
+      : patternFamily === "vertical"
+        ? rotation * 0.2
+        : patternFamily === "scan"
+          ? rotation * 0.12
+          : rotation;
+    const patternVertical = patternFamily === "vertical"
+      ? verticalSweep + Math.sin(phase * 2.4) * 0.34
+      : patternFamily === "scan"
+        ? verticalSweep * 0.2
+        : verticalSweep;
+    const patternSweep = patternFamily === "scan"
+      ? Math.sin(phase * 4.2) * fixture.swing * 0.55
+      : patternFamily === "tunnel"
+        ? Math.sin(phase * 1.2) * fixture.swing * 0.18
+        : patternFamily === "vertical"
+          ? Math.sin(phase * 0.55) * fixture.swing * 0.14
+          : Math.sin(phase * (dropMode ? 2.8 : 1.1)) * fixture.swing * (0.45 + visual.energy * 1.1) * motionGate;
+    const patternIntensity = patternFamily === "burst"
+      ? intensity * (0.78 + visual.beatPulse * 0.35)
+      : patternFamily === "scan"
+        ? intensity * 0.72
+        : intensity * strobeGate;
     return {
       type: "laser",
       color,
-      intensity,
-      sweep: Math.sin(phase * 1.1) * fixture.swing * (0.45 + visual.energy * 0.75) * motionGate,
-      spread: fixture.spread * (visual.structure === "drop" ? 1.35 : 0.95),
-      beamCount: Number(fixture.beam_count),
+      intensity: patternIntensity,
+      sweep: patternSweep,
+      spread: fixture.spread * (dropMode ? 1.85 : rebuildMode ? 1.15 : 0.95) * patternSpread,
+      beamCount: patternBeamCount,
       shimmer: visual.beatPulse,
+      verticalSweep: patternVertical,
+      rotation: patternRotation,
+      dropMode,
+      pattern: laserPattern,
+      phase,
     };
   }
 
   if (fixture.type === "moving_head") {
     const motionBias = visual.motionStyle === "sparse" ? 0.55 : visual.motionStyle === "aggressive" ? 1.25 : 1;
+    const moverPattern = String(section?.mover_pattern || "drift");
+    const moverFamily = moverPatternFamily(moverPattern);
+    const shapePan = moverFamily === "shape"
+      ? Math.sin(phase * 0.9) * Math.cos(phase * 0.46)
+      : moverFamily === "cross"
+        ? Math.sign(Math.sin(phase * 1.15)) * 0.9
+        : moverFamily === "hits"
+          ? (visual.beatPulse > 0.45 ? Math.sign(Math.sin(phase * 2.2)) : 0)
+          : moverFamily === "hold"
+            ? 0
+            : Math.sin(phase);
+    const shapeTilt = moverFamily === "shape"
+      ? Math.cos(phase * 0.7)
+      : moverFamily === "rise"
+        ? (-0.5 + visual.sectionProgress * 1.5)
+        : moverFamily === "hits"
+          ? (visual.beatPulse > 0.45 ? Math.cos(phase * 2.4) : -0.1)
+          : moverFamily === "hold"
+            ? 0
+            : Math.cos(phase * 0.82);
     return {
       type: "moving_head",
       color,
       intensity,
-      pan: fixture.pan + Math.sin(phase) * fixture.pan_range * motionBias * motionGate,
-      tilt: fixture.tilt + Math.cos(phase * 0.82) * fixture.tilt_range * motionBias * motionGate,
-      beamWidth: fixture.beam_width * (0.9 + visual.beatPulse * 0.25),
+      pan: fixture.pan + shapePan * fixture.pan_range * motionBias * motionGate,
+      tilt: fixture.tilt + shapeTilt * fixture.tilt_range * motionBias * motionGate,
+      beamWidth: fixture.beam_width * (moverFamily === "hits" ? 0.78 : 0.9 + visual.beatPulse * 0.25),
+      pattern: moverPattern,
+      phase,
     };
   }
 
   if (fixture.type === "wash") {
+    const washPattern = String(section?.wash_pattern || "ambient");
+    const washFamily = washPatternFamily(washPattern);
+    const washRadius = washFamily === "punch"
+      ? fixture.radius * (0.72 + visual.beatPulse * 0.55)
+      : washFamily === "bloom"
+        ? fixture.radius * (0.68 + visual.sectionProgress * 0.5 + visual.pulseMix * 0.22)
+        : washFamily === "fade"
+          ? fixture.radius * 0.78
+          : washFamily === "breath"
+            ? fixture.radius * (0.86 + Math.sin(phase * 0.45) * 0.16)
+            : fixture.radius * (0.82 + visual.pulseMix * 0.34 + visual.beatPulse * 0.12);
+    const washIntensity = washFamily === "fade"
+      ? intensity * (1 - visual.sectionProgress * 0.55)
+      : washFamily === "punch"
+        ? intensity * (0.4 + visual.beatPulse * 0.8)
+        : intensity;
     return {
       type: "wash",
       color,
-      intensity,
-      radius: fixture.radius * (0.82 + visual.pulseMix * 0.34 + visual.beatPulse * 0.12),
+      intensity: washIntensity,
+      radius: washRadius,
+      pattern: washPattern,
+      phase,
     };
   }
 
+  const ledPattern = String(section?.led_pattern || "pulse");
+  const ledFamily = ledPatternFamily(ledPattern);
+  const ledChase = ledFamily === "chase"
+    ? (visual.beatPhase + ((Math.sin(phase * 1.2) + 1) * 0.22)) % 1
+    : ledFamily === "sparkle"
+      ? ((Math.sin(phase * 0.35) + 1) * 0.5)
+      : ledFamily === "ramp"
+        ? visual.sectionProgress
+        : ledFamily === "fade"
+          ? 0.5
+          : (visual.beatPhase + ((Math.sin(phase * 0.7) + 1) * 0.15)) % 1;
   return {
     type: "led_bar",
     color,
     intensity,
     width: fixture.width,
     pixelCount: Number(fixture.pixel_count),
-    chase: (visual.beatPhase + ((Math.sin(phase * 0.7) + 1) * 0.15)) % 1,
+    chase: ledChase,
+    pattern: ledPattern,
+    phase,
   };
 }
 
 function drawBackground(ctx, width, height, visual) {
-  const palette = visual.scene.palette;
   const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, rgba(palette[0] || "#09121f", 0.24 + visual.energy * 0.14));
-  sky.addColorStop(0.58, rgba(palette[1] || "#162335", 0.16 + visual.pulseMix * 0.1));
-  sky.addColorStop(1, rgba(palette[2] || "#35261d", 0.22 + visual.beatPulse * 0.16));
+  sky.addColorStop(0, "rgba(1, 3, 6, 0.98)");
+  sky.addColorStop(0.58, "rgba(4, 7, 12, 0.98)");
+  sky.addColorStop(1, "rgba(0, 0, 0, 1)");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
@@ -1073,13 +1341,13 @@ function drawBackground(ctx, width, height, visual) {
 
   ctx.beginPath();
   ctx.ellipse(width / 2, height - 76, width * 0.42, 70, 0, 0, Math.PI * 2);
-  ctx.fillStyle = rgba(palette[1] || "#ffd699", 0.08 + visual.beatPulse * 0.12);
+  ctx.fillStyle = `rgba(255, 255, 255, ${0.03 + visual.beatPulse * 0.05})`;
   ctx.fill();
 
   if (visual.structure === "drop" || visual.structure === "buildup") {
     const atmosphere = ctx.createRadialGradient(width / 2, height * 0.72, 20, width / 2, height * 0.72, width * 0.45);
-    atmosphere.addColorStop(0, rgba(palette[0] || "#12d8ff", 0.04 + visual.energy * 0.08));
-    atmosphere.addColorStop(1, rgba(palette[2] || "#f8961e", 0));
+    atmosphere.addColorStop(0, `rgba(255, 255, 255, ${0.02 + visual.energy * 0.04})`);
+    atmosphere.addColorStop(1, "rgba(255, 255, 255, 0)");
     ctx.fillStyle = atmosphere;
     ctx.fillRect(0, 0, width, height);
   }
@@ -1090,25 +1358,44 @@ function drawBackground(ctx, width, height, visual) {
 }
 
 function drawLaser(ctx, fixture, output, width, height) {
+  if (output.intensity <= 0.01) {
+    return;
+  }
   const originX = fixture.x * width;
   const originY = fixture.y * height;
   const count = Math.max(1, output.beamCount);
+  const rotation = output.rotation || 0;
   for (let index = 0; index < count; index += 1) {
     const centered = count === 1 ? 0 : (index / (count - 1)) - 0.5;
+    const rotationOffset = centered * rotation * width * 0.12;
     const spread = centered * output.spread * width;
-    const sweep = output.sweep * width * 0.18;
-    const targetX = clamp(originX + spread + sweep, 90, width - 90);
-    const targetY = height - 92 - Math.abs(centered) * 40;
+    const sweep = output.sweep * width * 0.22;
+    const verticalSpread = centered * (output.dropMode ? 120 : 48);
+    const targetX = clamp(originX + spread + sweep + rotationOffset, 60, width - 60);
+    const targetY = clamp(
+      height - 110 - Math.abs(centered) * 28 - verticalSpread - (output.verticalSweep || 0) * height * 0.28,
+      90,
+      height - 82,
+    );
     const beam = ctx.createLinearGradient(originX, originY, targetX, targetY);
     beam.addColorStop(0, rgba(output.color, 0));
     beam.addColorStop(0.12, rgba(output.color, output.intensity * (0.18 + output.shimmer * 0.14)));
     beam.addColorStop(1, rgba(output.color, output.intensity * (0.74 + output.shimmer * 0.18)));
     ctx.strokeStyle = beam;
-    ctx.lineWidth = 2.2;
+    ctx.lineWidth = output.dropMode ? 2.8 : 2.2;
     ctx.beginPath();
     ctx.moveTo(originX, originY);
     ctx.lineTo(targetX, targetY);
     ctx.stroke();
+
+    if (output.dropMode) {
+      ctx.strokeStyle = rgba(output.color, output.intensity * 0.16);
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(originX, originY);
+      ctx.lineTo(targetX, targetY);
+      ctx.stroke();
+    }
 
     ctx.beginPath();
     ctx.arc(targetX, targetY, 4 + output.intensity * 6, 0, Math.PI * 2);
