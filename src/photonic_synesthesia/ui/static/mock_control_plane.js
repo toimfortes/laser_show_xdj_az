@@ -22,9 +22,11 @@ let playbackRefreshTimer = null;
 let playbackPollActive = false;
 let fixtureActivityRenderedAt = 0;
 let fixtureActivitySignature = "";
+let playbackHardSyncAt = 0;
 
 const PLAYBACK_POLL_MS = 250;
 const PLAYBACK_STALE_MS = 900;
+const PLAYBACK_HARD_SYNC_MS = 1200;
 const LASER_PATTERN_OPTIONS = [
   ["fan", "Fan"],
   ["beam_fan_narrow", "Beam Fan Narrow"],
@@ -503,8 +505,14 @@ function renderShowEditor() {
     const renderFamily = laserRenderFamily(section.laser_pattern, safeText(laserExpression.geometry_family, "fan"));
     const strobeText = safeText(strobeProfile.label, section.strobe_level > 0.2 ? "strong strobe accents" : section.strobe_level > 0 ? "light strobe accents" : "no strobes");
     const launchPattern = pathValue(laserProgram, "launch.pattern", section.laser_pattern);
-    const sustainPattern = pathValue(laserProgram, "sustain.0.pattern", section.laser_pattern);
-    const fillPattern = pathValue(laserProgram, "fills.0.pattern", launchPattern);
+    const sustainPattern = [
+      pathValue(laserProgram, "sustain.0.pattern", null),
+      pathValue(laserProgram, "sustain.1.pattern", null),
+    ].filter(Boolean).join(" / ") || section.laser_pattern;
+    const fillPattern = [
+      pathValue(laserProgram, "fills.0.pattern", null),
+      pathValue(laserProgram, "fills.1.pattern", null),
+    ].filter(Boolean).join(" / ") || launchPattern;
     const releasePattern = pathValue(laserProgram, "release.pattern", sustainPattern);
     return `${section.fixture_mode.replaceAll("_", " ")} · scene ${safeText(sceneById(section.scene_id)?.label, section.scene_id)} · ${safeText(laserExpression.content_family, "beam")} / ${renderFamily} · ${safeText(laserExpression.target_strategy, "wide_zone_sweep")} · laser ${safeText(section.laser_expression?.label || section.laser_variant?.label, section.laser_pattern)} · program launch ${launchPattern} / sustain ${sustainPattern} / fill ${fillPattern} / release ${releasePattern} · mover ${safeText(section.mover_variant?.label, section.mover_pattern)} · wash ${safeText(section.wash_variant?.label, section.wash_pattern)} · led ${safeText(section.led_variant?.label, section.led_pattern)} · ${familyText} · intensity ${Number(section.intensity_multiplier).toFixed(2)} · motion ${Number(section.motion_multiplier).toFixed(2)} · ${strobeText}`;
   };
@@ -792,7 +800,9 @@ function renderShowEditor() {
               </label>
               ${laserLookEditor(section, "laser_program.launch", "Launch Look")}
               ${laserLookEditor(section, "laser_program.sustain.0", "Sustain A")}
+              ${laserLookEditor(section, "laser_program.sustain.1", "Sustain B")}
               ${laserLookEditor(section, "laser_program.fills.0", "Fill A")}
+              ${laserLookEditor(section, "laser_program.fills.1", "Fill B")}
               ${laserLookEditor(section, "laser_program.release", "Release Look")}
             </div>
             <div class="show-toggle-row">
@@ -980,11 +990,13 @@ function syncPlaybackAudio(force = false) {
   const target = playbackTargetTime();
   const current = Number(audio.currentTime || 0);
   const drift = target - current;
+  const now = performance.now();
 
   if (playback.finished) {
     audio.playbackRate = 1;
     if (Math.abs(drift) > 0.02) {
       audio.currentTime = target;
+      playbackHardSyncAt = now;
     }
     if (!audio.paused) {
       audio.pause();
@@ -998,6 +1010,7 @@ function syncPlaybackAudio(force = false) {
     audio.playbackRate = 1;
     if ((force || audio.paused) && Math.abs(drift) > 0.05) {
       audio.currentTime = target;
+      playbackHardSyncAt = now;
     }
     updatePlaybackStatus();
     drawPlaybackWaveform();
@@ -1014,17 +1027,22 @@ function syncPlaybackAudio(force = false) {
     return;
   }
 
-  if (force || Math.abs(drift) > 0.12) {
+  const hardSeekAllowed = force || (now - playbackHardSyncAt) >= PLAYBACK_HARD_SYNC_MS;
+  if ((force && Math.abs(drift) > 0.08) || (hardSeekAllowed && Math.abs(drift) > 0.35)) {
     audio.currentTime = target;
     audio.playbackRate = 1;
-  } else if (Math.abs(drift) > 0.015) {
-    audio.playbackRate = clamp(1 + drift * 0.45, 0.95, 1.05);
+    playbackHardSyncAt = now;
+  } else if (Math.abs(drift) > 0.045) {
+    audio.playbackRate = clamp(1 + drift * 0.12, 0.985, 1.015);
+  } else if (Math.abs(drift) > 0.02) {
+    audio.playbackRate = clamp(1 + drift * 0.08, 0.992, 1.008);
   } else {
     audio.playbackRate = 1;
   }
 
   if (audio.paused && Math.abs(drift) > 0.05) {
     audio.currentTime = target;
+    playbackHardSyncAt = now;
   }
 
   updatePlaybackStatus();

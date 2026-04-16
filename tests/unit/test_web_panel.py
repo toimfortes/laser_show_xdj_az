@@ -324,6 +324,15 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 1.0,
                                 "motion": 0.95,
                                 "emphasis": 0.6,
+                            },
+                            {
+                                "pattern": "helix",
+                                "geometry_family": "helix",
+                                "target_bias": "mid_air",
+                                "color_mode": "dual_cycle",
+                                "density": 0.92,
+                                "motion": 1.05,
+                                "emphasis": 0.52,
                             }
                         ],
                         "fills": [
@@ -335,6 +344,15 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                                 "density": 1.1,
                                 "motion": 1.2,
                                 "emphasis": 0.72,
+                            },
+                            {
+                                "pattern": "sheet",
+                                "geometry_family": "sheet",
+                                "target_bias": "ceiling",
+                                "color_mode": "morph",
+                                "density": 0.88,
+                                "motion": 0.82,
+                                "emphasis": 0.46,
                             }
                         ],
                         "release": {
@@ -371,7 +389,10 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
                 "laser_program.launch.geometry_family": "sheet",
                 "laser_program.sustain.0.pattern": "beam_sequence_clockwise",
                 "laser_program.sustain.0.motion": 1.15,
+                "laser_program.sustain.1.pattern": "spirograph",
+                "laser_program.sustain.1.geometry_family": "helix",
                 "laser_program.fills.0.target_bias": "ceiling",
+                "laser_program.fills.1.pattern": "beam_fan_wide",
                 "laser_program.release.color_mode": "dual_cycle",
             }
         },
@@ -394,7 +415,10 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
     assert updated["laser_program"]["launch"]["geometry_family"] == "sheet"
     assert updated["laser_program"]["sustain"][0]["pattern"] == "beam_sequence_clockwise"
     assert updated["laser_program"]["sustain"][0]["motion"] == 1.15
+    assert updated["laser_program"]["sustain"][1]["pattern"] == "spirograph"
+    assert updated["laser_program"]["sustain"][1]["geometry_family"] == "helix"
     assert updated["laser_program"]["fills"][0]["target_bias"] == "ceiling"
+    assert updated["laser_program"]["fills"][1]["pattern"] == "beam_fan_wide"
     assert updated["laser_program"]["release"]["color_mode"] == "dual_cycle"
     assert get_shared_playback_context() is playback
     assert saved_payloads
