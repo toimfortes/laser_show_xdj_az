@@ -1297,6 +1297,15 @@ function updateRuntimeSummary() {
     parts.push(`BPM ${round(bpm, 1)}`);
   }
 
+  const diagnostics = appState.runtimeSnapshot?.diagnostics || {};
+  if (diagnostics.ilda_transport_type) {
+    const label = diagnostics.ilda_transport_type === "ether_dream"
+      ? `Ether Dream${diagnostics.ilda_transport_host ? ` ${diagnostics.ilda_transport_host}` : ""}`
+      : String(diagnostics.ilda_transport_type);
+    const status = diagnostics.ilda_transport_faulted ? "faulted" : "ok";
+    parts.push(`ILDA ${label} ${status}`);
+  }
+
   const hardwareWarnings = Array.isArray(appState.playback?.hardware_warnings)
     ? appState.playback.hardware_warnings
     : [];

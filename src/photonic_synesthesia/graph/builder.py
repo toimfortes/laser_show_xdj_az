@@ -105,7 +105,12 @@ class PhotonicGraph:
         self._drain_control_commands()
         self._state = self.graph.invoke(self._state)
         if self.control_plane_service is not None:
-            self.control_plane_service.update_from_photonic_state(self._state)
+            node_stats = {
+                name: node.get_stats()
+                for name, node in self.nodes.items()
+                if hasattr(node, "get_stats")
+            }
+            self.control_plane_service.update_from_photonic_state(self._state, node_stats=node_stats)
         return self._state
 
     def _drain_control_commands(self) -> None:

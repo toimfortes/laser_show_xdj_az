@@ -157,6 +157,7 @@ class ControlPlaneStateService:
         self,
         state: PhotonicState,
         source: str = "graph",
+        node_stats: dict[str, dict[str, Any]] | None = None,
     ) -> ExecutionSnapshot:
         scene_state = state["scene_state"]
         beat_info = state["beat_info"]
@@ -220,6 +221,7 @@ class ControlPlaneStateService:
             self._safety_summary = safety_summary
             self._blackout_active = self._blackout_active or safety_summary.emergency_stop
             runtime_frames_seen = int(self._diagnostics.get("runtime_frames_seen", 0)) + 1
+            ilda_stats = dict((node_stats or {}).get("ilda_output", {}))
             self._diagnostics = {
                 "runtime_source": source,
                 "runtime_frames_seen": runtime_frames_seen,
@@ -232,6 +234,9 @@ class ControlPlaneStateService:
                     str(frame["geometry_family"]) for frame in state["ilda_frames"]
                 ],
                 "ilda_fixture_ids": [str(frame["fixture_id"]) for frame in state["ilda_frames"]],
+                "ilda_transport_type": ilda_stats.get("transport_type"),
+                "ilda_transport_host": ilda_stats.get("ether_dream_host"),
+                "ilda_transport_faulted": ilda_stats.get("ether_dream_faulted"),
             }
 
         self.publish_event(

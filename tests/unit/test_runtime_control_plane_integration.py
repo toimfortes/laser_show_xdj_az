@@ -34,11 +34,19 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
             state["director_state"]["color_drive"] = 0.48
             return state
 
+    class _FakeILDAOutput:
+        def get_stats(self) -> dict[str, object]:
+            return {
+                "transport_type": "ether_dream",
+                "ether_dream_host": "192.0.2.10",
+                "ether_dream_faulted": False,
+            }
+
     service = ControlPlaneStateService()
     graph = PhotonicGraph(
         graph=_FakeGraph(),
         settings=mock.MagicMock(),
-        nodes={},
+        nodes={"ilda_output": _FakeILDAOutput()},
         control_plane_service=service,
     )
 
@@ -51,6 +59,9 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
     assert service.snapshot().semantic_frame.pitch_salience == 0.66
     assert service.snapshot().director_summary.melodic_smoothness == 0.79
     assert service.snapshot().director_summary.laser_aggression == 0.31
+    assert service.snapshot().diagnostics["ilda_transport_type"] == "ether_dream"
+    assert service.snapshot().diagnostics["ilda_transport_host"] == "192.0.2.10"
+    assert service.snapshot().diagnostics["ilda_transport_faulted"] is False
 
 
 def test_web_panel_uses_shared_control_plane_service_by_default() -> None:

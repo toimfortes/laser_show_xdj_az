@@ -51,7 +51,16 @@ def test_live_state_endpoint_reflects_runtime_ingest() -> None:
             "points": [],
         }
     ]
-    services.update_from_photonic_state(state)
+    services.update_from_photonic_state(
+        state,
+        node_stats={
+            "ilda_output": {
+                "transport_type": "ether_dream",
+                "ether_dream_host": "192.0.2.10",
+                "ether_dream_faulted": True,
+            }
+        },
+    )
 
     app = create_app(services=services)
     client = TestClient(app)
@@ -64,6 +73,9 @@ def test_live_state_endpoint_reflects_runtime_ingest() -> None:
     assert body["diagnostics"]["runtime_source"] == "graph"
     assert body["diagnostics"]["ilda_frame_count"] == 1
     assert body["diagnostics"]["ilda_geometry_families"] == ["burst"]
+    assert body["diagnostics"]["ilda_transport_type"] == "ether_dream"
+    assert body["diagnostics"]["ilda_transport_host"] == "192.0.2.10"
+    assert body["diagnostics"]["ilda_transport_faulted"] is True
 
 
 def test_root_page_exposes_mock_visualizer_shell() -> None:
