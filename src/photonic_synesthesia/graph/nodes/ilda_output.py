@@ -70,9 +70,11 @@ class ILDAOutputNode:
         self._export_path = config.export_path
         self._ether_dream: EtherDreamClient | None = None
         self._ether_dream_faulted = False
+        self._ild_timeline: list[ILDAFrame] = []
 
     def start(self) -> None:
         self._running = True
+        self._ild_timeline = []
         if self.config.transport_type == "json" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
         if self.config.transport_type == "ild" and self._export_path is not None:
@@ -85,6 +87,7 @@ class ILDAOutputNode:
             self._ether_dream.close()
             self._ether_dream = None
         self._ether_dream_faulted = False
+        self._ild_timeline = []
         self._running = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -313,11 +316,40 @@ class ILDAOutputNode:
         if self.config.transport_type == "ild":
             if self._export_path is None:
                 return
-            self._export_path.write_bytes(encode_ild(frames))
+            self._ild_timeline.extend(frames)
+            self._export_path.write_bytes(encode_ild(self._ild_timeline))
             return
         if self.config.transport_type == "ether_dream" and frames:
             try:
-                point_rate = max(1, int(self.config.target_fps * max(frame["point_count"] for frame in frames)))
-                self._ensure_ether_dream_client().ensure_streaming(frames[0], point_rate=point_rate)
+                dac_frame = self._merge_frames_for_dac(frames)
+                point_rate = max(1, int(self.config.target_fps * dac_frame["point_count"]))
+                self._ensure_ether_dream_client().ensure_streaming(dac_frame, point_rate=point_rate)
             except OSError as exc:
                 self._handle_ether_dream_error(exc)
+
+    @staticmethod
+    def _merge_frames_for_dac(frames: list[ILDAFrame]) -> ILDAFrame:
+        merged_points: list[ILDAPoint] = []
+        for frame in frames:
+            points = frame["points"]
+            if not points:
+                continue
+            if merged_points:
+                separator = points[0].copy()
+                separator["blanked"] = True
+                separator["r"] = 0
+                separator["g"] = 0
+                separator["b"] = 0
+                merged_points.append(separator)
+            merged_points.extend(points)
+
+        return ILDAFrame(
+            fixture_id="ilda-composite",
+            profile_name="ether_dream_composite",
+            geometry_family="composite",
+            color_mode="mixed",
+            target_bias="mixed",
+            point_count=len(merged_points),
+            repeat=True,
+            points=merged_points,
+        )

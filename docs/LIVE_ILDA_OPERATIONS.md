@@ -12,13 +12,19 @@ The file-playback path supports three ILDA modes:
   - Does not write `.ild` files and does not stream to hardware.
 
 - `ild`
-  - Generates ILDA frames and writes a `.ild` file.
+  - Generates ILDA frames and writes a cumulative `.ild` timeline for the current run.
   - Good for offline inspection, archival, or downstream tools.
 
 - `ether_dream`
   - Streams ILDA frames live to an Ether Dream DAC over TCP.
   - Includes startup reachability preflight in live validation paths.
   - Includes reconnect-on-fault handling in the ILDA output node.
+
+Both `ild` and `ether_dream` modes require at least one enabled ILDA-primary laser fixture in config.
+If no ILDA fixture is configured:
+
+- explicit ILDA requests fail fast
+- the default `run-file` path falls back to in-memory preview only
 
 ## Recommended Commands
 

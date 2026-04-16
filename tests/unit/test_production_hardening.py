@@ -392,6 +392,7 @@ def test_run_file_uses_audio_file_sensor_override(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["mock_sensors"] is True
     assert isinstance(captured["audio_node"], AudioFileSenseNode)
+    assert "No ILDA fixtures configured; falling back to in-memory preview." in result.output
 
 
 def test_run_file_web_startup_failure_preserves_original_error(tmp_path: Path) -> None:
@@ -432,6 +433,21 @@ def test_run_file_applies_ether_dream_cli_overrides(tmp_path: Path) -> None:
         handle.setsampwidth(2)
         handle.setframerate(8000)
         handle.writeframes(b"\x00\x00" * 800)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+runtime_flags:
+  allow_unverified_laser_profiles: true
+fixtures:
+  - id: laser-main
+    name: Main Laser
+    type: laser
+    profile: laser_aucd_cx338b_hybrid
+    start_address: 1
+    enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
 
     captured: dict[str, object] = {}
 
@@ -460,11 +476,20 @@ def test_run_file_applies_ether_dream_cli_overrides(tmp_path: Path) -> None:
         captured["port"] = settings.ilda.ether_dream_port
         return _FakeGraph(kwargs["node_overrides"]["audio_sense"])
 
-    with mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build):
+    fake_socket = mock.MagicMock()
+    fake_socket.__enter__.return_value = fake_socket
+    fake_socket.__exit__.return_value = False
+
+    with (
+        mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build),
+        mock.patch("photonic_synesthesia.ui.cli.socket.create_connection", return_value=fake_socket),
+    ):
         runner = CliRunner()
         result = runner.invoke(
             cli,
             [
+                "--config",
+                str(config_path),
                 "run-file",
                 str(audio_path),
                 "--offline",
@@ -513,3 +538,30 @@ def test_run_file_rejects_invalid_ether_dream_port(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "--ether-dream-port must be between 1 and 65535" in result.output
+
+
+def test_run_file_rejects_explicit_ild_transport_without_ilda_fixture(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run-file",
+            str(audio_path),
+            "--ilda-transport",
+            "ild",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "ILDA output requested but no enabled ILDA-primary laser fixtures are configured." in result.output

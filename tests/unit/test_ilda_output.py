@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -131,6 +132,40 @@ def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
     assert data[-32:-28] == b"ILDA"
 
 
+def test_ilda_output_ild_export_accumulates_timeline_frames(tmp_path: Path) -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    export_path = tmp_path / "timeline.ild"
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, transport_type="ild", export_path=export_path, points_per_frame=24),
+        [fixture],
+        LaserSafetyConfig(),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    node.start()
+
+    first_state = create_initial_state()
+    first_state["current_structure"] = MusicStructure.BREAKDOWN
+    first_result = node(first_state)
+    first_frames = copy.deepcopy(first_result["ilda_frames"])
+
+    second_state = create_initial_state()
+    second_state["current_structure"] = MusicStructure.DROP
+    second_state["director_state"]["laser_aggression"] = 0.9
+    second_result = node(second_state)
+    second_frames = copy.deepcopy(second_result["ilda_frames"])
+
+    data = export_path.read_bytes()
+
+    assert data == encode_ild(first_frames + second_frames)
+
+
 def test_ilda_output_streams_to_ether_dream_transport() -> None:
     fixture = FixtureConfig(
         id="laser-main",
@@ -156,9 +191,53 @@ def test_ilda_output_streams_to_ether_dream_transport() -> None:
     assert result["ilda_frames"]
     fake_client.connect.assert_called_once()
     fake_client.ensure_streaming.assert_called_once()
-    _, kwargs = fake_client.ensure_streaming.call_args
+    args, kwargs = fake_client.ensure_streaming.call_args
+    streamed_frame = args[0]
     assert kwargs["point_rate"] == 600
+    assert streamed_frame["fixture_id"] == "ilda-composite"
+    assert streamed_frame["point_count"] == 24
     fake_client.close.assert_called_once()
+
+
+def test_ilda_output_streams_all_ilda_fixtures_to_ether_dream_transport() -> None:
+    fixtures = [
+        FixtureConfig(
+            id="laser-a",
+            name="Laser A",
+            type="laser",
+            profile="laser_aucd_cx338b_hybrid",
+            start_address=1,
+            enabled=True,
+        ),
+        FixtureConfig(
+            id="laser-b",
+            name="Laser B",
+            type="laser",
+            profile="laser_aucd_cx338b_hybrid",
+            start_address=10,
+            enabled=True,
+        ),
+    ]
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDAOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
+            fixtures,
+            LaserSafetyConfig(),
+            fixtures_dir=Path("config/fixtures"),
+        )
+        node.start()
+        state = create_initial_state()
+        result = node(state)
+        node.stop()
+
+    assert len(result["ilda_frames"]) == 2
+    args, kwargs = fake_client.ensure_streaming.call_args
+    streamed_frame = args[0]
+    point_sum = sum(frame["point_count"] for frame in result["ilda_frames"])
+    assert streamed_frame["fixture_id"] == "ilda-composite"
+    assert streamed_frame["point_count"] == point_sum + 1
+    assert kwargs["point_rate"] == (point_sum + 1) * 25
 
 
 def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:

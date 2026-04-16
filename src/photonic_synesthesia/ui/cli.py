@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from click.core import ParameterSource
 
 from photonic_synesthesia import __version__
 from photonic_synesthesia.core.logging import configure_logging, get_logger
@@ -1352,7 +1353,6 @@ def run_file(
         settings = Settings()
 
     settings.debug = ctx.obj["debug"]
-    _validate_startup_config(settings, mock=True)
     settings.ilda.enabled = True
     settings.ilda.transport_type = str(ilda_transport)
     settings.ilda.export_path = (
@@ -1364,6 +1364,37 @@ def run_file(
         settings.ilda.ether_dream_host = ether_dream_host
     if ether_dream_port is not None:
         settings.ilda.ether_dream_port = ether_dream_port
+
+    transport_source = ctx.get_parameter_source("ilda_transport")
+    export_path_source = ctx.get_parameter_source("ilda_export_path_override")
+
+    from photonic_synesthesia.laser import build_laser_profiles
+
+    laser_profiles = build_laser_profiles(settings.fixtures, settings.fixtures_dir)
+    enabled_fixture_ids = {fixture.id for fixture in settings.fixtures if fixture.enabled}
+    enabled_ilda_fixture_ids = [
+        fixture_id
+        for fixture_id, profile in laser_profiles.items()
+        if profile.control_surface == "ilda" and fixture_id in enabled_fixture_ids
+    ]
+    if not enabled_ilda_fixture_ids:
+        explicit_ilda_request = (
+            settings.ilda.transport_type == "ether_dream"
+            or transport_source != ParameterSource.DEFAULT
+            or export_path_source != ParameterSource.DEFAULT
+        )
+        if explicit_ilda_request:
+            click.echo(
+                "Error: ILDA output requested but no enabled ILDA-primary laser fixtures are configured.",
+                err=True,
+            )
+            sys.exit(1)
+        if settings.ilda.transport_type == "ild":
+            click.echo("No ILDA fixtures configured; falling back to in-memory preview.")
+            settings.ilda.transport_type = "memory"
+            settings.ilda.export_path = None
+
+    _validate_startup_config(settings, mock=settings.ilda.transport_type != "ether_dream")
 
     chunk_size = max(1, int(settings.audio.sample_rate / fps))
     audio_node = AudioFileSenseNode(
@@ -1400,7 +1431,6 @@ def run_file(
         else audio_file.stem
     )
     hardware_warnings: list[str] = []
-    from photonic_synesthesia.laser import build_laser_profiles
     for fixture_id, profile in build_laser_profiles(settings.fixtures, settings.fixtures_dir).items():
         if profile.adapter_assumption:
             hardware_warnings.append(
