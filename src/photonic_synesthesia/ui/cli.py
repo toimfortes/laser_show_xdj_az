@@ -29,31 +29,183 @@ _DEFAULT_REKORDBOX_XML_CANDIDATES = [
 
 _LASER_PATTERN_POOLS: dict[str, list[str]] = {
     "intro": ["fan", "thin_scan", "wave", "liquid_sky"],
-    "build": ["vertical_rake", "cone", "wave", "rotor"],
+    "build": ["vertical_rake", "cone", "wave", "rotor", "liquid_sky"],
     "drop": ["burst_fan", "tunnel", "crisscross", "starburst", "shutter_hits", "alternating_beam_groups"],
-    "breakdown": ["thin_scan", "liquid_sky", "fan", "wave"],
-    "outro": ["fan", "thin_scan", "wave"],
+    "breakdown": ["thin_scan", "liquid_sky", "fan", "wave", "cone"],
+    "outro": ["fan", "thin_scan", "wave", "liquid_sky"],
 }
 _MOVER_PATTERN_POOLS: dict[str, list[str]] = {
-    "intro": ["drift", "circle", "figure_eight", "leaf"],
-    "build": ["rise", "circle", "figure_eight", "mirror_fan"],
-    "drop": ["cross_sweep", "snap_hits", "ping_pong_tilt", "square", "diamond"],
-    "breakdown": ["hold", "drift", "leaf"],
+    "intro": ["drift", "circle", "figure_eight", "leaf", "hold"],
+    "build": ["rise", "circle", "figure_eight", "mirror_fan", "line_bounce"],
+    "drop": ["cross_sweep", "snap_hits", "ping_pong_tilt", "square", "diamond", "mirror_fan"],
+    "breakdown": ["hold", "drift", "leaf", "circle"],
     "outro": ["drift", "hold", "line_bounce"],
 }
 _WASH_PATTERN_POOLS: dict[str, list[str]] = {
     "intro": ["ambient", "breath", "gradient_roll", "center_out"],
-    "build": ["bloom", "build_ramp", "center_out", "outside_in"],
+    "build": ["bloom", "build_ramp", "center_out", "outside_in", "gradient_roll"],
     "drop": ["punch", "downbeat_hit", "white_peak", "drop_slam"],
-    "breakdown": ["ambient", "breakdown_glow", "fade"],
+    "breakdown": ["ambient", "breakdown_glow", "fade", "breath"],
     "outro": ["fade", "ambient", "breath"],
 }
 _LED_PATTERN_POOLS: dict[str, list[str]] = {
-    "intro": ["pulse", "sparkle", "horizontal_lines", "fade"],
-    "build": ["ramp", "vertical_build", "vertical_offset", "snake"],
+    "intro": ["pulse", "sparkle", "horizontal_lines", "fade", "horizontal_ramp"],
+    "build": ["ramp", "vertical_build", "vertical_offset", "snake", "rotating_line"],
     "drop": ["chase", "rotating_line", "audio_spectrum", "fizzle", "snake"],
     "breakdown": ["sparkle", "pulse", "fade"],
     "outro": ["fade", "horizontal_ramp", "pulse"],
+}
+
+_CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
+    "festival_peak": {
+        "strobe_bias": 0.22,
+        "motion_bias": 0.18,
+        "intensity_bias": 0.08,
+        "allow_intro_lasers": False,
+        "allow_breakdown_lasers": False,
+        "allow_intro_leds": True,
+        "patterns": {
+            "laser": {
+                "build": ["vertical_rake", "rotor", "cone", "wave", "liquid_sky"],
+                "drop": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "tunnel", "crisscross"],
+            },
+            "mover": {
+                "build": ["rise", "mirror_fan", "figure_eight", "circle"],
+                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "square", "diamond"],
+            },
+            "wash": {
+                "drop": ["white_peak", "drop_slam", "downbeat_hit", "punch"],
+            },
+            "led": {
+                "drop": ["chase", "fizzle", "audio_spectrum", "rotating_line", "snake"],
+            },
+        },
+    },
+    "euphoric_arc": {
+        "strobe_bias": 0.08,
+        "motion_bias": 0.12,
+        "intensity_bias": 0.04,
+        "allow_intro_lasers": True,
+        "allow_breakdown_lasers": True,
+        "allow_intro_leds": False,
+        "patterns": {
+            "laser": {
+                "intro": ["fan", "liquid_sky", "wave"],
+                "build": ["cone", "wave", "vertical_rake", "rotor"],
+                "drop": ["burst_fan", "tunnel", "starburst", "crisscross"],
+                "breakdown": ["liquid_sky", "thin_scan", "fan"],
+            },
+            "mover": {
+                "build": ["mirror_fan", "figure_eight", "rise", "circle"],
+                "drop": ["cross_sweep", "diamond", "square", "snap_hits"],
+            },
+            "wash": {
+                "intro": ["ambient", "breath", "center_out"],
+                "build": ["bloom", "build_ramp", "outside_in"],
+                "drop": ["white_peak", "punch", "drop_slam"],
+                "breakdown": ["breakdown_glow", "fade", "ambient"],
+            },
+            "led": {
+                "build": ["vertical_build", "ramp", "snake"],
+                "drop": ["audio_spectrum", "rotating_line", "chase"],
+            },
+        },
+    },
+    "percussive_driver": {
+        "strobe_bias": 0.18,
+        "motion_bias": 0.1,
+        "intensity_bias": 0.06,
+        "allow_intro_lasers": False,
+        "allow_breakdown_lasers": False,
+        "allow_intro_leds": True,
+        "patterns": {
+            "laser": {
+                "build": ["vertical_rake", "cone", "wave"],
+                "drop": ["shutter_hits", "alternating_beam_groups", "burst_fan", "starburst"],
+            },
+            "mover": {
+                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "line_bounce"],
+            },
+            "wash": {
+                "drop": ["downbeat_hit", "drop_slam", "punch", "white_peak"],
+            },
+            "led": {
+                "build": ["vertical_offset", "vertical_build", "ramp"],
+                "drop": ["chase", "fizzle", "snake", "audio_spectrum"],
+            },
+        },
+    },
+    "hypnotic_motorik": {
+        "strobe_bias": -0.04,
+        "motion_bias": 0.14,
+        "intensity_bias": -0.02,
+        "allow_intro_lasers": True,
+        "allow_breakdown_lasers": True,
+        "allow_intro_leds": False,
+        "patterns": {
+            "laser": {
+                "intro": ["wave", "liquid_sky", "fan"],
+                "build": ["rotor", "cone", "wave", "vertical_rake"],
+                "drop": ["tunnel", "crisscross", "rotor", "burst_fan"],
+                "breakdown": ["liquid_sky", "wave", "thin_scan"],
+            },
+            "mover": {
+                "intro": ["drift", "circle", "leaf"],
+                "build": ["figure_eight", "circle", "mirror_fan"],
+                "drop": ["cross_sweep", "square", "diamond", "ping_pong_tilt"],
+                "breakdown": ["hold", "leaf", "drift"],
+            },
+            "wash": {
+                "intro": ["ambient", "gradient_roll", "breath"],
+                "build": ["gradient_roll", "bloom", "center_out"],
+                "drop": ["punch", "white_peak", "downbeat_hit"],
+            },
+            "led": {
+                "intro": ["pulse", "horizontal_lines", "fade"],
+                "build": ["rotating_line", "ramp", "vertical_offset"],
+                "drop": ["rotating_line", "audio_spectrum", "snake", "chase"],
+            },
+        },
+    },
+}
+
+_TRANSITION_PATTERN_HINTS: dict[str, dict[str, list[str]]] = {
+    "build_riser": {
+        "laser": ["vertical_rake", "rotor", "cone"],
+        "mover": ["rise", "mirror_fan", "figure_eight"],
+        "wash": ["build_ramp", "bloom", "outside_in"],
+        "led": ["vertical_build", "ramp", "vertical_offset"],
+    },
+    "drop_launch": {
+        "laser": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups"],
+        "mover": ["snap_hits", "cross_sweep", "ping_pong_tilt"],
+        "wash": ["drop_slam", "white_peak", "downbeat_hit"],
+        "led": ["chase", "fizzle", "audio_spectrum"],
+    },
+    "drop_variation": {
+        "laser": ["tunnel", "crisscross", "burst_fan", "alternating_beam_groups"],
+        "mover": ["square", "diamond", "cross_sweep", "ping_pong_tilt"],
+        "wash": ["white_peak", "punch", "drop_slam"],
+        "led": ["rotating_line", "snake", "audio_spectrum", "chase"],
+    },
+    "breakdown_release": {
+        "laser": ["thin_scan", "liquid_sky", "fan"],
+        "mover": ["hold", "leaf", "drift"],
+        "wash": ["breakdown_glow", "fade", "ambient"],
+        "led": ["sparkle", "fade", "pulse"],
+    },
+    "intro_set": {
+        "laser": ["fan", "thin_scan", "wave"],
+        "mover": ["drift", "circle", "leaf"],
+        "wash": ["ambient", "breath", "center_out"],
+        "led": ["pulse", "fade", "horizontal_lines"],
+    },
+    "outro_release": {
+        "laser": ["fan", "thin_scan", "wave"],
+        "mover": ["hold", "drift", "line_bounce"],
+        "wash": ["fade", "ambient", "breath"],
+        "led": ["fade", "horizontal_ramp", "pulse"],
+    },
 }
 
 
@@ -62,6 +214,10 @@ def _discover_rekordbox_xml() -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
 def _scene_for_marker_kind(kind: str) -> str:
@@ -88,22 +244,6 @@ def _fixture_mode_for_marker_kind(kind: str) -> str:
     return "intro"
 
 
-def _laser_pattern_for_marker_kind(kind: str) -> str:
-    return _choose_pattern(_LASER_PATTERN_POOLS, kind, "laser")
-
-
-def _mover_pattern_for_marker_kind(kind: str) -> str:
-    return _choose_pattern(_MOVER_PATTERN_POOLS, kind, "mover")
-
-
-def _wash_pattern_for_marker_kind(kind: str) -> str:
-    return _choose_pattern(_WASH_PATTERN_POOLS, kind, "wash")
-
-
-def _led_pattern_for_marker_kind(kind: str) -> str:
-    return _choose_pattern(_LED_PATTERN_POOLS, kind, "led")
-
-
 def _pattern_stage(kind: str) -> str:
     if kind == "drop":
         return "drop"
@@ -116,18 +256,219 @@ def _pattern_stage(kind: str) -> str:
     return "intro"
 
 
-def _choose_pattern(pools: dict[str, list[str]], kind: str, family: str, seed: str | None = None) -> str:
+def _stable_digest(label: str) -> bytes:
+    return sha1(label.encode()).digest()
+
+
+def _stable_float(label: str) -> float:
+    return int.from_bytes(_stable_digest(label)[:8], "big") / float(2 ** 64)
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _creative_profile(track_seed: str | None, markers: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+    names = sorted(_CREATIVE_PROFILES)
+    marker_signature = "|".join(
+        f"{marker.get('kind','?')}@{round(float(marker.get('start_seconds', 0.0)), 1)}"
+        for marker in markers
+    )
+    digest = _stable_digest(f"{track_seed or 'unknown'}::{marker_signature}")
+    profile_name = names[int.from_bytes(digest[:2], 'big') % len(names)]
+    return profile_name, _CREATIVE_PROFILES[profile_name]
+
+
+def _transition_context(
+    *,
+    previous_kind: str | None,
+    kind: str,
+    next_kind: str | None,
+    ordinal: int,
+    total_of_kind: int,
+) -> str:
     stage = _pattern_stage(kind)
-    candidates = pools.get(stage) or pools["intro"]
+    if stage == "drop":
+        if previous_kind in {"build", "breakdown", "bridge", "verse", "vocal"}:
+            return "drop_launch" if ordinal == 0 else "drop_variation"
+        if ordinal > 0 or total_of_kind > 1:
+            return "drop_variation"
+        return "drop_launch"
+    if stage == "build":
+        if next_kind == "drop":
+            return "build_riser"
+        return "build_riser" if previous_kind in {"breakdown", "bridge", "verse", "vocal"} else "intro_set"
+    if stage == "breakdown":
+        return "breakdown_release"
+    if stage == "outro":
+        return "outro_release"
+    return "intro_set"
+
+
+def _pattern_candidates(
+    *,
+    family: str,
+    kind: str,
+    context: str,
+    profile: dict[str, Any],
+) -> list[str]:
+    stage = _pattern_stage(kind)
+    pools = {
+        "laser": _LASER_PATTERN_POOLS,
+        "mover": _MOVER_PATTERN_POOLS,
+        "wash": _WASH_PATTERN_POOLS,
+        "led": _LED_PATTERN_POOLS,
+    }
+    base_candidates = list(pools[family].get(stage) or pools[family]["intro"])
+    profile_candidates = list(profile.get("patterns", {}).get(family, {}).get(stage, []))
+    transition_candidates = list(_TRANSITION_PATTERN_HINTS.get(context, {}).get(family, []))
+    return _dedupe(transition_candidates + profile_candidates + base_candidates)
+
+
+def _select_pattern(
+    *,
+    family: str,
+    kind: str,
+    context: str,
+    profile: dict[str, Any],
+    track_seed: str,
+    marker_name: str,
+    ordinal: int,
+    previous_pattern: str | None,
+) -> str:
+    candidates = _pattern_candidates(family=family, kind=kind, context=context, profile=profile)
+    if not candidates:
+        raise RuntimeError(f"No pattern candidates for {family}:{kind}:{context}")
     if len(candidates) == 1:
         return candidates[0]
-    digest = sha1(f"{family}:{stage}:{seed or kind}".encode()).digest()
-    index = int.from_bytes(digest[:2], "big") % len(candidates)
-    return candidates[index]
+    digest = _stable_digest(f"{track_seed}:{family}:{kind}:{context}:{ordinal}:{marker_name}")
+    start_index = int.from_bytes(digest[:2], "big") % len(candidates)
+    ordered = candidates[start_index:] + candidates[:start_index]
+    for candidate in ordered:
+        if candidate != previous_pattern:
+            return candidate
+    return ordered[0]
 
 
-def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: float) -> list[dict[str, Any]]:
+def _section_levels(
+    *,
+    kind: str,
+    context: str,
+    energy_scale: float,
+    profile: dict[str, Any],
+    ordinal: int,
+) -> tuple[float, float, float]:
+    stage = _pattern_stage(kind)
+    base_intensity = {
+        "intro": 0.44,
+        "build": 0.66,
+        "drop": 0.98,
+        "breakdown": 0.36,
+        "outro": 0.3,
+    }[stage]
+    base_motion = {
+        "intro": 0.64,
+        "build": 1.04,
+        "drop": 1.28,
+        "breakdown": 0.42,
+        "outro": 0.48,
+    }[stage]
+    base_strobe = {
+        "intro": 0.0,
+        "build": 0.06,
+        "drop": 0.28,
+        "breakdown": 0.0,
+        "outro": 0.0,
+    }[stage]
+
+    if context == "build_riser":
+        base_motion += 0.1
+        base_strobe += 0.04
+    elif context == "drop_launch":
+        base_intensity += 0.06
+        base_motion += 0.12
+        base_strobe += 0.18
+    elif context == "drop_variation":
+        base_intensity += 0.02
+        base_motion += 0.08
+        base_strobe += 0.1
+    elif context == "breakdown_release":
+        base_intensity -= 0.04
+        base_motion -= 0.06
+
+    profile_intensity = float(profile.get("intensity_bias", 0.0))
+    profile_motion = float(profile.get("motion_bias", 0.0))
+    profile_strobe = float(profile.get("strobe_bias", 0.0)) * {
+        "intro": 0.08,
+        "build": 0.45,
+        "drop": 1.0,
+        "breakdown": 0.1,
+        "outro": 0.05,
+    }[stage]
+    ordinal_shift = min(0.12, ordinal * 0.04)
+    intensity = _clamp(base_intensity + profile_intensity + (energy_scale - 0.6) * 0.35 + ordinal_shift * 0.2, 0.18, 1.28)
+    motion = _clamp(base_motion + profile_motion + (energy_scale - 0.6) * 0.4 + ordinal_shift, 0.22, 2.2)
+    strobe = _clamp(base_strobe + profile_strobe + (energy_scale - 0.6) * 0.18, 0.0, 1.0)
+    return round(intensity, 3), round(motion, 3), round(strobe, 3)
+
+
+def _fixture_enablement(
+    *,
+    kind: str,
+    context: str,
+    profile: dict[str, Any],
+    track_seed: str,
+    ordinal: int,
+) -> tuple[bool, bool, bool, bool]:
+    stage = _pattern_stage(kind)
+    lasers = True
+    movers = True
+    washes = True
+    leds = True
+
+    if stage == "intro":
+        lasers = bool(profile.get("allow_intro_lasers", False))
+        leds = bool(profile.get("allow_intro_leds", False))
+    elif stage == "breakdown":
+        lasers = bool(profile.get("allow_breakdown_lasers", False))
+        leds = _stable_float(f"{track_seed}:breakdown_leds:{ordinal}") > 0.25
+    elif stage == "outro":
+        lasers = False
+        movers = _stable_float(f"{track_seed}:outro_movers:{ordinal}") > 0.15
+        leds = _stable_float(f"{track_seed}:outro_leds:{ordinal}") > 0.45
+
+    if context == "drop_launch":
+        lasers = True
+        movers = True
+        washes = True
+        leds = True
+
+    return lasers, movers, washes, leds
+
+
+def _default_show_sections(
+    markers: list[dict[str, Any]],
+    duration_seconds: float,
+    *,
+    track_seed: str | None = None,
+) -> list[dict[str, Any]]:
     if not markers:
+        seed = track_seed or "auto-groove"
+        _, profile = _creative_profile(seed, [])
+        intensity, motion, strobe = _section_levels(
+            kind="drop",
+            context="drop_launch",
+            energy_scale=0.92,
+            profile=profile,
+            ordinal=0,
+        )
         return [
             {
                 "id": "section_000",
@@ -137,13 +478,49 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
                 "end_seconds": round(duration_seconds, 3),
                 "scene_id": "drop_intense",
                 "fixture_mode": "peak_return",
-                "intensity_multiplier": 1.0,
-                "motion_multiplier": 1.0,
-                "strobe_level": 0.1,
-                "laser_pattern": "burst_fan",
-                "mover_pattern": "cross_sweep",
-                "wash_pattern": "punch",
-                "led_pattern": "chase",
+                "intensity_multiplier": intensity,
+                "motion_multiplier": motion,
+                "strobe_level": strobe,
+                "laser_pattern": _select_pattern(
+                    family="laser",
+                    kind="drop",
+                    context="drop_launch",
+                    profile=profile,
+                    track_seed=seed,
+                    marker_name="Auto Groove",
+                    ordinal=0,
+                    previous_pattern=None,
+                ),
+                "mover_pattern": _select_pattern(
+                    family="mover",
+                    kind="drop",
+                    context="drop_launch",
+                    profile=profile,
+                    track_seed=seed,
+                    marker_name="Auto Groove",
+                    ordinal=0,
+                    previous_pattern=None,
+                ),
+                "wash_pattern": _select_pattern(
+                    family="wash",
+                    kind="drop",
+                    context="drop_launch",
+                    profile=profile,
+                    track_seed=seed,
+                    marker_name="Auto Groove",
+                    ordinal=0,
+                    previous_pattern=None,
+                ),
+                "led_pattern": _select_pattern(
+                    family="led",
+                    kind="drop",
+                    context="drop_launch",
+                    profile=profile,
+                    track_seed=seed,
+                    marker_name="Auto Groove",
+                    ordinal=0,
+                    previous_pattern=None,
+                ),
                 "laser_enabled": True,
                 "movers_enabled": True,
                 "washes_enabled": True,
@@ -151,7 +528,16 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
             }
         ]
 
+    seed = track_seed or "unknown-track"
+    _, profile = _creative_profile(seed, markers)
+    total_counts: dict[str, int] = {}
+    for marker in markers:
+        marker_kind = str(marker["kind"])
+        total_counts[marker_kind] = total_counts.get(marker_kind, 0) + 1
+
     sections: list[dict[str, Any]] = []
+    previous_patterns: dict[str, str | None] = {"laser": None, "mover": None, "wash": None, "led": None}
+    kind_counts: dict[str, int] = {}
     ordered = sorted(markers, key=lambda item: float(item["start_seconds"]))
     for index, marker in enumerate(ordered):
         next_start = (
@@ -160,8 +546,79 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
             else float(duration_seconds)
         )
         kind = str(marker["kind"])
+        ordinal = kind_counts.get(kind, 0)
+        kind_counts[kind] = ordinal + 1
+        previous_kind = str(ordered[index - 1]["kind"]) if index > 0 else None
+        next_kind = str(ordered[index + 1]["kind"]) if index + 1 < len(ordered) else None
+        context = _transition_context(
+            previous_kind=previous_kind,
+            kind=kind,
+            next_kind=next_kind,
+            ordinal=ordinal,
+            total_of_kind=total_counts.get(kind, 1),
+        )
         energy_hint = marker.get("energy_hint")
         energy_scale = max(0.25, min(1.0, float(energy_hint or 6) / 8.0))
+        intensity_multiplier, motion_multiplier, strobe_level = _section_levels(
+            kind=kind,
+            context=context,
+            energy_scale=energy_scale,
+            profile=profile,
+            ordinal=ordinal,
+        )
+        laser_pattern = _select_pattern(
+            family="laser",
+            kind=kind,
+            context=context,
+            profile=profile,
+            track_seed=seed,
+            marker_name=str(marker["name"]),
+            ordinal=ordinal,
+            previous_pattern=previous_patterns["laser"],
+        )
+        mover_pattern = _select_pattern(
+            family="mover",
+            kind=kind,
+            context=context,
+            profile=profile,
+            track_seed=seed,
+            marker_name=str(marker["name"]),
+            ordinal=ordinal,
+            previous_pattern=previous_patterns["mover"],
+        )
+        wash_pattern = _select_pattern(
+            family="wash",
+            kind=kind,
+            context=context,
+            profile=profile,
+            track_seed=seed,
+            marker_name=str(marker["name"]),
+            ordinal=ordinal,
+            previous_pattern=previous_patterns["wash"],
+        )
+        led_pattern = _select_pattern(
+            family="led",
+            kind=kind,
+            context=context,
+            profile=profile,
+            track_seed=seed,
+            marker_name=str(marker["name"]),
+            ordinal=ordinal,
+            previous_pattern=previous_patterns["led"],
+        )
+        previous_patterns.update({
+            "laser": laser_pattern,
+            "mover": mover_pattern,
+            "wash": wash_pattern,
+            "led": led_pattern,
+        })
+        laser_enabled, movers_enabled, washes_enabled, leds_enabled = _fixture_enablement(
+            kind=kind,
+            context=context,
+            profile=profile,
+            track_seed=seed,
+            ordinal=ordinal,
+        )
         sections.append(
             {
                 "id": f"section_{index:03d}",
@@ -171,17 +628,17 @@ def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: floa
                 "end_seconds": round(max(float(marker["start_seconds"]), next_start), 3),
                 "scene_id": _scene_for_marker_kind(kind),
                 "fixture_mode": _fixture_mode_for_marker_kind(kind),
-                "intensity_multiplier": round(energy_scale, 3),
-                "motion_multiplier": round(0.75 + energy_scale * 0.6, 3),
-                "strobe_level": round(0.32 if kind == "drop" else 0.08 if kind == "build" else 0.0, 3),
-                "laser_pattern": _choose_pattern(_LASER_PATTERN_POOLS, kind, "laser", str(marker["name"])),
-                "mover_pattern": _choose_pattern(_MOVER_PATTERN_POOLS, kind, "mover", str(marker["name"])),
-                "wash_pattern": _choose_pattern(_WASH_PATTERN_POOLS, kind, "wash", str(marker["name"])),
-                "led_pattern": _choose_pattern(_LED_PATTERN_POOLS, kind, "led", str(marker["name"])),
-                "laser_enabled": kind not in {"breakdown", "vocal", "verse", "outro"},
-                "movers_enabled": kind not in {"outro"},
-                "washes_enabled": True,
-                "leds_enabled": kind != "intro",
+                "intensity_multiplier": intensity_multiplier,
+                "motion_multiplier": motion_multiplier,
+                "strobe_level": strobe_level,
+                "laser_pattern": laser_pattern,
+                "mover_pattern": mover_pattern,
+                "wash_pattern": wash_pattern,
+                "led_pattern": led_pattern,
+                "laser_enabled": laser_enabled,
+                "movers_enabled": movers_enabled,
+                "washes_enabled": washes_enabled,
+                "leds_enabled": leds_enabled,
             }
         )
     return sections
@@ -460,6 +917,11 @@ def run_file(
                             for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
                         ],
                         audio_node.duration_seconds,
+                        track_seed=(
+                            f"{matched_rekordbox_track.artist or ''}|{matched_rekordbox_track.title}"
+                            if matched_rekordbox_track
+                            else audio_file.stem
+                        ),
                     ),
                     _seek_callback=audio_node.seek,
                 )
