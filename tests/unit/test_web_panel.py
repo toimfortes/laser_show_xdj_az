@@ -156,8 +156,32 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
         PlaybackContext(
             file_path=str(audio_path),
             file_name=audio_path.name,
+            track_title="Relax Your Mind",
+            track_artist="19_26, Yubik",
             duration_seconds=12.5,
             waveform=[0.1, 0.5, 0.2],
+            structure_markers=[
+                {"name": "Intro E:6", "kind": "intro", "start_seconds": 0.0, "energy_hint": 6},
+                {"name": "Drop E:8", "kind": "drop", "start_seconds": 4.0, "energy_hint": 8},
+            ],
+            show_sections=[
+                {
+                    "id": "section_000",
+                    "label": "Intro E:6",
+                    "kind": "intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 4.0,
+                    "scene_id": "intro_ambient",
+                    "fixture_mode": "intro",
+                    "intensity_multiplier": 0.75,
+                    "motion_multiplier": 0.6,
+                    "strobe_level": 0.0,
+                    "laser_enabled": False,
+                    "movers_enabled": True,
+                    "washes_enabled": True,
+                    "leds_enabled": False,
+                }
+            ],
         )
     )
     shared_playback.update_transport(
@@ -179,7 +203,11 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata_response.status_code == 200
     assert metadata["available"] is True
     assert metadata["file_name"] == "track.mp3"
+    assert metadata["track_title"] == "Relax Your Mind"
+    assert metadata["track_artist"] == "19_26, Yubik"
     assert metadata["waveform"] == [0.1, 0.5, 0.2]
+    assert len(metadata["structure_markers"]) == 2
+    assert metadata["show_sections"][0]["scene_id"] == "intro_ambient"
     assert metadata["playhead_seconds"] == 3.25
     assert metadata["playing"] is True
     assert metadata["session_id"] == shared_playback.session_id
@@ -188,5 +216,58 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert audio_response.status_code == 200
     assert audio_response.content == b"fake mp3 bytes"
     assert stale_audio_response.status_code == 404
+
+    clear_shared_playback_context()
+
+
+def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=12.5,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Drop E:8",
+                    "kind": "drop",
+                    "start_seconds": 4.0,
+                    "end_seconds": 8.0,
+                    "scene_id": "drop_intense",
+                    "fixture_mode": "peak_return",
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 1.0,
+                    "strobe_level": 0.2,
+                    "laser_enabled": True,
+                    "movers_enabled": True,
+                    "washes_enabled": True,
+                    "leds_enabled": True,
+                }
+            ],
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/show-sections/section_001",
+        json={
+            "changes": {
+                "scene_id": "break_sweep",
+                "motion_multiplier": 1.45,
+                "laser_enabled": False,
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    updated = response.json()["show_sections"][0]
+    assert updated["scene_id"] == "break_sweep"
+    assert updated["motion_multiplier"] == 1.45
+    assert updated["laser_enabled"] is False
 
     clear_shared_playback_context()

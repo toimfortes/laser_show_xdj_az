@@ -264,6 +264,84 @@ select {
   width: 100%;
 }
 
+#show-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.show-editor-empty {
+  color: var(--muted);
+  padding: 10px 0;
+}
+
+.show-section-list {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.show-section-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  display: grid;
+  gap: 10px;
+}
+
+.show-section-card.active {
+  border-color: rgba(248, 94, 0, 0.4);
+  background: linear-gradient(135deg, rgba(248, 94, 0, 0.08), rgba(255, 255, 255, 0.88));
+}
+
+.show-section-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.show-section-header span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.show-section-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.show-section-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.show-section-grid input,
+.show-section-grid select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.show-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.show-toggle-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
 #waveform-canvas {
   display: block;
   border-radius: 14px;

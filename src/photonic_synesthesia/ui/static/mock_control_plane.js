@@ -172,6 +172,7 @@ async function refreshPlaybackState() {
   syncPlaybackAudio();
   updatePlaybackStatus();
   drawPlaybackWaveform();
+  updateShowEditorActiveState();
 }
 
 async function refreshUniverseSnapshot() {
@@ -216,8 +217,11 @@ function renderPlayback() {
   elements.playbackPanel.className = "playback-panel";
   elements.playbackPanel.innerHTML = `
     <div class="playback-meta">
-      <strong>${playback.file_name}</strong>
-      <span>${playback.duration_seconds.toFixed(1)}s</span>
+      <div>
+        <strong>${playback.track_title || playback.file_name}</strong>
+        <span>${playback.track_artist ? `${playback.track_artist} · ` : ""}${playback.duration_seconds.toFixed(1)}s</span>
+      </div>
+      <span>${(playback.show_sections || []).length} sections</span>
     </div>
     <div class="playback-controls">
       <button type="button" id="sync-audio">Sync To Live</button>
@@ -225,6 +229,7 @@ function renderPlayback() {
     </div>
     <audio id="track-audio" controls preload="metadata" src="${playback.audio_url}"></audio>
     <canvas id="waveform-canvas" width="640" height="96"></canvas>
+    <div id="show-editor" class="show-editor"></div>
   `;
 
   const audio = elements.playbackPanel.querySelector("#track-audio");
@@ -235,6 +240,7 @@ function renderPlayback() {
   elements.waveformCanvas = waveformCanvas;
   elements.playbackStatus = elements.playbackPanel.querySelector("#playback-status");
   elements.playbackSyncButton = syncButton;
+  elements.showEditor = elements.playbackPanel.querySelector("#show-editor");
 
   syncButton.addEventListener("click", async () => {
     const target = playbackTargetTime();
@@ -267,6 +273,125 @@ function renderPlayback() {
   });
   updatePlaybackStatus();
   drawPlaybackWaveform();
+  renderShowEditor();
+}
+
+async function patchShowSection(sectionId, changes) {
+  const playback = await api(`/api/mock/playback/show-sections/${sectionId}`, {
+    method: "PATCH",
+    body: { changes },
+  });
+  applyPlaybackState(playback);
+  renderPlayback();
+}
+
+function renderShowEditor() {
+  if (!elements.showEditor) {
+    return;
+  }
+  const sections = appState.playback?.show_sections || [];
+  if (sections.length === 0) {
+    elements.showEditor.innerHTML = `
+      <div class="show-editor-empty">No imported Rekordbox sections for this track yet.</div>
+    `;
+    return;
+  }
+
+  const activeSection = currentShowSection();
+  const sceneOptions = appState.catalog.scene_templates
+    .map((scene) => `<option value="${scene.scene_id}">${scene.label}</option>`)
+    .join("");
+  const modeOptions = [
+    ["intro", "Intro"],
+    ["breakdown", "Breakdown"],
+    ["rebuild", "Rebuild"],
+    ["peak_return", "Peak Return"],
+    ["outro", "Outro"],
+  ]
+    .map(([value, label]) => `<option value="${value}">${label}</option>`)
+    .join("");
+
+  elements.showEditor.innerHTML = `
+    <div class="subhead">
+      <h3>Agentic Show</h3>
+      <p>Imported from Rekordbox and editable per section.</p>
+    </div>
+    <div class="show-section-list">
+      ${sections.map((section) => `
+        <div class="show-section-card${activeSection?.id === section.id ? " active" : ""}" data-section-id="${section.id}">
+          <div class="show-section-header">
+            <strong>${section.label}</strong>
+            <span>${section.start_seconds.toFixed(1)}s - ${section.end_seconds.toFixed(1)}s</span>
+          </div>
+          <div class="show-section-grid">
+            <label>
+              <span>Scene</span>
+              <select data-field="scene_id">${sceneOptions}</select>
+            </label>
+            <label>
+              <span>Mode</span>
+              <select data-field="fixture_mode">${modeOptions}</select>
+            </label>
+            <label>
+              <span>Intensity</span>
+              <input data-field="intensity_multiplier" type="range" min="0" max="1.4" step="0.05" value="${section.intensity_multiplier}" />
+            </label>
+            <label>
+              <span>Motion</span>
+              <input data-field="motion_multiplier" type="range" min="0.1" max="2.2" step="0.05" value="${section.motion_multiplier}" />
+            </label>
+            <label>
+              <span>Strobe</span>
+              <input data-field="strobe_level" type="range" min="0" max="1" step="0.05" value="${section.strobe_level}" />
+            </label>
+            <div class="show-toggle-row">
+              <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
+              <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers</label>
+              <label><input data-field="washes_enabled" type="checkbox" ${section.washes_enabled ? "checked" : ""} />Washes</label>
+              <label><input data-field="leds_enabled" type="checkbox" ${section.leds_enabled ? "checked" : ""} />LEDs</label>
+            </div>
+          </div>
+        </div>
+      `).join("")}
+    </div>
+  `;
+
+  elements.showEditor.querySelectorAll(".show-section-card").forEach((card, index) => {
+    const section = sections[index];
+    if (!section) {
+      return;
+    }
+    card.querySelectorAll("select,input").forEach((input) => {
+      const eventName = input.type === "range" ? "input" : "change";
+      if (input.dataset.field === "scene_id") {
+        input.value = section.scene_id;
+      }
+      if (input.dataset.field === "fixture_mode") {
+        input.value = section.fixture_mode;
+      }
+      input.addEventListener(eventName, (event) => {
+        const target = event.currentTarget;
+        const field = target.dataset.field;
+        let value = target.type === "checkbox" ? target.checked : target.value;
+        if (target.type === "range") {
+          value = Number(value);
+        }
+        patchShowSection(section.id, { [field]: value }).catch((error) => {
+          console.error(error);
+        });
+      });
+    });
+  });
+}
+
+function updateShowEditorActiveState() {
+  const activeSection = currentShowSection();
+  if (!elements.showEditor) {
+    return;
+  }
+  elements.showEditor.querySelectorAll(".show-section-card").forEach((card) => {
+    card.classList.toggle("active", activeSection?.id === card.dataset.sectionId);
+  });
 }
 
 function playbackTargetTime() {
@@ -329,6 +454,7 @@ function updatePlaybackStatus() {
   const target = playbackTargetTime();
   const browserTime = audio ? Number(audio.currentTime || 0) : 0;
   const drift = browserTime - target;
+  const section = currentShowSection(target);
   const stateLabel = appState.playback.finished
     ? "finished"
     : !playbackTransportIsFresh()
@@ -337,7 +463,8 @@ function updatePlaybackStatus() {
       ? "live"
       : "idle";
   const staleText = playbackTransportIsFresh() ? "" : ` · stale ${(playbackAnchorAgeMs() / 1000).toFixed(2)}s`;
-  elements.playbackStatus.textContent = `${stateLabel} · server ${target.toFixed(2)}s · browser ${browserTime.toFixed(2)}s · drift ${drift.toFixed(3)}s${staleText}`;
+  const sectionText = section ? ` · ${section.label}` : "";
+  elements.playbackStatus.textContent = `${stateLabel}${sectionText} · server ${target.toFixed(2)}s · browser ${browserTime.toFixed(2)}s · drift ${drift.toFixed(3)}s${staleText}`;
 }
 
 function syncPlaybackAudio(force = false) {
@@ -410,7 +537,29 @@ function sceneById(sceneId) {
     || appState.catalog.scene_templates[0];
 }
 
-function activeStageScene() {
+function currentPlaybackSeconds() {
+  const audio = elements.playbackAudio;
+  if (audio && !audio.paused && Number.isFinite(audio.currentTime)) {
+    return Number(audio.currentTime);
+  }
+  return playbackTargetTime();
+}
+
+function currentShowSection(seconds = currentPlaybackSeconds()) {
+  const sections = appState.playback?.show_sections || [];
+  if (sections.length === 0) {
+    return null;
+  }
+  const clamped = Math.max(0, seconds);
+  return sections.find((section) => clamped >= section.start_seconds && clamped < section.end_seconds)
+    || sections[sections.length - 1];
+}
+
+function activeStageScene(playbackSeconds = currentPlaybackSeconds()) {
+  const showSection = currentShowSection(playbackSeconds);
+  if (showSection?.scene_id) {
+    return sceneById(showSection.scene_id);
+  }
   const runtimeSceneId = appState.runtimeSnapshot?.active_scene_id;
   if (runtimeSceneId) {
     return sceneById(runtimeSceneId);
@@ -425,11 +574,14 @@ function beatPulseFromPhase(phase) {
 }
 
 function runtimeVisualState(timeSeconds) {
-  const scene = activeStageScene();
+  const playbackSeconds = currentPlaybackSeconds();
+  const showSection = currentShowSection(playbackSeconds);
+  const scene = activeStageScene(playbackSeconds);
   const semantic = appState.runtimeSnapshot?.semantic_frame || {};
   const director = appState.runtimeSnapshot?.director_summary || {};
   const beatConfidence = clamp(Number(semantic.beat_confidence ?? 0), 0, 1);
-  const energy = clamp(Number(director.energy_level ?? scene.pulse ?? 0.4), 0, 1);
+  const sectionIntensity = clamp(Number(showSection?.intensity_multiplier ?? 1), 0, 1.6);
+  const energy = clamp(Number(director.energy_level ?? scene.pulse ?? 0.4) * Math.max(0.45, sectionIntensity), 0, 1);
   const beatPhase = clamp(
     Number.isFinite(Number(semantic.beat_phase))
       ? Number(semantic.beat_phase)
@@ -438,16 +590,17 @@ function runtimeVisualState(timeSeconds) {
     1,
   );
   const beatPulse = beatPulseFromPhase(beatPhase) * Math.max(0.2, beatConfidence);
-  const structure = safeText(semantic.structure, "unknown").toLowerCase();
+  const structure = safeText(showSection?.kind || semantic.structure, "unknown").toLowerCase();
   const movementStyle = safeText(director.movement_style, "steady").toLowerCase();
   const motionScale = movementStyle === "aggressive"
     ? 1.45
     : movementStyle === "sparse"
       ? 0.62
       : 1.0;
+  const sectionMotionMultiplier = clamp(Number(showSection?.motion_multiplier ?? 1), 0.15, 2.4);
   const structureBoost = structure === "drop"
     ? 1.0
-    : structure === "buildup"
+    : structure === "build" || structure === "buildup"
       ? 0.82
       : structure === "breakdown"
         ? 0.45
@@ -456,8 +609,12 @@ function runtimeVisualState(timeSeconds) {
           : 0.6;
   const bpm = Number(semantic.bpm || 0);
   const motionRate = bpm > 0
-    ? (bpm / 60) * (0.45 + scene.speed_multiplier * 0.35) * motionScale
-    : scene.speed_multiplier * motionScale;
+    ? (bpm / 60) * (0.45 + scene.speed_multiplier * 0.35) * motionScale * sectionMotionMultiplier
+    : scene.speed_multiplier * motionScale * sectionMotionMultiplier;
+  const sectionStart = Number(showSection?.start_seconds ?? 0);
+  const sectionEnd = Number(showSection?.end_seconds ?? Math.max(playbackSeconds, 1));
+  const sectionSpan = Math.max(0.001, sectionEnd - sectionStart);
+  const sectionProgress = clamp((playbackSeconds - sectionStart) / sectionSpan, 0, 1);
   const pulseMix = clamp(
     0.25
       + (scene.pulse * 0.24)
@@ -469,13 +626,15 @@ function runtimeVisualState(timeSeconds) {
     1.45,
   );
   const strobeBudget = clamp(Number(director.strobe_budget_hz || 0) / 12, 0, 1);
+  const strobeLevel = clamp(Number(showSection?.strobe_level ?? scene.strobe ?? 0), 0, 1);
   const strobeActive = structure === "drop"
-    && scene.strobe > 0
+    && strobeLevel > 0
     && beatPulse > 0.86
     && strobeBudget > 0.2;
 
   return {
     scene,
+    section: showSection,
     energy,
     beatPhase,
     beatPulse,
@@ -485,6 +644,8 @@ function runtimeVisualState(timeSeconds) {
     motionRate,
     motionPhase: timeSeconds * motionRate,
     pulseMix,
+    sectionProgress,
+    strobeLevel,
     strobeActive,
   };
 }
@@ -737,12 +898,43 @@ function renderInspector() {
 
 function fixtureOutput(fixture, visual) {
   const phase = (visual.motionPhase * appState.masterSpeed) + fixture.phaseOffset;
+  const section = visual.section;
+  const fixtureEnabled = fixture.type === "laser"
+    ? section?.laser_enabled !== false
+    : fixture.type === "moving_head"
+      ? section?.movers_enabled !== false
+      : fixture.type === "wash"
+        ? section?.washes_enabled !== false
+        : section?.leds_enabled !== false;
   const baseIntensity = fixture.intensity
     * appState.masterIntensity
     * (0.24 + visual.pulseMix * 0.76)
     * (0.5 + visual.energy * 0.7);
   const intensityBoost = visual.strobeActive ? 1.22 : 1;
-  const intensity = appState.blackout ? 0 : clamp(baseIntensity * intensityBoost, 0, 1);
+  let sectionGate = 1;
+  let motionGate = 1;
+  const fixtureMode = String(section?.fixture_mode || "");
+  if (fixtureMode === "intro") {
+    sectionGate *= 0.45;
+    motionGate *= 0.55;
+  } else if (fixtureMode === "breakdown") {
+    sectionGate *= fixture.type === "wash" || fixture.type === "led_bar" ? 0.55 : 0.12;
+    motionGate *= 0.3;
+  } else if (fixtureMode === "rebuild") {
+    sectionGate *= 0.18 + (visual.sectionProgress * 0.82);
+    motionGate *= 0.7 + (visual.sectionProgress * 0.7);
+  } else if (fixtureMode === "peak_return") {
+    sectionGate *= fixture.type === "wash"
+      ? 0.4 + (visual.beatPulse * 0.8)
+      : visual.beatPulse > 0.18 || visual.structure === "drop"
+        ? 1
+        : 0.15;
+    motionGate *= 1.15;
+  } else if (fixtureMode === "outro") {
+    sectionGate *= 0.28;
+    motionGate *= 0.45;
+  }
+  const intensity = appState.blackout || !fixtureEnabled ? 0 : clamp(baseIntensity * intensityBoost * sectionGate, 0, 1);
   const color = fixture.color;
 
   if (fixture.type === "laser") {
@@ -750,7 +942,7 @@ function fixtureOutput(fixture, visual) {
       type: "laser",
       color,
       intensity,
-      sweep: Math.sin(phase * 1.1) * fixture.swing * (0.45 + visual.energy * 0.75),
+      sweep: Math.sin(phase * 1.1) * fixture.swing * (0.45 + visual.energy * 0.75) * motionGate,
       spread: fixture.spread * (visual.structure === "drop" ? 1.35 : 0.95),
       beamCount: Number(fixture.beam_count),
       shimmer: visual.beatPulse,
@@ -763,8 +955,8 @@ function fixtureOutput(fixture, visual) {
       type: "moving_head",
       color,
       intensity,
-      pan: fixture.pan + Math.sin(phase) * fixture.pan_range * motionBias,
-      tilt: fixture.tilt + Math.cos(phase * 0.82) * fixture.tilt_range * motionBias,
+      pan: fixture.pan + Math.sin(phase) * fixture.pan_range * motionBias * motionGate,
+      tilt: fixture.tilt + Math.cos(phase * 0.82) * fixture.tilt_range * motionBias * motionGate,
       beamWidth: fixture.beam_width * (0.9 + visual.beatPulse * 0.25),
     };
   }

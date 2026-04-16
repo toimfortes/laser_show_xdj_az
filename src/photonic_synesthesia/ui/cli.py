@@ -12,6 +12,7 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -19,6 +20,95 @@ from photonic_synesthesia import __version__
 from photonic_synesthesia.core.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
+
+_DEFAULT_REKORDBOX_XML_CANDIDATES = [
+    Path.home() / "Documents" / "DJ" / "dj-agent" / "rekordbox.xml",
+    Path.home() / "Documents" / "rekordbox.xml",
+]
+
+
+def _discover_rekordbox_xml() -> Path | None:
+    for candidate in _DEFAULT_REKORDBOX_XML_CANDIDATES:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _scene_for_marker_kind(kind: str) -> str:
+    if kind == "drop":
+        return "drop_intense"
+    if kind == "build":
+        return "break_sweep"
+    if kind in {"breakdown", "bridge", "verse", "vocal"}:
+        return "intro_ambient"
+    if kind == "outro":
+        return "intro_ambient"
+    return "intro_ambient"
+
+
+def _fixture_mode_for_marker_kind(kind: str) -> str:
+    if kind == "drop":
+        return "peak_return"
+    if kind == "build":
+        return "rebuild"
+    if kind in {"breakdown", "bridge", "verse", "vocal"}:
+        return "breakdown"
+    if kind == "outro":
+        return "outro"
+    return "intro"
+
+
+def _default_show_sections(markers: list[dict[str, Any]], duration_seconds: float) -> list[dict[str, Any]]:
+    if not markers:
+        return [
+            {
+                "id": "section_000",
+                "label": "Auto Groove",
+                "kind": "drop",
+                "start_seconds": 0.0,
+                "end_seconds": round(duration_seconds, 3),
+                "scene_id": "drop_intense",
+                "fixture_mode": "peak_return",
+                "intensity_multiplier": 1.0,
+                "motion_multiplier": 1.0,
+                "strobe_level": 0.1,
+                "laser_enabled": True,
+                "movers_enabled": True,
+                "washes_enabled": True,
+                "leds_enabled": True,
+            }
+        ]
+
+    sections: list[dict[str, Any]] = []
+    ordered = sorted(markers, key=lambda item: float(item["start_seconds"]))
+    for index, marker in enumerate(ordered):
+        next_start = (
+            float(ordered[index + 1]["start_seconds"])
+            if index + 1 < len(ordered)
+            else float(duration_seconds)
+        )
+        kind = str(marker["kind"])
+        energy_hint = marker.get("energy_hint")
+        energy_scale = max(0.25, min(1.0, float(energy_hint or 6) / 8.0))
+        sections.append(
+            {
+                "id": f"section_{index:03d}",
+                "label": str(marker["name"]),
+                "kind": kind,
+                "start_seconds": round(float(marker["start_seconds"]), 3),
+                "end_seconds": round(max(float(marker["start_seconds"]), next_start), 3),
+                "scene_id": _scene_for_marker_kind(kind),
+                "fixture_mode": _fixture_mode_for_marker_kind(kind),
+                "intensity_multiplier": round(energy_scale, 3),
+                "motion_multiplier": round(0.75 + energy_scale * 0.6, 3),
+                "strobe_level": round(0.32 if kind == "drop" else 0.08 if kind == "build" else 0.0, 3),
+                "laser_enabled": kind not in {"breakdown", "vocal", "verse", "outro"},
+                "movers_enabled": kind not in {"outro"},
+                "washes_enabled": True,
+                "leds_enabled": kind != "intro",
+            }
+        )
+    return sections
 
 
 def _validate_startup_config(settings: object, mock: bool = False) -> None:
@@ -165,6 +255,11 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
 @click.option("--fps", default=50.0, help="Target graph frames per second")
 @click.option("--realtime/--offline", default=True, help="Sleep between chunks to mimic playback")
 @click.option("--speed", default=1.0, type=float, help="Playback speed multiplier in realtime mode")
+@click.option(
+    "--rekordbox-xml",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Optional Rekordbox XML export used to match the song and import structure markers",
+)
 @click.option("--web", "web_mode", is_flag=True, help="Serve the control-plane website in the same process")
 @click.option("--web-host", default="127.0.0.1", help="Embedded web server host")
 @click.option("--web-port", default=8000, type=int, help="Embedded web server port")
@@ -175,6 +270,7 @@ def run_file(
     fps: float,
     realtime: bool,
     speed: float,
+    rekordbox_xml: Path | None,
     web_mode: bool,
     web_host: str,
     web_port: int,
@@ -183,6 +279,7 @@ def run_file(
     from photonic_synesthesia.core.config import Settings
     from photonic_synesthesia.graph import build_photonic_graph
     from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.integrations import load_rekordbox_track
     from photonic_synesthesia.platform import (
         ControlPlaneStateService,
         PlaybackContext,
@@ -228,6 +325,21 @@ def run_file(
     click.echo(f"Chunk Size: {chunk_size} samples")
     click.echo()
 
+    matched_rekordbox_track = None
+    rekordbox_source = rekordbox_xml or _discover_rekordbox_xml()
+    if rekordbox_source is not None:
+        matched_rekordbox_track = load_rekordbox_track(rekordbox_source, audio_file)
+        if matched_rekordbox_track is not None:
+            click.echo(
+                "Rekordbox match: {artist} - {title} ({markers} markers)".format(
+                    artist=matched_rekordbox_track.artist or "Unknown Artist",
+                    title=matched_rekordbox_track.title,
+                    markers=len(matched_rekordbox_track.markers),
+                )
+            )
+            click.echo(f"Rekordbox XML: {rekordbox_source}")
+            click.echo()
+
     graph = None
     web_server = None
     web_thread = None
@@ -249,7 +361,30 @@ def run_file(
                     file_path=str(audio_file),
                     file_name=audio_file.name,
                     duration_seconds=audio_node.duration_seconds,
+                    track_title=matched_rekordbox_track.title if matched_rekordbox_track else audio_file.stem,
+                    track_artist=matched_rekordbox_track.artist if matched_rekordbox_track else "",
                     waveform=audio_node.waveform_preview(),
+                    structure_markers=[
+                        {
+                            "name": marker.name,
+                            "kind": marker.kind,
+                            "start_seconds": round(marker.start_seconds, 3),
+                            "energy_hint": marker.energy_hint,
+                        }
+                        for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
+                    ],
+                    show_sections=_default_show_sections(
+                        [
+                            {
+                                "name": marker.name,
+                                "kind": marker.kind,
+                                "start_seconds": round(marker.start_seconds, 3),
+                                "energy_hint": marker.energy_hint,
+                            }
+                            for marker in (matched_rekordbox_track.markers if matched_rekordbox_track else [])
+                        ],
+                        audio_node.duration_seconds,
+                    ),
                 )
             )
             playback_context.update_transport(

@@ -22,8 +22,12 @@ class PlaybackContext:
     file_path: str
     file_name: str
     duration_seconds: float
+    track_title: str = ""
+    track_artist: str = ""
     session_id: str = field(default_factory=lambda: uuid4().hex)
     waveform: list[float] = field(default_factory=list)
+    structure_markers: list[dict[str, Any]] = field(default_factory=list)
+    show_sections: list[dict[str, Any]] = field(default_factory=list)
     playhead_seconds: float = 0.0
     playing: bool = False
     finished: bool = False
@@ -59,9 +63,13 @@ class PlaybackContext:
                 "available": True,
                 "session_id": self.session_id,
                 "file_name": self.file_name,
+                "track_title": self.track_title or self.file_name,
+                "track_artist": self.track_artist,
                 "duration_seconds": self.duration_seconds,
                 "audio_url": f"/api/mock/playback/audio?session={self.session_id}",
                 "waveform": list(self.waveform),
+                "structure_markers": [dict(marker) for marker in self.structure_markers],
+                "show_sections": [dict(section) for section in self.show_sections],
                 "playhead_seconds": self.playhead_seconds,
                 "playing": self.playing,
                 "finished": self.finished,
@@ -70,6 +78,29 @@ class PlaybackContext:
                 "server_time": self.server_time,
                 "transport_revision": self.transport_revision,
             }
+
+    def update_show_section(self, section_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
+        """Update one editable show section in-place."""
+        with self._lock:
+            for index, section in enumerate(self.show_sections):
+                if str(section.get("id")) != section_id:
+                    continue
+                updated = dict(section)
+                for key, value in changes.items():
+                    if key in {"scene_id", "fixture_mode"}:
+                        updated[key] = str(value)
+                    elif key in {"laser_enabled", "movers_enabled", "washes_enabled", "leds_enabled"}:
+                        updated[key] = bool(value)
+                    elif key in {"intensity_multiplier", "motion_multiplier", "strobe_level"}:
+                        try:
+                            updated[key] = float(value)
+                        except (TypeError, ValueError):
+                            continue
+                    elif key == "label":
+                        updated[key] = str(value)
+                self.show_sections[index] = updated
+                return dict(updated)
+        return None
 
 
 def get_shared_control_plane_service(create: bool = False) -> ControlPlaneStateService | None:
