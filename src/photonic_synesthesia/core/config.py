@@ -72,10 +72,14 @@ class ILDAConfig(BaseModel):
     """ILDA frame generation/export configuration."""
 
     enabled: bool = True
-    transport_type: str = "memory"  # "memory", "json", "ild"
+    transport_type: str = "memory"  # "memory", "json", "ild", "ether_dream"
     points_per_frame: int = 120
     target_fps: float = 30.0
     export_path: Path | None = None
+    ether_dream_host: str = "127.0.0.1"
+    ether_dream_port: int = 7765
+    ether_dream_timeout_s: float = 1.0
+    ether_dream_low_water_mark: int = 0
 
 
 class FixtureConfig(BaseModel):

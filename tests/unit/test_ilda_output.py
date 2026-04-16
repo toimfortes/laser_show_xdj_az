@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.state import MusicStructure, create_initial_state
@@ -128,3 +129,33 @@ def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
     data = export_path.read_bytes()
     assert data[:4] == b"ILDA"
     assert data[-32:-28] == b"ILDA"
+
+
+def test_ilda_output_streams_to_ether_dream_transport() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDAOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
+            [fixture],
+            LaserSafetyConfig(),
+            fixtures_dir=Path("config/fixtures"),
+        )
+        node.start()
+        state = create_initial_state()
+        result = node(state)
+        node.stop()
+
+    assert result["ilda_frames"]
+    fake_client.connect.assert_called_once()
+    fake_client.ensure_streaming.assert_called_once()
+    _, kwargs = fake_client.ensure_streaming.call_args
+    assert kwargs["point_rate"] == 600
+    fake_client.close.assert_called_once()

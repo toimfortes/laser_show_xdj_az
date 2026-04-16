@@ -11,6 +11,7 @@ from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSaf
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, MusicStructure, PhotonicState
 from photonic_synesthesia.laser import build_laser_profiles
+from photonic_synesthesia.laser.ether_dream import EtherDreamClient
 from photonic_synesthesia.laser.ilda_file import encode_ild
 
 logger = get_logger(__name__)
@@ -67,13 +68,22 @@ class ILDAOutputNode:
         ]
         self._running = False
         self._export_path = config.export_path
+        self._ether_dream: EtherDreamClient | None = None
 
     def start(self) -> None:
         self._running = True
         if self.config.transport_type == "json" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.config.transport_type == "ild" and self._export_path is not None:
+            self._export_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.config.transport_type == "ether_dream":
+            self._ether_dream = EtherDreamClient(self.config)
+            self._ether_dream.connect()
 
     def stop(self) -> None:
+        if self._ether_dream is not None:
+            self._ether_dream.close()
+            self._ether_dream = None
         self._running = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -96,6 +106,7 @@ class ILDAOutputNode:
             "points_per_frame": self.config.points_per_frame,
             "transport_type": self.config.transport_type,
             "export_path": str(self._export_path) if self._export_path else None,
+            "ether_dream_host": self.config.ether_dream_host if self.config.transport_type == "ether_dream" else None,
         }
 
     def _frame_for_fixture(self, fixture: FixtureConfig, state: PhotonicState) -> ILDAFrame:
@@ -258,9 +269,9 @@ class ILDAOutputNode:
         return points
 
     def _export_frames(self, frames: list[ILDAFrame]) -> None:
-        if self._export_path is None:
-            return
         if self.config.transport_type == "json":
+            if self._export_path is None:
+                return
             payload = {
                 "generated_at": time.time(),
                 "frames": frames,
@@ -268,4 +279,10 @@ class ILDAOutputNode:
             self._export_path.write_text(json.dumps(payload), encoding="utf-8")
             return
         if self.config.transport_type == "ild":
+            if self._export_path is None:
+                return
             self._export_path.write_bytes(encode_ild(frames))
+            return
+        if self.config.transport_type == "ether_dream" and self._ether_dream is not None and frames:
+            point_rate = max(1, int(self.config.target_fps * max(frame["point_count"] for frame in frames)))
+            self._ether_dream.ensure_streaming(frames[0], point_rate=point_rate)

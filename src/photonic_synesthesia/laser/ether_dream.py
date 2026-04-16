@@ -1,0 +1,170 @@
+"""Minimal Ether Dream DAC client and packet helpers."""
+
+from __future__ import annotations
+
+import socket
+import struct
+from dataclasses import dataclass
+
+from photonic_synesthesia.core.config import ILDAConfig
+from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint
+
+_ACK = 0x61
+_NAK_FULL = 0x46
+_NAK_INVALID = 0x49
+_NAK_STOP = 0x21
+_STATUS_SIZE = 20
+_RESPONSE_SIZE = 22
+
+
+def _u16(value: int) -> int:
+    return max(0, min(65535, int(value)))
+
+
+def _ilda_to_u16_color(value: int) -> int:
+    return _u16(int(value) * 257)
+
+
+def pack_prepare_command() -> bytes:
+    return b"p"
+
+
+def pack_ping_command() -> bytes:
+    return b"?"
+
+
+def pack_stop_command() -> bytes:
+    return b"s"
+
+
+def pack_begin_command(*, low_water_mark: int, point_rate: int) -> bytes:
+    return struct.pack("<BHI", 0x62, max(0, min(65535, low_water_mark)), max(1, point_rate))
+
+
+def pack_dac_point(point: ILDAPoint) -> bytes:
+    # Ether Dream blanking is represented by zeroed color/intensity channels.
+    # Bit 15 is reserved for point-rate changes, not shutter control.
+    control = 0
+    intensity = max(point["r"], point["g"], point["b"])
+    return struct.pack(
+        "<HhhHHHHHH",
+        control,
+        int(point["x"]),
+        int(point["y"]),
+        _ilda_to_u16_color(point["r"]),
+        _ilda_to_u16_color(point["g"]),
+        _ilda_to_u16_color(point["b"]),
+        _ilda_to_u16_color(intensity),
+        0,
+        0,
+    )
+
+
+def pack_write_data_command(points: list[ILDAPoint]) -> bytes:
+    header = struct.pack("<BH", 0x64, len(points))
+    return header + b"".join(pack_dac_point(point) for point in points)
+
+
+@dataclass(slots=True)
+class EtherDreamStatus:
+    protocol: int
+    light_engine_state: int
+    playback_state: int
+    source: int
+    light_engine_flags: int
+    playback_flags: int
+    source_flags: int
+    buffer_fullness: int
+    point_rate: int
+    point_count: int
+
+
+def parse_response(payload: bytes) -> tuple[int, int, EtherDreamStatus]:
+    response, command = struct.unpack_from("<BB", payload, 0)
+    status_values = struct.unpack_from("<BBBBHHHHII", payload, 2)
+    return response, command, EtherDreamStatus(*status_values)
+
+
+class EtherDreamClient:
+    """Small synchronous Ether Dream client suitable for graph-owned output."""
+
+    def __init__(self, config: ILDAConfig):
+        self.host = config.ether_dream_host
+        self.port = config.ether_dream_port
+        self.timeout_s = config.ether_dream_timeout_s
+        self.low_water_mark = config.ether_dream_low_water_mark
+        self._socket: socket.socket | None = None
+        self._prepared = False
+        self._playing = False
+
+    def connect(self) -> None:
+        if self._socket is not None:
+            return
+        sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
+        sock.settimeout(self.timeout_s)
+        self._socket = sock
+        self._recv_response()
+
+    def close(self) -> None:
+        if self._socket is None:
+            return
+        try:
+            self.stop()
+        except OSError:
+            pass
+        self._socket.close()
+        self._socket = None
+        self._prepared = False
+        self._playing = False
+
+    def ensure_streaming(self, frame: ILDAFrame, *, point_rate: int) -> None:
+        self.connect()
+        if not self._prepared:
+            self._send(pack_prepare_command(), expected_command=0x70)
+            self._prepared = True
+        self._send(pack_write_data_command(frame["points"]), expected_command=0x64)
+        if not self._playing:
+            self._send(
+                pack_begin_command(low_water_mark=self.low_water_mark, point_rate=point_rate),
+                expected_command=0x62,
+            )
+            self._playing = True
+
+    def stop(self) -> None:
+        if self._socket is None or not (self._prepared or self._playing):
+            return
+        self._send(pack_stop_command(), expected_command=0x73)
+        self._prepared = False
+        self._playing = False
+
+    def ping(self) -> EtherDreamStatus:
+        self.connect()
+        _, _, status = self._send(pack_ping_command(), expected_command=0x3F)
+        return status
+
+    def _send(self, payload: bytes, *, expected_command: int) -> tuple[int, int, EtherDreamStatus]:
+        if self._socket is None:
+            raise OSError("Ether Dream socket is not connected")
+        self._socket.sendall(payload)
+        response, command, status = self._recv_response()
+        if command != expected_command:
+            raise OSError(f"Unexpected Ether Dream response command {command:#x}")
+        if response != _ACK:
+            reason = {
+                _NAK_FULL: "buffer full",
+                _NAK_INVALID: "invalid command/state",
+                _NAK_STOP: "stop condition active",
+            }.get(response, f"unknown response {response:#x}")
+            raise OSError(f"Ether Dream rejected command: {reason}")
+        return response, command, status
+
+    def _recv_response(self) -> tuple[int, int, EtherDreamStatus]:
+        if self._socket is None:
+            raise OSError("Ether Dream socket is not connected")
+        payload = b""
+        while len(payload) < _RESPONSE_SIZE:
+            chunk = self._socket.recv(_RESPONSE_SIZE - len(payload))
+            if not chunk:
+                raise OSError("Ether Dream connection closed")
+            payload += chunk
+        return parse_response(payload)
