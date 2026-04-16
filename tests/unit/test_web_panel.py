@@ -183,6 +183,7 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
             show_plan_path=str(tmp_path / "show_plan.json"),
             ilda_transport_type="ild",
             ilda_export_path=str(ilda_path),
+            hardware_warnings=["Laser 'laser-main' is using inferred adapter data."],
             structure_markers=[
                 {"name": "Intro E:6", "kind": "intro", "start_seconds": 0.0, "energy_hint": 6},
                 {"name": "Drop E:8", "kind": "drop", "start_seconds": 4.0, "energy_hint": 8},
@@ -233,6 +234,7 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["waveform"] == [0.1, 0.5, 0.2]
     assert metadata["ilda_transport_type"] == "ild"
     assert metadata["ilda_export_available"] is True
+    assert metadata["hardware_warnings"] == ["Laser 'laser-main' is using inferred adapter data."]
     assert len(metadata["structure_markers"]) == 2
     assert metadata["show_sections"][0]["scene_id"] == "intro_ambient"
     assert metadata["playhead_seconds"] == 3.25

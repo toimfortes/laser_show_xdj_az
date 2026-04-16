@@ -1106,6 +1106,7 @@ def _validate_startup_config(settings: object, mock: bool = False) -> None:
     """
     from photonic_synesthesia.core.config import Settings, load_fixture_profile
     from photonic_synesthesia.core.exceptions import ConfigError, FixtureProfileError, SceneError
+    from photonic_synesthesia.laser import resolve_laser_profile
 
     if not isinstance(settings, Settings):
         raise ConfigError("Invalid settings object provided")
@@ -1122,6 +1123,20 @@ def _validate_startup_config(settings: object, mock: bool = False) -> None:
                 raise FixtureProfileError(fixture.profile, f"Profile not found at {profile_path}")
 
             profile = load_fixture_profile(profile_path)
+            if fixture.type == "laser":
+                resolved = resolve_laser_profile(fixture, settings.fixtures_dir)
+                commissioning_required = bool(
+                    resolved.safety.get("commissioning_required", False)
+                    or resolved.adapter_assumption
+                )
+                if commissioning_required and not settings.runtime_flags.allow_unverified_laser_profiles:
+                    raise FixtureProfileError(
+                        fixture.profile,
+                        (
+                            f"Fixture '{fixture.id}' requires commissioning or verified mapping before live use. "
+                            "Set PHOTONIC_RUNTIME_FLAGS__ALLOW_UNVERIFIED_LASER_PROFILES=true only for explicit override."
+                        ),
+                    )
             channel_count = profile.get("channels")
             if isinstance(channel_count, int) and channel_count > 0:
                 end_channel = fixture.start_address + channel_count - 1
@@ -1337,6 +1352,14 @@ def run_file(
         if matched_rekordbox_track
         else audio_file.stem
     )
+    hardware_warnings: list[str] = []
+    from photonic_synesthesia.laser import build_laser_profiles
+    for fixture_id, profile in build_laser_profiles(settings.fixtures, settings.fixtures_dir).items():
+        if profile.adapter_assumption:
+            hardware_warnings.append(
+                f"Laser '{fixture_id}' is using inferred adapter data. "
+                "Keep ILDA primary and overhead-only until the real mapping is commissioned."
+            )
     persisted_show_plan = load_show_plan(track_key)
     active_show_sections = (
         list(persisted_show_plan.get("show_sections", []))
@@ -1401,6 +1424,7 @@ def run_file(
                     ),
                     ilda_transport_type=settings.ilda.transport_type,
                     ilda_export_path=str(settings.ilda.export_path or ""),
+                    hardware_warnings=hardware_warnings,
                     _seek_callback=audio_node.seek,
                     _save_callback=lambda payload: str(save_show_plan(track_key, payload)),
                 )

@@ -161,6 +161,7 @@ class RuntimeFlagsConfig(BaseModel):
     hybrid_pacing: bool = True
     streaming_dsp: bool = False
     dual_loop: bool = False
+    allow_unverified_laser_profiles: bool = False
 
 
 class Settings(BaseSettings):

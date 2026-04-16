@@ -34,6 +34,7 @@ class PlaybackContext:
     show_plan_path: str = ""
     ilda_transport_type: str = "memory"
     ilda_export_path: str = ""
+    hardware_warnings: list[str] = field(default_factory=list)
     playhead_seconds: float = 0.0
     playing: bool = False
     finished: bool = False
@@ -81,6 +82,7 @@ class PlaybackContext:
                 "ilda_transport_type": self.ilda_transport_type,
                 "ilda_export_path": self.ilda_export_path,
                 "ilda_export_available": export_available,
+                "hardware_warnings": list(self.hardware_warnings),
                 "ilda_export_url": (
                     f"/api/mock/playback/ilda-export?session={self.session_id}"
                     if export_available

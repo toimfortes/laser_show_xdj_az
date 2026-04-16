@@ -1297,6 +1297,13 @@ function updateRuntimeSummary() {
     parts.push(`BPM ${round(bpm, 1)}`);
   }
 
+  const hardwareWarnings = Array.isArray(appState.playback?.hardware_warnings)
+    ? appState.playback.hardware_warnings
+    : [];
+  if (hardwareWarnings.length > 0) {
+    parts.push(`Hardware warning: ${hardwareWarnings[0]}`);
+  }
+
   qs("runtime-summary").textContent = parts.join(" · ");
 }
 

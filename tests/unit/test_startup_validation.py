@@ -68,3 +68,39 @@ def test_startup_validation_allows_valid_single_fixture_config() -> None:
     )
 
     _validate_startup_config(settings, mock=False)
+
+
+def test_startup_validation_rejects_unverified_hybrid_laser_in_live_mode() -> None:
+    settings = Settings(
+        fixtures=[
+            FixtureConfig(
+                id="laser-main",
+                name="Main Festival Laser",
+                type="laser",
+                profile="laser_aucd_cx338b_hybrid",
+                start_address=1,
+                enabled=True,
+            )
+        ]
+    )
+
+    with pytest.raises(FixtureProfileError):
+        _validate_startup_config(settings, mock=False)
+
+
+def test_startup_validation_allows_unverified_hybrid_laser_with_override() -> None:
+    settings = Settings(
+        fixtures=[
+            FixtureConfig(
+                id="laser-main",
+                name="Main Festival Laser",
+                type="laser",
+                profile="laser_aucd_cx338b_hybrid",
+                start_address=1,
+                enabled=True,
+            )
+        ]
+    )
+    settings.runtime_flags.allow_unverified_laser_profiles = True
+
+    _validate_startup_config(settings, mock=False)
