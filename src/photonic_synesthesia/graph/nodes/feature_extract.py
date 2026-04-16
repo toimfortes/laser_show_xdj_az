@@ -41,6 +41,10 @@ class FeatureExtractNode:
     - Spectral flux (rate of change)
     - Spectral rolloff (frequency below which X% of energy exists)
     - Band energies (low/mid/high frequency bands)
+    - Harmonic/percussive balance
+    - Tonal stability and harmonic change
+    - Pitch salience / approximate pitch height
+    - Timbral harshness
     - MFCCs (timbral fingerprint)
     """
 
@@ -104,6 +108,8 @@ class FeatureExtractNode:
 
     def _extract_features(self, y: NDArray, sr: int) -> AudioFeatures:
         """Extract all audio features from signal."""
+        spectrum = np.abs(librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length))
+
         # RMS energy
         rms = librosa.feature.rms(y=y, frame_length=self.n_fft, hop_length=self.hop_length)
         rms_mean = float(np.mean(rms))
@@ -126,6 +132,13 @@ class FeatureExtractNode:
         )
         flux_mean = float(np.mean(onset_env))
 
+        harmonic_spectrum, percussive_spectrum = librosa.decompose.hpss(spectrum, margin=2.0)
+        harmonic_energy = float(np.mean(harmonic_spectrum))
+        percussive_energy = float(np.mean(percussive_spectrum))
+        total_hp_energy = max(harmonic_energy + percussive_energy, 1e-6)
+        harmonic_ratio = harmonic_energy / total_hp_energy
+        percussive_ratio = percussive_energy / total_hp_energy
+
         # Mel spectrogram for band energies
         mel = librosa.feature.melspectrogram(
             y=y, sr=sr, n_fft=self.n_fft, hop_length=self.hop_length, n_mels=self.n_mels
@@ -141,6 +154,56 @@ class FeatureExtractNode:
         mid_energy = float(np.mean(mel[low_bins:mid_bins, :]))
         high_energy = float(np.mean(mel[mid_bins:, :]))
 
+        chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=self.hop_length)
+        if chroma.shape[1] > 1:
+            chroma_delta = np.abs(np.diff(chroma, axis=1))
+            harmonic_change = float(np.mean(chroma_delta))
+            tonal_stability = float(np.clip(1.0 - (harmonic_change * 1.6), 0.0, 1.0))
+        else:
+            harmonic_change = 0.0
+            tonal_stability = 0.0
+
+        tonnetz = librosa.feature.tonnetz(y=librosa.effects.harmonic(y), sr=sr)
+        if tonnetz.shape[1] > 1:
+            tonnetz_delta = np.linalg.norm(np.diff(tonnetz, axis=1), axis=0)
+            harmonic_change = float(np.clip((harmonic_change * 0.6) + (float(np.mean(tonnetz_delta)) * 0.4), 0.0, 1.0))
+            tonal_stability = float(np.clip(1.0 - harmonic_change, 0.0, 1.0))
+
+        pitches, magnitudes = librosa.piptrack(
+            S=harmonic_spectrum,
+            sr=sr,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            fmin=60.0,
+            fmax=2000.0,
+        )
+        frame_max_magnitudes = np.max(magnitudes, axis=0) if magnitudes.size else np.array([0.0])
+        overall_max_magnitude = max(float(np.max(magnitudes)) if magnitudes.size else 0.0, 1e-6)
+        pitch_salience = float(np.clip(np.mean(frame_max_magnitudes) / overall_max_magnitude, 0.0, 1.0))
+        if magnitudes.size and np.any(frame_max_magnitudes > 0):
+            dominant_indices = np.argmax(magnitudes, axis=0)
+            dominant_pitches = pitches[dominant_indices, np.arange(pitches.shape[1])]
+            valid_pitches = dominant_pitches[dominant_pitches > 0]
+            if valid_pitches.size > 0:
+                median_pitch = float(np.median(valid_pitches))
+                pitch_height = float(np.clip((median_pitch - 80.0) / (1200.0 - 80.0), 0.0, 1.0))
+            else:
+                pitch_height = 0.0
+        else:
+            pitch_height = 0.0
+
+        flatness = librosa.feature.spectral_flatness(S=np.maximum(spectrum, 1e-10))
+        flatness_mean = float(np.mean(flatness))
+        centroid_norm = float(np.clip(centroid_mean / max(sr / 2.0, 1.0), 0.0, 1.0))
+        high_band_ratio = high_energy / max(low_energy + mid_energy + high_energy, 1e-6)
+        timbral_harshness = float(
+            np.clip(
+                (centroid_norm * 0.42) + (flatness_mean * 0.33) + (high_band_ratio * 0.25),
+                0.0,
+                1.0,
+            )
+        )
+
         # MFCCs (timbral fingerprint)
         mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=self.n_mfcc)
         mfcc_vector = mfcc.mean(axis=1).tolist()
@@ -153,6 +216,13 @@ class FeatureExtractNode:
             low_energy=low_energy,
             mid_energy=mid_energy,
             high_energy=high_energy,
+            harmonic_ratio=harmonic_ratio,
+            percussive_ratio=percussive_ratio,
+            tonal_stability=tonal_stability,
+            harmonic_change=harmonic_change,
+            pitch_salience=pitch_salience,
+            pitch_height=pitch_height,
+            timbral_harshness=timbral_harshness,
             mfcc_vector=mfcc_vector,
         )
 
@@ -166,6 +236,13 @@ class FeatureExtractNode:
             low_energy=0.0,
             mid_energy=0.0,
             high_energy=0.0,
+            harmonic_ratio=0.0,
+            percussive_ratio=0.0,
+            tonal_stability=0.0,
+            harmonic_change=0.0,
+            pitch_salience=0.0,
+            pitch_height=0.0,
+            timbral_harshness=0.0,
             mfcc_vector=[0.0] * self.n_mfcc,
         )
         return state

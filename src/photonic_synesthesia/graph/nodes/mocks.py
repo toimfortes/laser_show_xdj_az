@@ -95,6 +95,13 @@ class MockAudioSenseNode:
             low_energy=0.6 + 0.3 * math.sin(beat_phase * math.pi),
             mid_energy=0.4,
             high_energy=0.2,
+            harmonic_ratio=0.65 + 0.15 * math.sin(t * 0.17),
+            percussive_ratio=0.35 + 0.15 * math.cos(t * 0.21),
+            tonal_stability=0.72 + 0.12 * math.sin(t * 0.09),
+            harmonic_change=0.22 + 0.18 * math.sin(t * 0.31),
+            pitch_salience=0.58 + 0.2 * math.sin(t * 0.13),
+            pitch_height=0.46 + 0.18 * math.sin(t * 0.11),
+            timbral_harshness=0.3 + 0.28 * math.sin(t * 0.27),
             mfcc_vector=[0.0] * 13,
         )
 

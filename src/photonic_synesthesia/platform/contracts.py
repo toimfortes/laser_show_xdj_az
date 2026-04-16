@@ -137,6 +137,13 @@ class SemanticFrame(BaseModel):
     beat_confidence: float = 0.0
     downbeat: bool = False
     drop_probability: float = 0.0
+    harmonic_ratio: float = 0.0
+    percussive_ratio: float = 0.0
+    tonal_stability: float = 0.0
+    harmonic_change: float = 0.0
+    pitch_salience: float = 0.0
+    pitch_height: float = 0.0
+    timbral_harshness: float = 0.0
 
 
 class DirectorSummary(BaseModel):
@@ -147,6 +154,9 @@ class DirectorSummary(BaseModel):
     color_theme: str = "neutral"
     movement_style: str = "steady"
     strobe_budget_hz: float = 0.0
+    melodic_smoothness: float = 0.0
+    laser_aggression: float = 0.0
+    color_drive: float = 0.0
     allow_scene_transition: bool = True
 
 

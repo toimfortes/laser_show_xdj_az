@@ -45,3 +45,6 @@ def test_director_energy_is_bounded() -> None:
     decision = DirectorEngine().decide(state)
 
     assert 0.0 <= decision.energy_level <= 1.0
+    assert 0.0 <= decision.melodic_smoothness <= 1.0
+    assert 0.0 <= decision.laser_aggression <= 1.0
+    assert 0.0 <= decision.color_drive <= 1.0

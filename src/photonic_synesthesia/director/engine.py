@@ -20,6 +20,9 @@ class DirectorDecision:
     color_theme: str
     movement_style: str
     strobe_budget_hz: float
+    melodic_smoothness: float
+    laser_aggression: float
+    color_drive: float
     allow_scene_transition: bool
 
 
@@ -66,12 +69,16 @@ class DirectorEngine:
         else:
             movement_style = "steady"
 
+        melodic_smoothness = self._compute_melodic_smoothness(state)
+        laser_aggression = self._compute_laser_aggression(state, structure)
+        color_drive = self._compute_color_drive(state)
+
         strobe_budget = 0.0
         if structure == MusicStructure.DROP:
             # Keep a conservative ceiling for safety.
-            strobe_budget = 8.0 + (energy * 2.0)
+            strobe_budget = 5.5 + (energy * 1.6) + (laser_aggression * 2.4)
         elif structure == MusicStructure.BUILDUP:
-            strobe_budget = 3.0 + (energy * 2.0)
+            strobe_budget = 1.8 + (energy * 1.2) + (laser_aggression * 1.4)
 
         return DirectorDecision(
             target_scene=target_scene,
@@ -79,6 +86,9 @@ class DirectorEngine:
             color_theme=color_theme,
             movement_style=movement_style,
             strobe_budget_hz=min(12.0, max(0.0, strobe_budget)),
+            melodic_smoothness=melodic_smoothness,
+            laser_aggression=laser_aggression,
+            color_drive=color_drive,
             allow_scene_transition=allow_transition,
         )
 
@@ -103,6 +113,38 @@ class DirectorEngine:
         beat_confidence = float(state["beat_info"]["confidence"])
         weighted = (audio_energy * 0.65) + (transient * 0.25) + (beat_confidence * 0.10)
         return min(1.0, max(0.0, weighted))
+
+    def _compute_melodic_smoothness(self, state: PhotonicState) -> float:
+        features = state["audio_features"]
+        smoothness = (
+            float(features["harmonic_ratio"]) * 0.45
+            + float(features["tonal_stability"]) * 0.3
+            + float(features["pitch_salience"]) * 0.15
+            + (1.0 - float(features["timbral_harshness"])) * 0.1
+        )
+        return min(1.0, max(0.0, smoothness))
+
+    def _compute_laser_aggression(self, state: PhotonicState, structure: MusicStructure) -> float:
+        features = state["audio_features"]
+        aggression = (
+            float(features["percussive_ratio"]) * 0.34
+            + float(features["timbral_harshness"]) * 0.28
+            + float(features["spectral_flux"]) * 0.18
+            + float(state["rule_stream"]["transient"]) * 0.12
+            + (0.12 if structure == MusicStructure.DROP else 0.04 if structure == MusicStructure.BUILDUP else 0.0)
+        )
+        return min(1.0, max(0.0, aggression))
+
+    def _compute_color_drive(self, state: PhotonicState) -> float:
+        features = state["audio_features"]
+        drive = (
+            float(features["harmonic_change"]) * 0.42
+            + float(features["pitch_salience"]) * 0.18
+            + float(features["pitch_height"]) * 0.1
+            + float(features["spectral_flux"]) * 0.15
+            + float(features["spectral_centroid"] / 12000.0) * 0.15
+        )
+        return min(1.0, max(0.0, drive))
 
     def _at_phrase_boundary(self, state: PhotonicState) -> bool:
         beat = state["beat_info"]

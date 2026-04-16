@@ -22,6 +22,16 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
             state = create_initial_state()
             state["scene_state"]["current_scene"] = "drop_intense"
             state["frame_number"] = 7
+            state["audio_features"]["harmonic_ratio"] = 0.72
+            state["audio_features"]["percussive_ratio"] = 0.28
+            state["audio_features"]["tonal_stability"] = 0.84
+            state["audio_features"]["harmonic_change"] = 0.18
+            state["audio_features"]["pitch_salience"] = 0.66
+            state["audio_features"]["pitch_height"] = 0.58
+            state["audio_features"]["timbral_harshness"] = 0.22
+            state["director_state"]["melodic_smoothness"] = 0.79
+            state["director_state"]["laser_aggression"] = 0.31
+            state["director_state"]["color_drive"] = 0.48
             return state
 
     service = ControlPlaneStateService()
@@ -37,6 +47,10 @@ def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> No
     assert snapshot["scene_state"]["current_scene"] == "drop_intense"
     assert service.snapshot().active_scene_id == "drop_intense"
     assert service.snapshot().diagnostics["frame_number"] == 7
+    assert service.snapshot().semantic_frame.harmonic_ratio == 0.72
+    assert service.snapshot().semantic_frame.pitch_salience == 0.66
+    assert service.snapshot().director_summary.melodic_smoothness == 0.79
+    assert service.snapshot().director_summary.laser_aggression == 0.31
 
 
 def test_web_panel_uses_shared_control_plane_service_by_default() -> None:

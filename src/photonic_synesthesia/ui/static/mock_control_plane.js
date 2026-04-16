@@ -989,22 +989,38 @@ function describeFixtureActivity(fixture, output, visual) {
 function laserBeamColor(baseColor, laserExpression, output, visual) {
   const mode = safeText(laserExpression.color_mode, "static");
   const whiteAccent = clamp(Number(laserExpression.white_accent || 0), 0, 1);
-  const cycleRate = Number(laserExpression.color_cycle_rate || 1);
+  const cycleRate = Number(laserExpression.color_cycle_rate || 1) * (0.75 + visual.colorDrive * 0.85);
   const phase = Number(output.phase || 0);
 
   if (mode === "white_hits") {
-    const mix = clamp((visual.beatPulse * 0.75) + (visual.strobeActive ? 0.35 : 0) + whiteAccent * 0.25, 0, 1);
+    const mix = clamp(
+      (visual.beatPulse * 0.55)
+        + (visual.strobeActive ? 0.28 : 0)
+        + whiteAccent * 0.18
+        + visual.laserAggression * 0.2
+        + visual.timbralHarshness * 0.14,
+      0,
+      1,
+    );
     return mixColor(baseColor, "#ffffff", mix);
   }
   if (mode === "morph") {
-    const target = shiftColor(baseColor, { r: 25, g: -35, b: 55 });
-    const mix = ((Math.sin(phase * cycleRate) + 1) * 0.5);
-    return mixColor(baseColor, rgbString(target), mix);
+    const target = shiftColor(baseColor, {
+      r: 15 + visual.pitchHeight * 55,
+      g: -45 + visual.harmonicChange * 30,
+      b: 35 + visual.melodicSmoothness * 45,
+    });
+    const mix = ((Math.sin(phase * cycleRate) + 1) * 0.5) * (0.45 + visual.colorDrive * 0.6);
+    return mixColor(baseColor, target, mix);
   }
   if (mode === "dual_cycle") {
-    const alt = shiftColor(baseColor, { r: -30, g: 55, b: 35 });
-    const mix = triangleWave(phase * cycleRate * 0.8);
-    return mixColor(baseColor, rgbString(alt), mix);
+    const alt = shiftColor(baseColor, {
+      r: -30 + visual.timbralHarshness * 35,
+      g: 35 + visual.melodicSmoothness * 45,
+      b: 20 + visual.pitchSalience * 65,
+    });
+    const mix = triangleWave(phase * cycleRate * 0.8) * (0.35 + visual.colorDrive * 0.7);
+    return mixColor(baseColor, alt, mix);
   }
   return hexToRgb(baseColor);
 }
@@ -1016,6 +1032,16 @@ function runtimeVisualState(timeSeconds) {
   const semantic = appState.runtimeSnapshot?.semantic_frame || {};
   const director = appState.runtimeSnapshot?.director_summary || {};
   const beatConfidence = clamp(Number(semantic.beat_confidence ?? 0), 0, 1);
+  const harmonicRatio = clamp(Number(semantic.harmonic_ratio ?? 0.5), 0, 1);
+  const percussiveRatio = clamp(Number(semantic.percussive_ratio ?? (1 - harmonicRatio)), 0, 1);
+  const tonalStability = clamp(Number(semantic.tonal_stability ?? 0.5), 0, 1);
+  const harmonicChange = clamp(Number(semantic.harmonic_change ?? 0.0), 0, 1);
+  const pitchSalience = clamp(Number(semantic.pitch_salience ?? 0.0), 0, 1);
+  const pitchHeight = clamp(Number(semantic.pitch_height ?? 0.0), 0, 1);
+  const timbralHarshness = clamp(Number(semantic.timbral_harshness ?? 0.0), 0, 1);
+  const melodicSmoothness = clamp(Number(director.melodic_smoothness ?? ((harmonicRatio * 0.55) + (tonalStability * 0.45))), 0, 1);
+  const laserAggression = clamp(Number(director.laser_aggression ?? ((percussiveRatio * 0.55) + (timbralHarshness * 0.45))), 0, 1);
+  const colorDrive = clamp(Number(director.color_drive ?? ((harmonicChange * 0.6) + (pitchSalience * 0.4))), 0, 1);
   const sectionIntensity = clamp(Number(showSection?.intensity_multiplier ?? 1), 0, 1.6);
   const energy = clamp(Number(director.energy_level ?? scene.pulse ?? 0.4) * Math.max(0.45, sectionIntensity), 0, 1);
   const beatPhase = clamp(
@@ -1029,10 +1055,10 @@ function runtimeVisualState(timeSeconds) {
   const structure = safeText(showSection?.kind || semantic.structure, "unknown").toLowerCase();
   const movementStyle = safeText(director.movement_style, "steady").toLowerCase();
   const motionScale = movementStyle === "aggressive"
-    ? 1.45
+    ? 1.35 + (laserAggression * 0.35)
     : movementStyle === "sparse"
-      ? 0.62
-      : 1.0;
+      ? 0.58 + (melodicSmoothness * 0.12)
+      : 0.92 + (colorDrive * 0.15);
   const sectionMotionMultiplier = clamp(Number(showSection?.motion_multiplier ?? 1), 0.15, 2.4);
   const structureBoost = structure === "drop"
     ? 1.0
@@ -1062,6 +1088,7 @@ function runtimeVisualState(timeSeconds) {
       + (energy * 0.36)
       + (beatPulse * 0.34)
       + (structureBoost * 0.18)
+      + (colorDrive * 0.12)
       + (semantic.downbeat ? 0.16 : 0),
     0.12,
     1.45,
@@ -1083,6 +1110,16 @@ function runtimeVisualState(timeSeconds) {
     beatPhase,
     beatPulse,
     beatConfidence,
+    harmonicRatio,
+    percussiveRatio,
+    tonalStability,
+    harmonicChange,
+    pitchSalience,
+    pitchHeight,
+    timbralHarshness,
+    melodicSmoothness,
+    laserAggression,
+    colorDrive,
     structure,
     motionStyle: movementStyle,
     motionRate,
@@ -1473,21 +1510,28 @@ function fixtureOutput(fixture, visual) {
         ? -0.2 - Number(laserExpression.ceiling_bias || 0) * 0.18
         : -0.02;
     const beamColor = laserBeamColor(color, laserExpression, { phase, intensity: patternIntensity }, visual);
+    const melodicSweepBias = 0.72 + visual.melodicSmoothness * 0.45;
+    const aggressionSweepBias = 0.75 + visual.laserAggression * 0.5;
+    const expressionTargetBias = targetBias === "crowd"
+      ? targetYBias + visual.timbralHarshness * 0.05
+      : targetBias === "ceiling"
+        ? targetYBias - visual.melodicSmoothness * 0.08
+        : targetYBias - visual.melodicSmoothness * 0.03 + visual.laserAggression * 0.02;
     return {
       type: "laser",
       color: beamColor,
       intensity: patternIntensity * clamp(Number(laserVariant.gate_sharpness || 1), 0.55, 1.75),
-      sweep: patternSweep * Number(laserExpression.x_amplitude || 1),
+      sweep: patternSweep * Number(laserExpression.x_amplitude || 1) * aggressionSweepBias,
       spread: fixture.spread * (dropMode ? 1.85 : rebuildMode ? 1.15 : 0.95) * patternSpread * geometrySpread * Number(laserVariant.spread_scale || 1),
       beamCount: clamp(Math.round(variantBeamCount * Number(laserExpression.sweep_density || 1)), 1, 12),
       shimmer: visual.beatPulse,
-      verticalSweep: variantVertical * Number(laserExpression.y_amplitude || 1),
+      verticalSweep: variantVertical * Number(laserExpression.y_amplitude || 1) * melodicSweepBias,
       rotation: variantRotation * Number(laserExpression.rotation_rate || 1),
       dropMode,
       pattern: laserPattern,
       variantLabel: safeText(laserVariant.label, ""),
       expressionLabel: safeText(laserExpression.label, ""),
-      targetYBias,
+      targetYBias: expressionTargetBias,
       mirror: Boolean(laserExpression.mirror),
       phase,
     };
