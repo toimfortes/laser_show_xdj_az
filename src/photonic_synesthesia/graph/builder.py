@@ -132,8 +132,9 @@ class PhotonicGraph:
             control_state["blackout_active"] = True
             self._request_blackout()
         elif command.command_type == CommandType.CLEAR_BLACKOUT:
-            control_state["blackout_active"] = False
-            self._clear_blackout()
+            if control_state["armed_live"]:
+                control_state["blackout_active"] = False
+                self._clear_blackout()
         elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
             intensity = float(command.payload.get("intensity", control_state["global_intensity"]))
             control_state["global_intensity"] = max(0.0, min(1.0, intensity))

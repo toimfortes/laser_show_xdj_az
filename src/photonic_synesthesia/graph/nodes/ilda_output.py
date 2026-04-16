@@ -186,6 +186,7 @@ class ILDAOutputNode:
         safety_state = state["safety_state"]
         return bool(
             self._blackout_requested
+            or not control_state["armed_live"]
             or control_state["blackout_active"]
             or safety_state["emergency_stop"]
             or not safety_state["laser_enabled"]

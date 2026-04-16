@@ -378,7 +378,7 @@ def create_initial_state() -> PhotonicState:
         ),
         # Operator Controls
         control_state=ControlState(
-            armed_live=True,
+            armed_live=False,
             blackout_active=False,
             global_intensity=1.0,
             global_speed=1.0,

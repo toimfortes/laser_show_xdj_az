@@ -263,10 +263,12 @@ class ControlPlaneStateService:
                 self._armed_live = True
             elif command.command_type == CommandType.DISARM:
                 self._armed_live = False
+                self._blackout_active = True
             elif command.command_type == CommandType.BLACKOUT:
                 self._blackout_active = True
             elif command.command_type == CommandType.CLEAR_BLACKOUT:
-                self._blackout_active = False
+                if self._armed_live:
+                    self._blackout_active = False
             elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
                 intensity = float(command.payload.get("intensity", self._global_intensity))
                 self._global_intensity = max(0.0, min(1.0, intensity))

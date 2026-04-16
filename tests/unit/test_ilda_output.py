@@ -15,6 +15,12 @@ from photonic_synesthesia.platform.runtime_context import (
 )
 
 
+def _armed_state():
+    state = create_initial_state()
+    state["control_state"]["armed_live"] = True
+    return state
+
+
 def test_ilda_output_generates_frame_for_hybrid_laser() -> None:
     fixture = FixtureConfig(
         id="laser-main",
@@ -30,7 +36,7 @@ def test_ilda_output_generates_frame_for_hybrid_laser() -> None:
         LaserSafetyConfig(y_axis_max=96),
         fixtures_dir=Path("config/fixtures"),
     )
-    state = create_initial_state()
+    state = _armed_state()
     state["current_structure"] = MusicStructure.DROP
     state["fused_bpm"] = 126.0
     state["beat_info"]["beat_phase"] = 0.08
@@ -133,7 +139,7 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
         speed=1.0,
     )
 
-    state = create_initial_state()
+    state = _armed_state()
     state["current_structure"] = MusicStructure.DROP
     state["beat_info"]["downbeat"] = False
     state["beat_info"]["bar_position"] = 2
@@ -201,7 +207,7 @@ def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
         speed=1.0,
     )
 
-    state = create_initial_state()
+    state = _armed_state()
     state["current_structure"] = MusicStructure.DROP
     state["director_state"]["subphrase_role"] = "fill"
 
@@ -230,7 +236,7 @@ def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
         fixtures_dir=Path("config/fixtures"),
     )
     node.start()
-    state = create_initial_state()
+    state = _armed_state()
     result = node(state)
 
     assert result["ilda_frames"]
@@ -282,7 +288,7 @@ def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
         fixtures_dir=Path("config/fixtures"),
     )
     node.start()
-    state = create_initial_state()
+    state = _armed_state()
     result = node(state)
 
     assert result["ilda_frames"]
@@ -310,12 +316,12 @@ def test_ilda_output_ild_export_accumulates_timeline_frames(tmp_path: Path) -> N
     )
     node.start()
 
-    first_state = create_initial_state()
+    first_state = _armed_state()
     first_state["current_structure"] = MusicStructure.BREAKDOWN
     first_result = node(first_state)
     first_frames = copy.deepcopy(first_result["ilda_frames"])
 
-    second_state = create_initial_state()
+    second_state = _armed_state()
     second_state["current_structure"] = MusicStructure.DROP
     second_state["director_state"]["laser_aggression"] = 0.9
     second_result = node(second_state)
@@ -344,7 +350,7 @@ def test_ilda_output_streams_to_ether_dream_transport() -> None:
             fixtures_dir=Path("config/fixtures"),
         )
         node.start()
-        state = create_initial_state()
+        state = _armed_state()
         result = node(state)
         node.stop()
 
@@ -387,7 +393,7 @@ def test_ilda_output_streams_all_ilda_fixtures_to_ether_dream_transport() -> Non
             fixtures_dir=Path("config/fixtures"),
         )
         node.start()
-        state = create_initial_state()
+        state = _armed_state()
         result = node(state)
         node.stop()
 
@@ -424,7 +430,7 @@ def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
             fixtures_dir=Path("config/fixtures"),
         )
         node.start()
-        state = create_initial_state()
+        state = _armed_state()
         node(state)
         assert node.get_stats()["ether_dream_faulted"] is True
 
@@ -470,3 +476,27 @@ def test_ilda_output_blackout_blanks_frames_and_streams_blank_transport() -> Non
     streamed_frame = args[0]
     assert streamed_frame["geometry_family"] == "composite"
     assert all(point["blanked"] for point in streamed_frame["points"])
+
+
+def test_ilda_output_blanks_frames_when_disarmed() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=24),
+        [fixture],
+        LaserSafetyConfig(),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    state = create_initial_state()
+
+    result = node(state)
+
+    frame = result["ilda_frames"][0]
+    assert frame["geometry_family"] == "blank"
+    assert all(point["blanked"] for point in frame["points"])

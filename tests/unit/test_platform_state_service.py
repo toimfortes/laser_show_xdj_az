@@ -65,3 +65,9 @@ def test_state_service_accept_command_applies_effects() -> None:
 
     assert snapshot.effective_global_intensity == 0.4
     assert snapshot.pending_scene_id == "intro_ambient"
+
+
+def test_initial_state_starts_disarmed() -> None:
+    state = create_initial_state()
+
+    assert state["control_state"]["armed_live"] is False

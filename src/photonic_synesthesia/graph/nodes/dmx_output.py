@@ -243,7 +243,15 @@ class DMXOutputNode:
     def __call__(self, state: PhotonicState) -> PhotonicState:
         """Apply fixture commands to DMX universe."""
         start_time = time.time()
-        if self._blackout_requested.is_set():
+        control_state = state["control_state"]
+        safety_state = state["safety_state"]
+        should_blackout = (
+            self._blackout_requested.is_set()
+            or not control_state["armed_live"]
+            or control_state["blackout_active"]
+            or safety_state["emergency_stop"]
+        )
+        if should_blackout:
             blackout = create_universe_buffer()
             with self._lock:
                 self._universe = blackout

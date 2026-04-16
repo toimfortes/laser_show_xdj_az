@@ -77,3 +77,33 @@ def test_graph_consumes_scene_launch_and_hold_commands() -> None:
 
     assert graph.state["control_state"]["launched_scene"] == "intro_ambient"
     assert graph.state["control_state"]["scene_hold"] == "drop_intense"
+
+
+def test_graph_does_not_clear_blackout_while_disarmed() -> None:
+    service = ControlPlaneStateService()
+    dmx_output = mock.MagicMock()
+    ilda_output = mock.MagicMock()
+    graph = PhotonicGraph(
+        graph=_IdentityGraph(),
+        settings=Settings(),
+        nodes={"dmx_output": dmx_output, "ilda_output": ilda_output},
+        control_plane_service=service,
+    )
+    graph._state = create_initial_state()
+    graph._state["control_state"]["armed_live"] = False
+    graph._state["control_state"]["blackout_active"] = True
+
+    service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.CLEAR_BLACKOUT,
+        )
+    )
+
+    graph.step()
+
+    assert graph.state["control_state"]["blackout_active"] is True
+    dmx_output.clear_blackout_request.assert_not_called()
+    ilda_output.clear_blackout_request.assert_not_called()

@@ -30,6 +30,13 @@ from photonic_synesthesia.dmx.universe import DMX_START_CODE, create_universe_bu
 from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNode
 
+
+def _armed_state():
+    state = create_initial_state()
+    state["control_state"]["armed_live"] = True
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Finite-value guard
 # ---------------------------------------------------------------------------
@@ -38,7 +45,7 @@ from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNod
 def test_dmx_output_rejects_nan_channel_value() -> None:
     """NaN values must be silently dropped; existing channels stay unchanged."""
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
@@ -61,7 +68,7 @@ def test_dmx_output_rejects_nan_channel_value() -> None:
 def test_dmx_output_rejects_inf_channel_value() -> None:
     """Inf values must be silently dropped; existing channels stay unchanged."""
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
@@ -84,7 +91,7 @@ def test_dmx_output_rejects_inf_channel_value() -> None:
 
 def test_dmx_output_request_blackout_latches_zero_universe() -> None:
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
@@ -96,7 +103,7 @@ def test_dmx_output_request_blackout_latches_zero_universe() -> None:
     assert node.get_stats()["blackout_requested"] is False
 
     node.request_blackout()
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
