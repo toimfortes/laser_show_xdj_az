@@ -417,3 +417,99 @@ def test_run_file_web_startup_failure_preserves_original_error(tmp_path: Path) -
     assert result.exit_code == 1
     assert "decode failed" in result.output
     assert "UnboundLocalError" not in result.output
+
+
+def test_run_file_applies_ether_dream_cli_overrides(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.core.state import create_initial_state
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    captured: dict[str, object] = {}
+
+    class _FakeGraph:
+        def __init__(self, audio_node: AudioFileSenseNode) -> None:
+            self._running = True
+            self._audio_node = audio_node
+
+        def start(self) -> None:
+            self._audio_node.start()
+
+        def step(self):  # type: ignore[no-untyped-def]
+            state = create_initial_state()
+            state = self._audio_node(state)
+            if self._audio_node.finished:
+                self._running = False
+            return state
+
+        def stop(self) -> None:
+            self._running = False
+            self._audio_node.stop()
+
+    def _fake_build(settings, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["transport_type"] = settings.ilda.transport_type
+        captured["host"] = settings.ilda.ether_dream_host
+        captured["port"] = settings.ilda.ether_dream_port
+        return _FakeGraph(kwargs["node_overrides"]["audio_sense"])
+
+    with mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run-file",
+                str(audio_path),
+                "--offline",
+                "--fps",
+                "10",
+                "--ilda-transport",
+                "ether_dream",
+                "--ether-dream-host",
+                "192.0.2.10",
+                "--ether-dream-port",
+                "9001",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "ILDA Transport: Ether Dream 192.0.2.10:9001" in result.output
+    assert captured["transport_type"] == "ether_dream"
+    assert captured["host"] == "192.0.2.10"
+    assert captured["port"] == 9001
+
+
+def test_run_file_rejects_invalid_ether_dream_port(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run-file",
+            str(audio_path),
+            "--ilda-transport",
+            "ether_dream",
+            "--ether-dream-port",
+            "70000",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--ether-dream-port must be between 1 and 65535" in result.output

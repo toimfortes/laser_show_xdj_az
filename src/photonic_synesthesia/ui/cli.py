@@ -1276,6 +1276,21 @@ def run(ctx: click.Context, mock: bool, fps: float) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="Optional Rekordbox XML export used to match the song and import structure markers",
 )
+@click.option(
+    "--ilda-transport",
+    type=click.Choice(["memory", "ild", "ether_dream"], case_sensitive=False),
+    default="ild",
+    show_default=True,
+    help="ILDA output mode for file playback",
+)
+@click.option(
+    "--ilda-export-path",
+    "ilda_export_path_override",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Optional .ild export path when --ilda-transport=ild",
+)
+@click.option("--ether-dream-host", help="Ether Dream host override when --ilda-transport=ether_dream")
+@click.option("--ether-dream-port", type=int, help="Ether Dream port override when --ilda-transport=ether_dream")
 @click.option("--web", "web_mode", is_flag=True, help="Serve the control-plane website in the same process")
 @click.option("--web-host", default="127.0.0.1", help="Embedded web server host")
 @click.option("--web-port", default=8000, type=int, help="Embedded web server port")
@@ -1287,6 +1302,10 @@ def run_file(
     realtime: bool,
     speed: float,
     rekordbox_xml: Path | None,
+    ilda_transport: str,
+    ilda_export_path_override: Path | None,
+    ether_dream_host: str | None,
+    ether_dream_port: int | None,
     web_mode: bool,
     web_host: str,
     web_port: int,
@@ -1317,6 +1336,9 @@ def run_file(
     if speed <= 0:
         click.echo("Error: --speed must be greater than 0", err=True)
         sys.exit(1)
+    if ether_dream_port is not None and not 1 <= ether_dream_port <= 65535:
+        click.echo("Error: --ether-dream-port must be between 1 and 65535", err=True)
+        sys.exit(1)
     if not 1 <= web_port <= 65535:
         click.echo("Error: --web-port must be between 1 and 65535", err=True)
         sys.exit(1)
@@ -1331,6 +1353,17 @@ def run_file(
 
     settings.debug = ctx.obj["debug"]
     _validate_startup_config(settings, mock=True)
+    settings.ilda.enabled = True
+    settings.ilda.transport_type = str(ilda_transport)
+    settings.ilda.export_path = (
+        ilda_export_path_override
+        if ilda_export_path_override is not None
+        else (ilda_export_path(audio_file.stem) if settings.ilda.transport_type == "ild" else None)
+    )
+    if ether_dream_host is not None:
+        settings.ilda.ether_dream_host = ether_dream_host
+    if ether_dream_port is not None:
+        settings.ilda.ether_dream_port = ether_dream_port
 
     chunk_size = max(1, int(settings.audio.sample_rate / fps))
     audio_node = AudioFileSenseNode(
@@ -1392,9 +1425,22 @@ def run_file(
             track_seed=track_key,
         )
     )
-    settings.ilda.enabled = True
-    settings.ilda.transport_type = "ild"
-    settings.ilda.export_path = ilda_export_path(track_key)
+    if (
+        settings.ilda.transport_type == "ild"
+        and ilda_export_path_override is None
+    ):
+        settings.ilda.export_path = ilda_export_path(track_key)
+
+    if settings.ilda.transport_type == "ether_dream":
+        click.echo(
+            "ILDA Transport: Ether Dream "
+            f"{settings.ilda.ether_dream_host}:{settings.ilda.ether_dream_port}"
+        )
+    elif settings.ilda.transport_type == "ild":
+        click.echo(f"ILDA Transport: .ild export -> {settings.ilda.export_path}")
+    else:
+        click.echo("ILDA Transport: in-memory preview only")
+    click.echo()
 
     graph = None
     web_server = None
