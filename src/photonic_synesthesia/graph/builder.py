@@ -22,6 +22,7 @@ from photonic_synesthesia.graph.nodes import (
     DMXOutputNode,
     FeatureExtractNode,
     FusionNode,
+    ILDAOutputNode,
     InterpreterNode,
     LaserControlNode,
     MidiSenseNode,
@@ -75,6 +76,8 @@ class PhotonicGraph:
             self.nodes["cv_sense"].start()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].start()
+        if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "start"):
+            self.nodes["ilda_output"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
             self.nodes["safety_interlock"].start()
 
@@ -92,6 +95,8 @@ class PhotonicGraph:
             self.nodes["cv_sense"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
+        if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
+            self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].stop()
 
@@ -277,6 +282,12 @@ def build_photonic_graph(
     )
     nodes["panel_control"] = PanelControlNode(settings.fixtures)
     nodes["interpreter"] = InterpreterNode(settings.safety)
+    nodes["ilda_output"] = ILDAOutputNode(
+        settings.ilda,
+        settings.fixtures,
+        settings.safety.laser,
+        fixtures_dir=settings.fixtures_dir,
+    )
 
     # Safety node
     nodes["safety_interlock"] = SafetyInterlockNode(
@@ -323,8 +334,11 @@ def build_photonic_graph(
     # Safety check BEFORE committing to DMX universe
     graph.add_edge("interpreter", "safety_interlock")
 
+    # ILDA frame generation shares the same semantic state but not the DMX universe.
+    graph.add_edge("safety_interlock", "ilda_output")
+
     # DMX output after safety has validated/clamped commands
-    graph.add_edge("safety_interlock", "dmx_output")
+    graph.add_edge("ilda_output", "dmx_output")
 
     # Loop back for continuous operation
     # Note: In practice, we use run_loop() which handles the iteration

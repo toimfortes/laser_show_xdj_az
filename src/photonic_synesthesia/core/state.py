@@ -37,6 +37,30 @@ class FixtureCommand(TypedDict):
     channel_values: dict[int, int]  # channel_offset -> value (0-255)
 
 
+class ILDAPoint(TypedDict):
+    """One ILDA point in DAC coordinate space."""
+
+    x: int
+    y: int
+    r: int
+    g: int
+    b: int
+    blanked: bool
+
+
+class ILDAFrame(TypedDict):
+    """Generated ILDA frame for one fixture."""
+
+    fixture_id: str
+    profile_name: str
+    geometry_family: str
+    color_mode: str
+    target_bias: str
+    point_count: int
+    repeat: bool
+    points: list[ILDAPoint]
+
+
 class AudioFeatures(TypedDict):
     """Extracted audio features from spectral analysis."""
 
@@ -206,6 +230,7 @@ class PhotonicState(TypedDict):
 
     # Fixture Commands (output)
     fixture_commands: list[FixtureCommand]
+    ilda_frames: list[ILDAFrame]
 
     # DMX Universe Buffer
     dmx_universe: bytes  # Start code + 512 channel slots
@@ -320,6 +345,7 @@ def create_initial_state() -> PhotonicState:
         ),
         # Fixture output
         fixture_commands=[],
+        ilda_frames=[],
         dmx_universe=bytes(create_universe_buffer()),  # Start code + 512 channels
         # Safety
         safety_state=SafetyState(

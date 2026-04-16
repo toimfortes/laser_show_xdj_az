@@ -68,6 +68,16 @@ class DMXConfig(BaseModel):
     artnet_subnet: int = 0
 
 
+class ILDAConfig(BaseModel):
+    """ILDA frame generation/export configuration."""
+
+    enabled: bool = True
+    transport_type: str = "memory"  # "memory", "json"
+    points_per_frame: int = 120
+    target_fps: float = 30.0
+    export_path: Path | None = None
+
+
 class FixtureConfig(BaseModel):
     """Individual fixture configuration."""
 
@@ -174,6 +184,7 @@ class Settings(BaseSettings):
     pro_dj_link: ProDJLinkConfig = Field(default_factory=ProDJLinkConfig)
     cv: CVConfig = Field(default_factory=CVConfig)
     dmx: DMXConfig = Field(default_factory=DMXConfig)
+    ilda: ILDAConfig = Field(default_factory=ILDAConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     beat_tracking: BeatTrackingConfig = Field(default_factory=BeatTrackingConfig)
     structure_detection: StructureDetectionConfig = Field(default_factory=StructureDetectionConfig)
