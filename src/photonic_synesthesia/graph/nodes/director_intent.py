@@ -24,6 +24,9 @@ class DirectorIntentNode:
             color_theme=decision.color_theme,
             movement_style=decision.movement_style,
             strobe_budget_hz=decision.strobe_budget_hz,
+            melodic_smoothness=decision.melodic_smoothness,
+            laser_aggression=decision.laser_aggression,
+            color_drive=decision.color_drive,
             allow_scene_transition=decision.allow_scene_transition,
         )
 
