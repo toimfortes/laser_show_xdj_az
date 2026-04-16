@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from threading import Lock
+from typing import Any
+from uuid import uuid4
 
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
@@ -19,7 +22,54 @@ class PlaybackContext:
     file_path: str
     file_name: str
     duration_seconds: float
+    session_id: str = field(default_factory=lambda: uuid4().hex)
     waveform: list[float] = field(default_factory=list)
+    playhead_seconds: float = 0.0
+    playing: bool = False
+    finished: bool = False
+    realtime: bool = True
+    speed: float = 1.0
+    server_time: float = 0.0
+    transport_revision: int = 0
+    _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def update_transport(
+        self,
+        *,
+        playhead_seconds: float,
+        playing: bool,
+        finished: bool,
+        realtime: bool,
+        speed: float,
+    ) -> None:
+        """Update live transport state for browser sync."""
+        with self._lock:
+            self.playhead_seconds = max(0.0, min(playhead_seconds, self.duration_seconds))
+            self.playing = playing
+            self.finished = finished
+            self.realtime = realtime
+            self.speed = max(0.01, speed)
+            self.server_time = time.time()
+            self.transport_revision += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a thread-safe snapshot for API responses."""
+        with self._lock:
+            return {
+                "available": True,
+                "session_id": self.session_id,
+                "file_name": self.file_name,
+                "duration_seconds": self.duration_seconds,
+                "audio_url": f"/api/mock/playback/audio?session={self.session_id}",
+                "waveform": list(self.waveform),
+                "playhead_seconds": self.playhead_seconds,
+                "playing": self.playing,
+                "finished": self.finished,
+                "realtime": self.realtime,
+                "speed": self.speed,
+                "server_time": self.server_time,
+                "transport_revision": self.transport_revision,
+            }
 
 
 def get_shared_control_plane_service(create: bool = False) -> ControlPlaneStateService | None:

@@ -787,19 +787,15 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             return {"available": False}
-        return {
-            "available": True,
-            "file_name": playback_context.file_name,
-            "duration_seconds": playback_context.duration_seconds,
-            "audio_url": "/api/mock/playback/audio",
-            "waveform": playback_context.waveform,
-        }
+        return playback_context.snapshot()
 
     @app.get("/api/mock/playback/audio")
-    async def mock_playback_audio() -> Any:
+    async def mock_playback_audio(session: str | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
+        if session is not None and session != playback_context.session_id:
+            raise HTTPException(status_code=404, detail="Playback session is no longer active")
         media_path = Path(playback_context.file_path)
         if not media_path.is_file():
             raise HTTPException(status_code=404, detail="Playback file is missing")

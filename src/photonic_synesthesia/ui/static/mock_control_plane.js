@@ -18,6 +18,11 @@ const elements = {};
 const fixturePatchTimers = new Map();
 let masterPatchTimer = null;
 let universeRefreshTimer = null;
+let playbackRefreshTimer = null;
+let playbackPollActive = false;
+
+const PLAYBACK_POLL_MS = 250;
+const PLAYBACK_STALE_MS = 900;
 
 function qs(id) {
   return document.getElementById(id);
@@ -103,10 +108,70 @@ async function loadRuntimeSnapshot() {
   }
 }
 
+function playbackRenderKey(playback) {
+  if (!playback || !playback.available) {
+    return "none";
+  }
+  return `${playback.session_id || "no-session"}|${playback.audio_url}`;
+}
+
+function applyPlaybackState(playback) {
+  const nextRevision = Number(playback?.transport_revision || 0);
+  const currentRevision = Number(appState.playback?.transport_revision || 0);
+  const currentSession = appState.playback?.session_id || null;
+  const nextSession = playback?.session_id || null;
+
+  if (
+    appState.playback?.available
+    && playback?.available
+    && currentSession === nextSession
+    && nextRevision < currentRevision
+  ) {
+    return false;
+  }
+
+  appState.playback = playback;
+  appState.playbackAnchorReceivedAt = performance.now();
+  return true;
+}
+
+function playbackAnchorAgeMs() {
+  if (!appState.playback?.available || appState.playbackAnchorReceivedAt === undefined) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return performance.now() - appState.playbackAnchorReceivedAt;
+}
+
+function playbackTransportIsFresh() {
+  const playback = appState.playback;
+  if (!playback?.available || !playback.playing || playback.finished || !playback.realtime) {
+    return true;
+  }
+  return playbackAnchorAgeMs() <= PLAYBACK_STALE_MS;
+}
+
 async function loadPlaybackState() {
   const playback = await api("/api/mock/playback");
-  appState.playback = playback;
+  applyPlaybackState(playback);
   renderPlayback();
+}
+
+async function refreshPlaybackState() {
+  const previousKey = playbackRenderKey(appState.playback);
+  const playback = await api("/api/mock/playback");
+  if (!applyPlaybackState(playback)) {
+    return;
+  }
+  const nextKey = playbackRenderKey(playback);
+
+  if (previousKey !== nextKey) {
+    renderPlayback();
+    return;
+  }
+
+  syncPlaybackAudio();
+  updatePlaybackStatus();
+  drawPlaybackWaveform();
 }
 
 async function refreshUniverseSnapshot() {
@@ -154,48 +219,186 @@ function renderPlayback() {
       <strong>${playback.file_name}</strong>
       <span>${playback.duration_seconds.toFixed(1)}s</span>
     </div>
+    <div class="playback-controls">
+      <button type="button" id="sync-audio">Sync To Live</button>
+      <span id="playback-status">Waiting for browser audio…</span>
+    </div>
     <audio id="track-audio" controls preload="metadata" src="${playback.audio_url}"></audio>
     <canvas id="waveform-canvas" width="640" height="96"></canvas>
   `;
 
   const audio = elements.playbackPanel.querySelector("#track-audio");
   const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");
-  const waveform = Array.isArray(playback.waveform) ? playback.waveform : [];
-  const ctx = waveformCanvas.getContext("2d");
+  const syncButton = elements.playbackPanel.querySelector("#sync-audio");
 
-  function drawWaveform() {
-    const width = waveformCanvas.width;
-    const height = waveformCanvas.height;
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "rgba(9, 18, 31, 0.88)";
-    ctx.fillRect(0, 0, width, height);
+  elements.playbackAudio = audio;
+  elements.waveformCanvas = waveformCanvas;
+  elements.playbackStatus = elements.playbackPanel.querySelector("#playback-status");
+  elements.playbackSyncButton = syncButton;
 
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
-    ctx.beginPath();
-    ctx.moveTo(0, height / 2);
-    ctx.lineTo(width, height / 2);
-    ctx.stroke();
-
-    if (waveform.length > 0) {
-      const barWidth = width / waveform.length;
-      ctx.fillStyle = "rgba(18, 216, 255, 0.75)";
-      waveform.forEach((value, index) => {
-        const amplitude = Math.max(2, value * (height * 0.42));
-        const x = index * barWidth;
-        ctx.fillRect(x, (height / 2) - amplitude, Math.max(1, barWidth - 1), amplitude * 2);
-      });
+  syncButton.addEventListener("click", async () => {
+    const target = playbackTargetTime();
+    if (Number.isFinite(target)) {
+      audio.currentTime = target;
     }
+    try {
+      await audio.play();
+    } catch (error) {
+      console.error(error);
+    }
+    syncPlaybackAudio(true);
+  });
 
-    const duration = Number(audio.duration || playback.duration_seconds || 0);
-    const progress = duration > 0 ? clamp(audio.currentTime / duration, 0, 1) : 0;
-    ctx.fillStyle = "rgba(248, 94, 0, 0.95)";
-    ctx.fillRect(progress * width, 0, 2, height);
+  audio.addEventListener("play", () => {
+    syncPlaybackAudio(true);
+  });
+  audio.addEventListener("timeupdate", () => {
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    syncPlaybackAudio(true);
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+  });
+  audio.addEventListener("seeked", () => {
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+  });
+  updatePlaybackStatus();
+  drawPlaybackWaveform();
+}
+
+function playbackTargetTime() {
+  const playback = appState.playback;
+  if (!playback || !playback.available) {
+    return 0;
   }
 
-  audio.addEventListener("timeupdate", drawWaveform);
-  audio.addEventListener("loadedmetadata", drawWaveform);
-  audio.addEventListener("seeked", drawWaveform);
-  drawWaveform();
+  let target = Number(playback.playhead_seconds || 0);
+  if (playback.playing && playback.realtime && !playback.finished && playbackTransportIsFresh()) {
+    const elapsedSeconds = playbackAnchorAgeMs() / 1000;
+    target += elapsedSeconds * Number(playback.speed || 1);
+  }
+  return clamp(target, 0, Number(playback.duration_seconds || target || 0));
+}
+
+function drawPlaybackWaveform() {
+  if (!elements.waveformCanvas || !appState.playback?.available) {
+    return;
+  }
+
+  const waveformCanvas = elements.waveformCanvas;
+  const ctx = waveformCanvas.getContext("2d");
+  const waveform = Array.isArray(appState.playback.waveform) ? appState.playback.waveform : [];
+  const width = waveformCanvas.width;
+  const height = waveformCanvas.height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.fillStyle = "rgba(9, 18, 31, 0.88)";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.beginPath();
+  ctx.moveTo(0, height / 2);
+  ctx.lineTo(width, height / 2);
+  ctx.stroke();
+
+  if (waveform.length > 0) {
+    const barWidth = width / waveform.length;
+    ctx.fillStyle = "rgba(18, 216, 255, 0.75)";
+    waveform.forEach((value, index) => {
+      const amplitude = Math.max(2, value * (height * 0.42));
+      const x = index * barWidth;
+      ctx.fillRect(x, (height / 2) - amplitude, Math.max(1, barWidth - 1), amplitude * 2);
+    });
+  }
+
+  const duration = Number(appState.playback.duration_seconds || 0);
+  const audio = elements.playbackAudio;
+  const visualTime = audio && !audio.paused ? audio.currentTime : playbackTargetTime();
+  const progress = duration > 0 ? clamp(visualTime / duration, 0, 1) : 0;
+  ctx.fillStyle = "rgba(248, 94, 0, 0.95)";
+  ctx.fillRect(progress * width, 0, 2, height);
+}
+
+function updatePlaybackStatus() {
+  if (!elements.playbackStatus || !appState.playback?.available) {
+    return;
+  }
+  const audio = elements.playbackAudio;
+  const target = playbackTargetTime();
+  const browserTime = audio ? Number(audio.currentTime || 0) : 0;
+  const drift = browserTime - target;
+  const stateLabel = appState.playback.finished
+    ? "finished"
+    : !playbackTransportIsFresh()
+      ? "sync stale"
+    : appState.playback.playing
+      ? "live"
+      : "idle";
+  const staleText = playbackTransportIsFresh() ? "" : ` · stale ${(playbackAnchorAgeMs() / 1000).toFixed(2)}s`;
+  elements.playbackStatus.textContent = `${stateLabel} · server ${target.toFixed(2)}s · browser ${browserTime.toFixed(2)}s · drift ${drift.toFixed(3)}s${staleText}`;
+}
+
+function syncPlaybackAudio(force = false) {
+  const playback = appState.playback;
+  const audio = elements.playbackAudio;
+  if (!playback || !playback.available || !audio) {
+    return;
+  }
+
+  const target = playbackTargetTime();
+  const current = Number(audio.currentTime || 0);
+  const drift = target - current;
+
+  if (playback.finished) {
+    audio.playbackRate = 1;
+    if (Math.abs(drift) > 0.02) {
+      audio.currentTime = target;
+    }
+    if (!audio.paused) {
+      audio.pause();
+    }
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+    return;
+  }
+
+  if (!playback.realtime || !playback.playing) {
+    audio.playbackRate = 1;
+    if ((force || audio.paused) && Math.abs(drift) > 0.05) {
+      audio.currentTime = target;
+    }
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+    return;
+  }
+
+  if (!playbackTransportIsFresh()) {
+    audio.playbackRate = 1;
+    if (!audio.paused) {
+      audio.pause();
+    }
+    updatePlaybackStatus();
+    drawPlaybackWaveform();
+    return;
+  }
+
+  if (force || Math.abs(drift) > 0.12) {
+    audio.currentTime = target;
+    audio.playbackRate = 1;
+  } else if (Math.abs(drift) > 0.015) {
+    audio.playbackRate = clamp(1 + drift * 0.45, 0.95, 1.05);
+  } else {
+    audio.playbackRate = 1;
+  }
+
+  if (audio.paused && Math.abs(drift) > 0.05) {
+    audio.currentTime = target;
+  }
+
+  updatePlaybackStatus();
+  drawPlaybackWaveform();
 }
 
 function templateBySlug(slug) {
@@ -898,6 +1101,25 @@ function startUniversePolling() {
   }, 1000);
 }
 
+function startPlaybackPolling() {
+  playbackPollActive = true;
+  if (playbackRefreshTimer) {
+    window.clearTimeout(playbackRefreshTimer);
+  }
+  const poll = async () => {
+    try {
+      await refreshPlaybackState();
+    } catch (error) {
+      console.error(error);
+    } finally {
+      if (playbackPollActive) {
+        playbackRefreshTimer = window.setTimeout(poll, PLAYBACK_POLL_MS);
+      }
+    }
+  };
+  playbackRefreshTimer = window.setTimeout(poll, PLAYBACK_POLL_MS);
+}
+
 async function boot() {
   elements.sceneBank = qs("scene-bank");
   elements.fixtureLibrary = qs("fixture-library");
@@ -923,6 +1145,7 @@ async function boot() {
   updateRuntimeSummary();
   connectWebSocket();
   startUniversePolling();
+  startPlaybackPolling();
   window.requestAnimationFrame(renderStage);
 }
 

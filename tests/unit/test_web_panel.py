@@ -152,7 +152,7 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     audio_path.write_bytes(b"fake mp3 bytes")
 
     clear_shared_playback_context()
-    set_shared_playback_context(
+    shared_playback = set_shared_playback_context(
         PlaybackContext(
             file_path=str(audio_path),
             file_name=audio_path.name,
@@ -160,18 +160,33 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
             waveform=[0.1, 0.5, 0.2],
         )
     )
+    shared_playback.update_transport(
+        playhead_seconds=3.25,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
 
     app = create_app()
     client = TestClient(app)
 
     metadata_response = client.get("/api/mock/playback")
-    audio_response = client.get("/api/mock/playback/audio")
+    metadata = metadata_response.json()
+    audio_response = client.get(metadata["audio_url"])
+    stale_audio_response = client.get("/api/mock/playback/audio?session=stale-session")
 
     assert metadata_response.status_code == 200
-    assert metadata_response.json()["available"] is True
-    assert metadata_response.json()["file_name"] == "track.mp3"
-    assert metadata_response.json()["waveform"] == [0.1, 0.5, 0.2]
+    assert metadata["available"] is True
+    assert metadata["file_name"] == "track.mp3"
+    assert metadata["waveform"] == [0.1, 0.5, 0.2]
+    assert metadata["playhead_seconds"] == 3.25
+    assert metadata["playing"] is True
+    assert metadata["session_id"] == shared_playback.session_id
+    assert metadata["audio_url"].endswith(shared_playback.session_id)
+    assert metadata["transport_revision"] == 1
     assert audio_response.status_code == 200
     assert audio_response.content == b"fake mp3 bytes"
+    assert stale_audio_response.status_code == 404
 
     clear_shared_playback_context()

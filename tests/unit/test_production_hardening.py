@@ -392,3 +392,28 @@ def test_run_file_uses_audio_file_sensor_override(tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert captured["mock_sensors"] is True
     assert isinstance(captured["audio_node"], AudioFileSenseNode)
+
+
+def test_run_file_web_startup_failure_preserves_original_error(tmp_path: Path) -> None:
+    """run-file --web must not mask startup failures with cleanup-time crashes."""
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    with mock.patch(
+        "photonic_synesthesia.graph.nodes.audio_file_sense.AudioFileSenseNode.start",
+        side_effect=RuntimeError("decode failed"),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["run-file", str(audio_path), "--web"])
+
+    assert result.exit_code == 1
+    assert "decode failed" in result.output
+    assert "UnboundLocalError" not in result.output

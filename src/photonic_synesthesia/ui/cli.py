@@ -231,6 +231,7 @@ def run_file(
     graph = None
     web_server = None
     web_thread = None
+    playback_context: PlaybackContext | None = None
     control_plane_service = set_shared_control_plane_service(ControlPlaneStateService())
 
     def _shutdown(signum: int, frame: object) -> None:
@@ -243,13 +244,20 @@ def run_file(
     try:
         if web_mode:
             audio_node.start()
-            set_shared_playback_context(
+            playback_context = set_shared_playback_context(
                 PlaybackContext(
                     file_path=str(audio_file),
                     file_name=audio_file.name,
                     duration_seconds=audio_node.duration_seconds,
                     waveform=audio_node.waveform_preview(),
                 )
+            )
+            playback_context.update_transport(
+                playhead_seconds=0.0,
+                playing=False,
+                finished=False,
+                realtime=realtime,
+                speed=speed,
             )
             web_server, web_thread = serve_in_thread(
                 services=control_plane_service,
@@ -265,6 +273,14 @@ def run_file(
             node_overrides={"audio_sense": audio_node},
         )
         graph.start()
+        if web_mode and playback_context is not None:
+            playback_context.update_transport(
+                playhead_seconds=audio_node.playhead_seconds,
+                playing=True,
+                finished=audio_node.finished,
+                realtime=realtime,
+                speed=speed,
+            )
         click.echo("Graph built successfully. Starting file playback...")
         click.echo("Press Ctrl+C to stop.")
         click.echo()
@@ -274,6 +290,14 @@ def run_file(
         while graph._running and not audio_node.finished:  # noqa: SLF001 - controlled CLI loop
             frame_start = time.perf_counter()
             state = graph.step()
+            if web_mode and playback_context is not None:
+                playback_context.update_transport(
+                    playhead_seconds=audio_node.playhead_seconds,
+                    playing=not audio_node.finished,
+                    finished=audio_node.finished,
+                    realtime=realtime,
+                    speed=speed,
+                )
 
             playhead = int(audio_node.playhead_seconds)
             if playhead != last_reported_second:
@@ -304,6 +328,14 @@ def run_file(
             raise
         sys.exit(1)
     finally:
+        if web_mode and playback_context is not None:
+            playback_context.update_transport(
+                playhead_seconds=audio_node.playhead_seconds,
+                playing=False,
+                finished=audio_node.finished,
+                realtime=realtime,
+                speed=speed,
+            )
         if graph is not None:
             graph.stop()
         if web_server is not None:

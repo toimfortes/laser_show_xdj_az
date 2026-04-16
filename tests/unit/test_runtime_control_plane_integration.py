@@ -62,7 +62,18 @@ def test_shared_playback_context_is_process_local() -> None:
             waveform=[0.1, 0.2, 0.3],
         )
     )
+    playback.update_transport(
+        playhead_seconds=12.3,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
 
     assert get_shared_playback_context() is playback
+    assert playback.snapshot()["playhead_seconds"] == 12.3
+    assert playback.snapshot()["playing"] is True
+    assert playback.snapshot()["session_id"] == playback.session_id
+    assert playback.snapshot()["transport_revision"] == 1
 
     clear_shared_playback_context()
