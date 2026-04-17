@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from photonic_synesthesia.integrations import load_rekordbox_track
+from photonic_synesthesia.integrations import (
+    load_rekordbox_track,
+    load_rekordbox_track_by_metadata,
+)
 
 
 def test_load_rekordbox_track_matches_by_filename_and_dedupes_markers(tmp_path: Path) -> None:
@@ -90,3 +93,32 @@ def test_load_rekordbox_track_returns_none_for_ambiguous_equal_matches(tmp_path:
     track = load_rekordbox_track(xml_path, tmp_path / "Same Song.mp3")
 
     assert track is None
+
+
+def test_load_rekordbox_track_by_metadata_prefers_exact_title_artist_match(tmp_path: Path) -> None:
+    xml_path = tmp_path / "rekordbox.xml"
+    xml_path.write_text(
+        """<?xml version="1.0" encoding="utf-8"?>
+<DJ_PLAYLISTS Version="1.0.0">
+  <COLLECTION Entries="2">
+    <TRACK TrackID="42" Name="Glam" Artist="Yulia Niko, Bákayan"
+      Location="file://localhost/C:/Music/Glam.mp3"
+      TotalTime="297" AverageBpm="123.0" />
+    <TRACK TrackID="43" Name="Glam" Artist="Someone Else"
+      Location="file://localhost/C:/Music/Glam-bootleg.mp3"
+      TotalTime="297" AverageBpm="123.0" />
+  </COLLECTION>
+</DJ_PLAYLISTS>
+""",
+        encoding="utf-8",
+    )
+
+    track = load_rekordbox_track_by_metadata(
+        xml_path,
+        title="Glam",
+        artist="Yulia Niko, Bákayan",
+        duration_seconds=297.3,
+    )
+
+    assert track is not None
+    assert track.track_id == "42"

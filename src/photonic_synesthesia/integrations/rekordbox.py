@@ -205,6 +205,110 @@ def load_rekordbox_track(
     return ranked_matches[0][1]
 
 
+def load_rekordbox_track_by_metadata(
+    xml_path: str | Path,
+    *,
+    title: str,
+    artist: str = "",
+    duration_seconds: float | None = None,
+    expected_bpm: float | None = None,
+) -> RekordboxTrack | None:
+    """Load the best matching Rekordbox export track for live metadata."""
+    xml_file = Path(xml_path)
+    if not xml_file.is_file():
+        return None
+
+    normalized_title = _normalize_text(title)
+    normalized_artist = _normalize_text(artist)
+    if not normalized_title:
+        return None
+
+    tree = ET.parse(xml_file)
+    collection = tree.getroot().find("COLLECTION")
+    if collection is None:
+        return None
+
+    ranked_matches: list[tuple[int, RekordboxTrack]] = []
+    for track_element in collection.findall("TRACK"):
+        track_title = str(track_element.attrib.get("Name", "")).strip()
+        track_artist = str(track_element.attrib.get("Artist", "")).strip()
+        normalized_track_title = _normalize_text(track_title)
+        normalized_track_artist = _normalize_text(track_artist)
+
+        if not normalized_track_title:
+            continue
+
+        score = 0
+        if normalized_track_title == normalized_title:
+            score = max(score, 360)
+        elif normalized_title in normalized_track_title or normalized_track_title in normalized_title:
+            score = max(score, 180)
+        else:
+            continue
+
+        if normalized_artist and normalized_track_artist:
+            if normalized_track_artist == normalized_artist:
+                score += 180
+            elif normalized_artist in normalized_track_artist or normalized_track_artist in normalized_artist:
+                score += 90
+            else:
+                score -= 120
+        elif normalized_artist:
+            score -= 30
+
+        try:
+            total_time = float(track_element.attrib.get("TotalTime", "0"))
+        except ValueError:
+            total_time = 0.0
+        try:
+            average_bpm = float(track_element.attrib.get("AverageBpm", "0") or 0)
+        except ValueError:
+            average_bpm = None
+
+        if duration_seconds is not None and total_time > 0:
+            duration_delta = abs(total_time - duration_seconds)
+            if duration_delta <= 2.0:
+                score += 60
+            elif duration_delta <= 6.0:
+                score += 30
+            elif duration_delta > 15.0:
+                score -= 90
+        if expected_bpm is not None and average_bpm:
+            bpm_delta = abs(average_bpm - expected_bpm)
+            if bpm_delta <= 0.75:
+                score += 20
+            elif bpm_delta <= 2.0:
+                score += 10
+            elif bpm_delta > 8.0:
+                score -= 40
+
+        if score <= 0:
+            continue
+
+        ranked_matches.append(
+            (
+                score,
+                RekordboxTrack(
+                    track_id=str(track_element.attrib.get("TrackID", "")),
+                    title=track_title or title,
+                    artist=track_artist or artist,
+                    location=str(track_element.attrib.get("Location", "")),
+                    total_time=total_time,
+                    average_bpm=average_bpm or None,
+                    markers=_parse_markers(track_element),
+                ),
+            )
+        )
+
+    if not ranked_matches:
+        return None
+
+    ranked_matches.sort(key=lambda item: item[0], reverse=True)
+    if len(ranked_matches) > 1 and ranked_matches[1][0] == ranked_matches[0][0]:
+        return None
+    return ranked_matches[0][1]
+
+
 def find_matching_track(xml_path: str | Path, audio_file: str | Path) -> RekordboxTrack | None:
     """Backwards-compatible alias for track matching."""
     return load_rekordbox_track(xml_path, audio_file)
