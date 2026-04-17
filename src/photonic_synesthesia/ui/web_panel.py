@@ -647,6 +647,22 @@ def _render_control_plane_html() -> str:
                             <div id="dmx-monitor" class="dmx-monitor"></div>
                         </div>
                     </section>
+
+                    <section class="panel stack show-editor-panel" aria-label="Agentic show editor">
+                        <div class="panel-header wide">
+                            <div>
+                                <h2>Agentic Show</h2>
+                                <p>Imported from Rekordbox and editable as a phrase timeline.</p>
+                            </div>
+                            <div class="editor-status">
+                                <span>Track-coupled phrase timeline</span>
+                            </div>
+                        </div>
+
+                        <div id="show-editor" class="show-editor">
+                            <div class="show-editor-empty">Start a file-backed session with web mode to expose the current track timeline here.</div>
+                        </div>
+                    </section>
                 </main>
             </div>
 
@@ -709,6 +725,25 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     class PlaybackSeekRequest(BaseModel):
         seconds: float
+
+    class PlaybackSelectionModeRequest(BaseModel):
+        selection_mode: str
+
+    class PlaybackSelectionVarianceRequest(BaseModel):
+        selection_variance: float
+
+    class PlaybackProDJLinkTrackRequest(BaseModel):
+        title: str
+        artist: str | None = None
+        duration_seconds: float | None = None
+        expected_bpm: float | None = None
+        playhead_seconds: float | None = None
+        playing: bool | None = None
+        finished: bool | None = None
+        realtime: bool = True
+        speed: float = 1.0
+        selection_mode: str | None = None
+        selection_variance: float | None = None
 
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
@@ -843,6 +878,57 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         if section is None:
             raise HTTPException(status_code=404, detail="Show section not found")
         return playback_context.snapshot()
+
+    @app.patch("/api/mock/playback/selection-mode")
+    async def update_playback_selection_mode(
+        request: PlaybackSelectionModeRequest,
+    ) -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        try:
+            return playback_context.set_selection_mode(request.selection_mode)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.patch("/api/mock/playback/selection-variance")
+    async def update_playback_selection_variance(
+        request: PlaybackSelectionVarianceRequest,
+    ) -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        try:
+            return playback_context.set_selection_variance(request.selection_variance)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/mock/playback/pro-dj-link/track")
+    async def bind_playback_pro_dj_link_track(
+        request: PlaybackProDJLinkTrackRequest,
+    ) -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback session is active")
+        try:
+            return playback_context.bind_track_metadata(
+                {
+                    "track_title": request.title,
+                    "track_artist": request.artist or "",
+                    "duration_seconds": request.duration_seconds,
+                    "expected_bpm": request.expected_bpm,
+                    "playhead_seconds": request.playhead_seconds,
+                    "playing": request.playing,
+                    "finished": request.finished,
+                    "realtime": request.realtime,
+                    "speed": request.speed,
+                    "selection_mode": request.selection_mode,
+                    "selection_variance": request.selection_variance,
+                    "metadata_source": "pro_dj_link",
+                }
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/seek")
     async def seek_playback(request: PlaybackSeekRequest) -> dict[str, Any]:

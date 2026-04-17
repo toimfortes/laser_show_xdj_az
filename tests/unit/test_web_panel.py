@@ -29,6 +29,9 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/playback" in routes
     assert "/api/mock/playback/audio" in routes
     assert "/api/mock/playback/ilda-export" in routes
+    assert "/api/mock/playback/pro-dj-link/track" in routes
+    assert "/api/mock/playback/selection-mode" in routes
+    assert "/api/mock/playback/selection-variance" in routes
     assert "/api/mock/playback/seek" in routes
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
@@ -249,6 +252,8 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["hardware_warnings"] == ["Laser 'laser-main' is using inferred adapter data."]
     assert len(metadata["structure_markers"]) == 2
     assert metadata["show_sections"][0]["scene_id"] == "intro_ambient"
+    assert metadata["selection_mode"] == "procedural"
+    assert metadata["selection_variance"] == 0.0
     assert metadata["playhead_seconds"] == 3.25
     assert metadata["playing"] is True
     assert metadata["session_id"] == shared_playback.session_id
@@ -520,5 +525,237 @@ def test_playback_seek_endpoint_updates_shared_playhead(tmp_path) -> None:
     assert updated["scene_id"] == "break_sweep"
     assert updated["motion_multiplier"] == 1.45
     assert updated["laser_enabled"] is False
+
+    clear_shared_playback_context()
+
+
+def test_playback_selection_mode_endpoint_regenerates_sections_and_persists(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+    saved_payloads: list[dict[str, object]] = []
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=20.0,
+            track_key="artist|track",
+            selection_mode="procedural",
+            selection_variance=0.15,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": "fan",
+                }
+            ],
+            _regenerate_callback=lambda mode, variance: [
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": (
+                        "liquid_sky"
+                        if mode == "ai_assisted"
+                        else ("thin_scan" if mode == "local_ollama_cpu" else "fan")
+                    ),
+                    "variance": variance,
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/selection-mode",
+        json={"selection_mode": "ai_assisted"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selection_mode"] == "ai_assisted"
+    assert body["show_sections"][0]["laser_pattern"] == "liquid_sky"
+    assert body["selection_variance"] == 0.15
+    assert saved_payloads[-1]["selection_mode"] == "ai_assisted"
+
+    clear_shared_playback_context()
+
+
+def test_playback_selection_mode_endpoint_accepts_local_ollama_cpu(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+    saved_payloads: list[dict[str, object]] = []
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=20.0,
+            track_key="artist|track",
+            selection_mode="procedural",
+            selection_variance=0.15,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": "fan",
+                }
+            ],
+            _regenerate_callback=lambda mode, variance: [
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": "thin_scan" if mode == "local_ollama_cpu" else "fan",
+                    "variance": variance,
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/selection-mode",
+        json={"selection_mode": "local_ollama_cpu"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selection_mode"] == "local_ollama_cpu"
+    assert body["show_sections"][0]["laser_pattern"] == "thin_scan"
+    assert saved_payloads[-1]["selection_mode"] == "local_ollama_cpu"
+
+    clear_shared_playback_context()
+
+
+def test_playback_selection_variance_endpoint_regenerates_sections_and_persists(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+    saved_payloads: list[dict[str, object]] = []
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=20.0,
+            track_key="artist|track",
+            selection_mode="procedural",
+            selection_variance=0.0,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": "fan",
+                }
+            ],
+            _regenerate_callback=lambda mode, variance: [
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "laser_pattern": "wave" if variance >= 0.5 else "fan",
+                    "variance": variance,
+                    "mode": mode,
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/selection-variance",
+        json={"selection_variance": 0.65},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["selection_mode"] == "procedural"
+    assert body["selection_variance"] == 0.65
+    assert body["show_sections"][0]["laser_pattern"] == "wave"
+    assert body["show_sections"][0]["variance"] == 0.65
+    assert saved_payloads[-1]["selection_variance"] == 0.65
+
+    clear_shared_playback_context()
+
+
+def test_playback_pro_dj_link_track_endpoint_binds_live_track_and_persists(tmp_path) -> None:
+    saved_payloads: list[dict[str, object]] = []
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Live Track",
+            duration_seconds=0.0,
+            track_key="live-pro-dj-link",
+            metadata_source="pro_dj_link",
+            show_sections=[],
+            _metadata_bind_callback=lambda payload: {
+                "track_title": payload["track_title"],
+                "track_artist": payload["track_artist"],
+                "track_key": f"{payload['track_artist']}|{payload['track_title']}",
+                "file_name": f"{payload['track_artist']} - {payload['track_title']}",
+                "duration_seconds": payload["duration_seconds"],
+                "structure_markers": [
+                    {"name": "Intro", "kind": "intro", "start_seconds": 0.0, "energy_hint": 6}
+                ],
+                "show_sections": [
+                    {
+                        "id": "section_001",
+                        "label": "Intro",
+                        "kind": "intro",
+                        "start_seconds": 0.0,
+                        "end_seconds": 32.0,
+                        "laser_pattern": "fan",
+                    }
+                ],
+                "selection_mode": "procedural",
+                "selection_variance": payload["selection_variance"],
+                "metadata_source": payload["metadata_source"],
+                "playhead_seconds": payload["playhead_seconds"],
+                "playing": payload["playing"],
+                "realtime": payload["realtime"],
+                "speed": payload["speed"],
+            },
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/mock/playback/pro-dj-link/track",
+        json={
+            "title": "Glam",
+            "artist": "Yulia Niko, Bákayan",
+            "duration_seconds": 297.3,
+            "playhead_seconds": 16.0,
+            "playing": True,
+            "selection_variance": 0.42,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["track_title"] == "Glam"
+    assert body["track_artist"] == "Yulia Niko, Bákayan"
+    assert body["metadata_source"] == "pro_dj_link"
+    assert body["selection_variance"] == 0.42
+    assert body["audio_url"] is None
+    assert body["seekable"] is False
+    assert body["show_sections"][0]["label"] == "Intro"
+    assert saved_payloads[-1]["track_key"] == "Yulia Niko, Bákayan|Glam"
 
     clear_shared_playback_context()

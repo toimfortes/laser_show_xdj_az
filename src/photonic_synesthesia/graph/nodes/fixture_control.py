@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import time
 from pathlib import Path
+from typing import Any
 
 from photonic_synesthesia.core.config import (
     FixtureConfig,
@@ -19,6 +20,7 @@ from photonic_synesthesia.core.config import (
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
 from photonic_synesthesia.laser import build_laser_profiles
+from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 
 logger = get_logger(__name__)
 
@@ -251,6 +253,7 @@ class MovingHeadControlNode:
         bar_position = state["beat_info"]["bar_position"]
         bpm = state["fused_bpm"]
         energy = state["audio_features"]["rms_energy"]
+        program_look = self._current_program_look(state)
 
         for i, fixture in enumerate(self.fixtures):
             if not fixture.enabled:
@@ -269,6 +272,7 @@ class MovingHeadControlNode:
                 energy,
                 state["timestamp"],
                 phase_offset,
+                program_look=program_look,
             )
 
             state["fixture_commands"].append(commands)
@@ -287,66 +291,129 @@ class MovingHeadControlNode:
         energy: float,
         current_time: float,
         phase_offset: float,
+        *,
+        program_look: dict[str, Any] | None = None,
     ) -> FixtureCommand:
         """Generate DMX values for a single moving head."""
         base = fixture.start_address
         values: dict[int, int] = {}
+        look_role = str(program_look.get("__role", "")) if isinstance(program_look, dict) else ""
+        geometry_family = str(program_look.get("geometry_family", "")) if isinstance(program_look, dict) else ""
+        color_mode = str(program_look.get("color_mode", "")) if isinstance(program_look, dict) else ""
+        target_bias = str(program_look.get("target_bias", "")) if isinstance(program_look, dict) else ""
+        motion_scale = max(0.35, min(2.0, float(program_look.get("motion", 1.0)))) if isinstance(program_look, dict) else 1.0
+        emphasis = max(0.0, min(1.0, float(program_look.get("emphasis", 0.5)))) if isinstance(program_look, dict) else 0.5
+        mover_family = self._mover_family_for_program(structure, program_look)
 
         # =================================================================
-        # Pan/Tilt - Lissajous curves
+        # Pan/Tilt - laser-synchronized motion families
         # =================================================================
         freq_x = bpm / 60 / 2  # Half-beat
         freq_y = bpm / 60 / 4  # Quarter-beat
+        motion_phase = current_time * bpm / 60 * (0.7 + motion_scale * 0.9) + phase_offset
+        beat_hit = 1.0 if beat_phase < 0.14 else 0.0
+        pan_amp = 58 + motion_scale * 34 + emphasis * 18
+        tilt_amp = 34 + motion_scale * 18 + emphasis * 10
 
-        if structure == MusicStructure.DROP:
-            # Fast chaotic movement
-            pan = int(128 + 100 * math.sin(current_time * freq_x * 4 + phase_offset))
-            tilt = int(128 + 60 * math.sin(current_time * freq_y * 4))
-        elif structure == MusicStructure.BREAKDOWN:
-            # Slow sweeping
-            pan = int(128 + 120 * math.sin(current_time * 0.2 + phase_offset))
-            tilt = int(100 + 30 * math.sin(current_time * 0.1))
+        if mover_family == "hits":
+            hit_gate = beat_hit * (0.75 + emphasis * 0.25)
+            pan_norm = math.copysign(1.0, math.sin(motion_phase * 2.6)) * hit_gate
+            tilt_norm = math.cos(motion_phase * 2.9) * hit_gate - (0.18 if target_bias == "crowd" else 0.05)
+        elif mover_family == "cross":
+            pan_norm = math.sin(motion_phase * 1.8)
+            tilt_norm = math.sin(motion_phase * 0.9 + math.pi / 2) * 0.55
+        elif mover_family == "rise":
+            arc = max(-1.0, min(1.0, -0.72 + ((bar_position - 1) / 3.0) * 1.6))
+            pan_norm = math.sin(motion_phase * 0.95) * 0.58
+            tilt_norm = arc + math.sin(motion_phase * 0.42) * 0.18
+        elif mover_family == "hold":
+            pan_norm = math.sin(motion_phase * 0.25) * 0.08
+            tilt_norm = -0.26 if target_bias == "crowd" else 0.18 if target_bias == "ceiling" else 0.0
+        elif mover_family == "shape":
+            pan_norm = math.sin(motion_phase * 0.92) * math.cos(motion_phase * 0.48)
+            tilt_norm = math.cos(motion_phase * 0.7)
         else:
-            # Standard Lissajous
-            pan = int(128 + 80 * math.sin(current_time * freq_x + phase_offset))
-            tilt = int(128 + 50 * math.sin(current_time * freq_y))
+            pan_norm = math.sin(current_time * freq_x + phase_offset) * 0.82
+            tilt_norm = math.cos(current_time * freq_y) * 0.72
+
+        if target_bias == "crowd":
+            tilt_norm -= 0.24
+        elif target_bias == "ceiling":
+            tilt_norm += 0.22
+
+        pan = int(128 + pan_amp * max(-1.0, min(1.0, pan_norm)))
+        tilt = int(128 + tilt_amp * max(-1.0, min(1.0, tilt_norm)))
 
         values[base + self.channel_map["pan"]] = pan
         values[base + self.channel_map["tilt"]] = tilt
 
         # Pan/tilt speed
-        speed = 200 if structure == MusicStructure.DROP else 128
+        if mover_family == "hits":
+            speed = 218
+        elif mover_family == "cross":
+            speed = 188
+        elif mover_family == "rise":
+            speed = 168
+        elif mover_family == "hold":
+            speed = 96
+        else:
+            speed = 200 if structure == MusicStructure.DROP else 128
         values[base + self.channel_map["pan_tilt_speed"]] = speed
 
         # =================================================================
         # Dimmer - Energy linked
         # =================================================================
+        role_boost = {
+            "launch": 26,
+            "fill": 34,
+            "release": -30,
+        }.get(look_role, 0)
         if structure == MusicStructure.DROP:
-            dimmer = int(200 + 55 * energy)
+            dimmer = int(192 + 58 * energy + emphasis * 18 + role_boost)
         elif structure == MusicStructure.BREAKDOWN:
-            dimmer = int(100 + 50 * energy)
+            dimmer = int(92 + 44 * energy + role_boost)
         else:
-            dimmer = int(150 + 80 * energy)
+            dimmer = int(142 + 78 * energy + emphasis * 12 + role_boost)
 
         values[base + self.channel_map["dimmer"]] = min(255, dimmer)
 
         # =================================================================
-        # Strobe - Beat synced during drops
+        # Strobe - synced to fills / impacts
         # =================================================================
-        if structure == MusicStructure.DROP and beat_phase < 0.1:
-            strobe = 200  # Fast strobe on beat
+        if mover_family == "hits" and beat_hit > 0.0:
+            strobe = 208
+        elif look_role == "launch" and structure in {MusicStructure.DROP, MusicStructure.BUILDUP} and beat_hit > 0.0:
+            strobe = 160
         else:
-            strobe = 0  # No strobe
+            strobe = 0
 
         values[base + self.channel_map["strobe"]] = strobe
 
         # =================================================================
         # Color wheel / RGB
         # =================================================================
-        if structure == MusicStructure.DROP:
+        if color_mode == "white_hits" and beat_hit > 0.0:
             values[base + self.channel_map["red"]] = 255
             values[base + self.channel_map["green"]] = 255
             values[base + self.channel_map["blue"]] = 255
+        elif color_mode == "dual_cycle":
+            cycle = (math.sin(current_time * 0.45 + phase_offset) + 1.0) * 0.5
+            values[base + self.channel_map["red"]] = int(90 + cycle * 165)
+            values[base + self.channel_map["green"]] = int(40 + (1.0 - cycle) * 110)
+            values[base + self.channel_map["blue"]] = int(120 + (1.0 - cycle) * 120)
+        elif color_mode == "morph":
+            phase = (current_time * 0.28 + phase_offset * 0.08) % 1
+            values[base + self.channel_map["red"]] = int(80 + 155 * math.sin(phase * math.pi * 2) ** 2)
+            values[base + self.channel_map["green"]] = int(60 + 120 * math.sin((phase * math.pi * 2) + 2.1) ** 2)
+            values[base + self.channel_map["blue"]] = int(90 + 165 * math.sin((phase * math.pi * 2) + 4.2) ** 2)
+        elif target_bias == "ceiling":
+            values[base + self.channel_map["red"]] = 70
+            values[base + self.channel_map["green"]] = 130
+            values[base + self.channel_map["blue"]] = 255
+        elif target_bias == "crowd":
+            values[base + self.channel_map["red"]] = 255
+            values[base + self.channel_map["green"]] = 148
+            values[base + self.channel_map["blue"]] = 68
         elif structure == MusicStructure.BREAKDOWN:
             values[base + self.channel_map["red"]] = 50
             values[base + self.channel_map["green"]] = 100
@@ -364,10 +431,16 @@ class MovingHeadControlNode:
         # =================================================================
         # Gobo
         # =================================================================
-        if structure == MusicStructure.DROP:
+        if mover_family == "hits":
             gobo = 0  # Open (solid beam)
-        elif structure == MusicStructure.BREAKDOWN:
+        elif mover_family == "hold" or look_role == "release":
             gobo = 64  # Breakup pattern
+        elif geometry_family in {"trace", "sheet"}:
+            gobo = 72
+        elif geometry_family in {"sequence", "scan", "rake"}:
+            gobo = 32
+        elif geometry_family in {"tunnel", "cone", "helix", "sky"}:
+            gobo = 16
         else:
             gobo = 32  # Rotating pattern
 
@@ -378,6 +451,177 @@ class MovingHeadControlNode:
             fixture_type="moving_head",
             channel_values=values,
         )
+
+    def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
+        playback = get_shared_playback_context()
+        if playback is None:
+            return None
+        snapshot = playback.snapshot()
+        sections = snapshot.get("show_sections") or []
+        if not sections:
+            return None
+        playhead = float(snapshot.get("playhead_seconds", 0.0))
+        current_section = None
+        for section in sections:
+            start = float(section.get("start_seconds", 0.0))
+            end = float(section.get("end_seconds", start))
+            if start <= playhead < max(end, start + 1e-6):
+                current_section = section
+                break
+        if current_section is None:
+            current_section = sections[-1]
+        laser_program = current_section.get("laser_program")
+        if not isinstance(laser_program, dict):
+            return None
+
+        start = float(current_section.get("start_seconds", 0.0))
+        end = float(current_section.get("end_seconds", start + 1.0))
+        progress = max(0.0, min(1.0, (playhead - start) / max(end - start, 1e-6)))
+        role = str(laser_program.get("phrase_role", ""))
+        director = state["director_state"]
+        subphrase_role = str(director.get("subphrase_role", ""))
+        fill_pressure = float(director.get("fill_pressure", 0.0))
+        harmonic_tension = float(state["audio_features"]["harmonic_tension"])
+        melodic_smoothness = float(director.get("melodic_smoothness", 0.0))
+        windows = self._program_main_windows(laser_program)
+        fills = [
+            candidate
+            for candidate in laser_program.get("fills") or []
+            if isinstance(candidate, dict)
+        ]
+        selected = None
+        selected_role = "sustain"
+        selected_index = 0
+
+        for window in windows:
+            if window["start"] <= progress < window["end"] or (
+                progress >= 0.999 and window is windows[-1]
+            ):
+                selected = dict(window["look"])
+                selected_role = str(window["role"])
+                selected_index = int(window["index"])
+                break
+
+        if selected is None and windows:
+            fallback_window = windows[-1]
+            selected = dict(fallback_window["look"])
+            selected_role = str(fallback_window["role"])
+            selected_index = int(fallback_window["index"])
+
+        sustain_windows = [window for window in windows if window["role"] == "sustain"]
+        if selected_role == "sustain" and sustain_windows:
+            sustain_choice = max(0, min(len(sustain_windows) - 1, selected_index))
+            if subphrase_role in {"variation", "pressure", "lift"} or harmonic_tension >= 0.58:
+                sustain_choice = min(len(sustain_windows) - 1, sustain_choice + 1)
+            elif subphrase_role in {"settle", "float"} or melodic_smoothness >= 0.7:
+                sustain_choice = 0
+            selected_window = sustain_windows[sustain_choice]
+            selected = dict(selected_window["look"])
+            selected_index = sustain_choice
+
+        fill_every_bars = max(1, int(laser_program.get("fill_trigger_every_bars", 4)))
+        total_main_bars = max(1, sum(int(window["bars"]) for window in windows))
+        bars_elapsed = progress * total_main_bars
+        if selected_role == "sustain" and fills and role in {"build_riser", "drop_launch", "drop_variation"}:
+            fill_cycle = int(bars_elapsed // fill_every_bars)
+            fill_index = (fill_cycle + selected_index + (1 if fill_pressure >= 0.72 else 0)) % len(fills)
+            fill_look = fills[fill_index]
+            fill_bars = max(1, int(fill_look.get("bars", 1)))
+            cycle_progress = bars_elapsed - (fill_cycle * fill_every_bars)
+            if cycle_progress < min(fill_bars, fill_every_bars):
+                selected = dict(fill_look)
+                selected_role = "fill"
+
+        if selected is None:
+            return None
+
+        zone_policy = str(laser_program.get("zone_policy", ""))
+        if zone_policy == "overhead_only":
+            selected["target_bias"] = "ceiling"
+        elif zone_policy == "overhead_bias" and selected.get("target_bias") == "crowd":
+            selected["target_bias"] = "mid_air"
+        elif zone_policy == "crowd_punctuate" and selected.get("target_bias") != "crowd" and progress > 0.2:
+            selected["target_bias"] = "mid_air"
+        selected["__role"] = selected_role
+        return selected
+
+    @staticmethod
+    def _program_main_windows(laser_program: dict[str, Any]) -> list[dict[str, Any]]:
+        windows: list[dict[str, Any]] = []
+
+        def append_window(role: str, index: int, look: Any, fallback_bars: int) -> None:
+            if not isinstance(look, dict):
+                return
+            bars = int(look.get("bars", fallback_bars))
+            if role == "launch" and bars <= 0:
+                return
+            bars = max(1, bars) if role != "launch" else bars
+            windows.append(
+                {
+                    "role": role,
+                    "index": index,
+                    "look": look,
+                    "bars": bars,
+                }
+            )
+
+        append_window("launch", 0, laser_program.get("launch"), 0)
+        for index, look in enumerate(laser_program.get("sustain") or []):
+            append_window("sustain", index, look, 4)
+        append_window("release", 0, laser_program.get("release"), 4)
+
+        total_bars = sum(int(window["bars"]) for window in windows)
+        if total_bars <= 0:
+            return []
+
+        cursor = 0.0
+        for window in windows:
+            start = cursor / total_bars
+            cursor += int(window["bars"])
+            end = cursor / total_bars
+            window["start"] = start
+            window["end"] = end
+        return windows
+
+    @staticmethod
+    def _mover_family_for_program(
+        structure: MusicStructure,
+        program_look: dict[str, Any] | None,
+    ) -> str:
+        if not isinstance(program_look, dict):
+            if structure == MusicStructure.DROP:
+                return "hits"
+            if structure == MusicStructure.BREAKDOWN:
+                return "hold"
+            return "shape"
+
+        role = str(program_look.get("__role", ""))
+        geometry = str(program_look.get("geometry_family", ""))
+        if role == "release":
+            return "hold"
+        if role == "fill":
+            if geometry in {"burst", "grouped", "lattice", "array"}:
+                return "hits"
+            if geometry in {"sequence", "scan", "rake"}:
+                return "cross"
+            if geometry in {"tunnel", "cone", "helix", "sky"}:
+                return "rise"
+            return "shape"
+        if role == "launch":
+            if geometry in {"tunnel", "cone", "helix", "sky"}:
+                return "rise"
+            if geometry in {"trace", "sheet"}:
+                return "shape"
+            return "cross"
+        if geometry in {"trace", "sheet"}:
+            return "shape"
+        if geometry in {"sequence", "scan", "rake", "lattice"}:
+            return "cross"
+        if geometry in {"tunnel", "cone", "helix", "sky"}:
+            return "rise"
+        if geometry in {"burst", "grouped", "array"}:
+            return "hits"
+        return "shape"
 
 
 class PanelControlNode:

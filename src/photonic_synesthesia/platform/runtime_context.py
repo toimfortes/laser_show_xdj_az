@@ -16,6 +16,25 @@ from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
+_PLAYBACK_SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
+
+
+def _normalize_selection_mode(selection_mode: str | None) -> str:
+    value = str(selection_mode or "procedural").strip().lower().replace("-", "_")
+    return value if value in _PLAYBACK_SELECTION_MODES else "procedural"
+
+
+def _normalize_selection_variance(value: Any | None) -> float:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(max(0.0, min(1.0, normalized)), 3)
+
+
+def _normalize_metadata_source(source: str | None) -> str:
+    value = str(source or "manual").strip().lower().replace("-", "_")
+    return value or "manual"
 
 
 @dataclass(slots=True)
@@ -32,6 +51,11 @@ class PlaybackContext:
     waveform: list[float] = field(default_factory=list)
     structure_markers: list[dict[str, Any]] = field(default_factory=list)
     show_sections: list[dict[str, Any]] = field(default_factory=list)
+    selection_mode: str = "procedural"
+    selection_variance: float = 0.0
+    metadata_source: str = "file_playback"
+    metadata_bound_at: float = 0.0
+    show_source: str = "generated"
     show_plan_path: str = ""
     ilda_transport_type: str = "memory"
     ilda_export_path: str = ""
@@ -45,6 +69,8 @@ class PlaybackContext:
     transport_revision: int = 0
     _seek_callback: Callable[[float], float] | None = field(default=None, repr=False)
     _save_callback: Callable[[dict[str, Any]], str | None] | None = field(default=None, repr=False)
+    _regenerate_callback: Callable[[str, float], list[dict[str, Any]]] | None = field(default=None, repr=False)
+    _metadata_bind_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = field(default=None, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def update_transport(
@@ -70,6 +96,8 @@ class PlaybackContext:
         """Return a thread-safe snapshot for API responses."""
         with self._lock:
             export_available = bool(self.ilda_export_path and Path(self.ilda_export_path).is_file())
+            audio_available = bool(self.file_path and Path(self.file_path).is_file())
+            seekable = self._seek_callback is not None
             return {
                 "available": True,
                 "session_id": self.session_id,
@@ -78,7 +106,13 @@ class PlaybackContext:
                 "track_artist": self.track_artist,
                 "track_key": self.track_key,
                 "duration_seconds": self.duration_seconds,
-                "audio_url": f"/api/mock/playback/audio?session={self.session_id}",
+                "audio_url": (
+                    f"/api/mock/playback/audio?session={self.session_id}"
+                    if audio_available
+                    else None
+                ),
+                "audio_available": audio_available,
+                "seekable": seekable,
                 "show_plan_path": self.show_plan_path,
                 "ilda_transport_type": self.ilda_transport_type,
                 "ilda_export_path": self.ilda_export_path,
@@ -92,6 +126,11 @@ class PlaybackContext:
                 "waveform": list(self.waveform),
                 "structure_markers": [dict(marker) for marker in self.structure_markers],
                 "show_sections": copy.deepcopy(self.show_sections),
+                "selection_mode": _normalize_selection_mode(self.selection_mode),
+                "selection_variance": _normalize_selection_variance(self.selection_variance),
+                "metadata_source": _normalize_metadata_source(self.metadata_source),
+                "metadata_bound_at": self.metadata_bound_at,
+                "show_source": str(self.show_source or "generated"),
                 "playhead_seconds": self.playhead_seconds,
                 "playing": self.playing,
                 "finished": self.finished,
@@ -249,6 +288,9 @@ class PlaybackContext:
             "duration_seconds": self.duration_seconds,
             "structure_markers": [dict(marker) for marker in self.structure_markers],
             "show_sections": copy.deepcopy(self.show_sections),
+            "selection_mode": _normalize_selection_mode(self.selection_mode),
+            "selection_variance": _normalize_selection_variance(self.selection_variance),
+            "metadata_source": _normalize_metadata_source(self.metadata_source),
         }
 
     def _persist_show_plan(self, payload: dict[str, Any]) -> None:
@@ -259,6 +301,7 @@ class PlaybackContext:
         if result:
             with self._lock:
                 self.show_plan_path = str(result)
+                self.show_source = "show_plan"
 
     def persist_current_show_plan(self) -> str | None:
         """Persist the current show plan if a callback is configured."""
@@ -280,6 +323,108 @@ class PlaybackContext:
             self.server_time = time.time()
             self.transport_revision += 1
             return self.playhead_seconds
+
+    def _regenerate_selection(
+        self,
+        *,
+        selection_mode: str | None = None,
+        selection_variance: float | None = None,
+    ) -> dict[str, Any]:
+        regenerate_callback = self._regenerate_callback
+        if regenerate_callback is None:
+            raise RuntimeError("Playback selection mode is not configurable")
+
+        with self._lock:
+            current_mode = _normalize_selection_mode(self.selection_mode)
+            current_variance = _normalize_selection_variance(self.selection_variance)
+        normalized_mode = _normalize_selection_mode(selection_mode if selection_mode is not None else current_mode)
+        normalized_variance = _normalize_selection_variance(
+            selection_variance if selection_variance is not None else current_variance
+        )
+        if normalized_mode == current_mode and normalized_variance == current_variance:
+            return self.snapshot()
+
+        regenerated_sections = regenerate_callback(normalized_mode, normalized_variance)
+        if not isinstance(regenerated_sections, list):
+            raise RuntimeError("Playback regeneration did not return show sections")
+
+        with self._lock:
+            self.selection_mode = normalized_mode
+            self.selection_variance = normalized_variance
+            self.show_sections = copy.deepcopy(regenerated_sections)
+            payload = self._show_plan_payload_locked()
+        self._persist_show_plan(payload)
+        return self.snapshot()
+
+    def set_selection_mode(self, selection_mode: str) -> dict[str, Any]:
+        """Regenerate the current show plan using a different selection mode."""
+        return self._regenerate_selection(selection_mode=selection_mode)
+
+    def set_selection_variance(self, selection_variance: float) -> dict[str, Any]:
+        """Regenerate the current show plan using a different exploration setting."""
+        return self._regenerate_selection(selection_variance=selection_variance)
+
+    def bind_track_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Resolve live track metadata into playback metadata and a show plan."""
+        callback = self._metadata_bind_callback
+        if callback is None:
+            raise RuntimeError("Playback metadata binding is not configured")
+
+        binding = callback(dict(metadata))
+        if not isinstance(binding, dict):
+            raise RuntimeError("Playback metadata binding did not return a payload")
+
+        with self._lock:
+            self.track_title = str(binding.get("track_title") or self.track_title or self.file_name)
+            self.track_artist = str(binding.get("track_artist") or self.track_artist)
+            self.track_key = str(binding.get("track_key") or self.track_key)
+            self.file_name = str(binding.get("file_name") or self.file_name or self.track_title)
+            self.structure_markers = [
+                dict(marker) for marker in binding.get("structure_markers", self.structure_markers)
+            ]
+            self.show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
+            self.selection_mode = _normalize_selection_mode(
+                binding.get("selection_mode", self.selection_mode)
+            )
+            self.selection_variance = _normalize_selection_variance(
+                binding.get("selection_variance", self.selection_variance)
+            )
+            self.metadata_source = _normalize_metadata_source(
+                binding.get("metadata_source", metadata.get("metadata_source", self.metadata_source))
+            )
+            self.metadata_bound_at = time.time()
+            self.show_source = str(binding.get("show_source") or self.show_source or "generated")
+
+            if binding.get("duration_seconds") is not None:
+                try:
+                    self.duration_seconds = max(0.0, float(binding["duration_seconds"]))
+                except (TypeError, ValueError):
+                    pass
+            if binding.get("playhead_seconds") is not None:
+                try:
+                    self.playhead_seconds = max(
+                        0.0,
+                        min(float(binding["playhead_seconds"]), self.duration_seconds),
+                    )
+                except (TypeError, ValueError):
+                    pass
+            if binding.get("playing") is not None:
+                self.playing = bool(binding["playing"])
+            if binding.get("finished") is not None:
+                self.finished = bool(binding["finished"])
+            if binding.get("realtime") is not None:
+                self.realtime = bool(binding["realtime"])
+            if binding.get("speed") is not None:
+                try:
+                    self.speed = max(0.01, float(binding["speed"]))
+                except (TypeError, ValueError):
+                    pass
+            self.server_time = time.time()
+            self.transport_revision += 1
+            payload = self._show_plan_payload_locked()
+
+        self._persist_show_plan(payload)
+        return self.snapshot()
 
 
 def get_shared_control_plane_service(create: bool = False) -> ControlPlaneStateService | None:

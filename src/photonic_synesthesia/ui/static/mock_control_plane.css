@@ -118,6 +118,10 @@ select {
   gap: 18px;
 }
 
+.show-editor-panel {
+  grid-column: 1 / -1;
+}
+
 .panel {
   border-radius: 24px;
   padding: 20px;
@@ -241,6 +245,13 @@ select {
 .playback-controls {
   display: flex;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.playback-control-buttons {
+  display: flex;
   gap: 12px;
   align-items: center;
 }
@@ -252,6 +263,86 @@ select {
   padding: 8px 12px;
   cursor: pointer;
   color: var(--ink);
+}
+
+.playback-mode-toggle {
+  display: grid;
+  gap: 8px;
+  min-width: min(100%, 280px);
+  flex: 1 1 260px;
+  color: var(--ink);
+}
+
+.playback-selection-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.playback-mode-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.playback-mode-toggle span {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.playback-mode-toggle small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.playback-mode-toggle select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+  padding: 9px 12px;
+  font: inherit;
+}
+
+.playback-variance-control {
+  display: grid;
+  gap: 6px;
+  min-width: min(100%, 320px);
+  flex: 1 1 260px;
+}
+
+.playback-variance-copy {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.playback-variance-copy span {
+  color: var(--ink);
+  font-size: 0.88rem;
+}
+
+.playback-variance-copy strong {
+  font-size: 0.78rem;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.playback-variance-control input {
+  width: 100%;
+  accent-color: var(--accent-2);
+}
+
+.playback-variance-control small {
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .playback-controls span {
@@ -283,9 +374,25 @@ select {
   width: 100%;
 }
 
+.playback-live-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding: 10px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
 #show-editor {
   display: grid;
   gap: 10px;
+}
+
+.editor-status {
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 .show-editor-empty {
@@ -296,7 +403,7 @@ select {
 .show-section-list {
   display: grid;
   gap: 10px;
-  max-height: 420px;
+  max-height: 720px;
   overflow: auto;
 }
 
@@ -307,6 +414,7 @@ select {
   background: rgba(255, 255, 255, 0.05);
   display: grid;
   gap: 10px;
+  cursor: pointer;
 }
 
 .show-section-card.active {

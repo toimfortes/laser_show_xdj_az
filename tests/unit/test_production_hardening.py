@@ -14,9 +14,11 @@ from __future__ import annotations
 import math
 import signal
 import unittest.mock as mock
+import warnings
 import wave
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from photonic_synesthesia.core.config import (
@@ -284,6 +286,166 @@ def test_feature_extract_logs_missing_librosa_only_once(monkeypatch: pytest.Monk
     node(create_initial_state())
 
     assert warning_mock.call_count == 1
+
+
+def test_feature_extract_suppresses_short_signal_fft_warnings() -> None:
+    """Short analysis buffers should not emit librosa n_fft size warnings."""
+    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
+
+    node = FeatureExtractNode(n_fft=1024, hop_length=256)
+    short_signal = np.linspace(-0.5, 0.5, 698, dtype=np.float32)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        features = node._extract_features(short_signal, 48_000)
+
+    assert features["mfcc_vector"]
+    assert not [
+        warning
+        for warning in captured
+        if "n_fft=" in str(warning.message) and "too large for input signal" in str(warning.message)
+    ]
+
+
+def test_resolve_show_sections_rebuilds_legacy_single_auto_groove_plan() -> None:
+    """Legacy one-section auto plans should be rebuilt into dynamic phrase sections."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Auto Groove",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 0.0,
+                }
+            ]
+        },
+        [],
+        324.388,
+        track_seed="legacy-auto-track",
+    )
+
+    assert len(resolved) >= 5
+    assert resolved[0]["start_seconds"] == 0.0
+    assert resolved[-1]["end_seconds"] == 324.388
+    assert any(section["kind"] == "drop" for section in resolved)
+
+
+def test_resolve_show_sections_rebuilds_fractional_timing_plan() -> None:
+    """Bad persisted plans with 0..1 normalized timings should be rebuilt in real seconds."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Auto Intro",
+                    "kind": "intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 0.25,
+                },
+                {
+                    "id": "section_001",
+                    "label": "Auto Drop 2",
+                    "kind": "drop",
+                    "start_seconds": 0.25,
+                    "end_seconds": 0.5,
+                },
+            ]
+        },
+        [],
+        324.388,
+        track_seed="fractional-auto-track",
+    )
+
+    assert len(resolved) >= 5
+    assert resolved[1]["start_seconds"] > 1.0
+    assert resolved[-1]["end_seconds"] == 324.388
+
+
+def test_resolve_show_sections_refreshes_legacy_laser_program_shape() -> None:
+    """Persisted sections with the old wide laser-program layout should be upgraded."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Drop A",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 64.0,
+                    "laser_program": {
+                        "launch": {"label": "Legacy Launch", "pattern": "tunnel"},
+                        "sustain": [
+                            {"label": "Legacy Sustain 1", "pattern": "tunnel"},
+                            {"label": "Legacy Sustain 2", "pattern": "fan"},
+                            {"label": "Legacy Sustain 3", "pattern": "sheet"},
+                        ],
+                        "fills": [
+                            {"label": "Legacy Fill 1", "pattern": "crisscross"},
+                        ],
+                        "release": {"label": "Legacy Release", "pattern": "spirograph"},
+                    },
+                }
+            ]
+        },
+        [{"name": "Drop A", "kind": "drop", "start_seconds": 0.0, "energy_hint": 8}],
+        64.0,
+        track_seed="legacy-laser-program",
+    )
+
+    laser_program = resolved[0]["laser_program"]
+    assert laser_program["launch"]["label"] == "Launch Hook"
+    assert [look["label"] for look in laser_program["sustain"]] == ["Sustain A", "Sustain B"]
+    assert [look["label"] for look in laser_program["fills"]] == ["Fill A", "Fill B"]
+    assert laser_program["release"]["label"] == "Release Hook"
+
+
+def test_resolve_show_sections_refreshes_legacy_generated_section_patterns() -> None:
+    """Older persisted sections should refresh generated lighting fields from current defaults."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Build A",
+                    "kind": "build",
+                    "start_seconds": 0.0,
+                    "end_seconds": 64.0,
+                    "scene_id": "intro_ambient",
+                    "fixture_mode": "intro",
+                    "laser_pattern": "beam_sequence_clockwise",
+                    "mover_pattern": "drift",
+                    "wash_pattern": "ambient",
+                    "led_pattern": "pulse",
+                    "laser_program": {
+                        "launch": {"label": "Launch Hook", "pattern": "beam_sequence_clockwise"},
+                        "sustain": [{"label": "Sustain A", "pattern": "beam_sequence_clockwise"}, {"label": "Sustain B", "pattern": "dual_beam"}],
+                        "fills": [{"label": "Fill A", "pattern": "beam_sequence_clockwise"}, {"label": "Fill B", "pattern": "beam_sequence_clockwise"}],
+                        "release": {"label": "Release Hook", "pattern": "beam_sequence_clockwise"},
+                    },
+                }
+            ]
+        },
+        [{"name": "Build A", "kind": "build", "start_seconds": 0.0, "energy_hint": 7}],
+        64.0,
+        track_seed="refresh-generated-fields",
+    )
+
+    section = resolved[0]
+    assert section["generator_version"] == 2
+    assert section["fixture_mode"] == "rebuild"
+    assert section["laser_pattern"] != "beam_sequence_clockwise"
+    assert section["mover_pattern"] != "drift"
+    assert section["wash_pattern"] != "ambient"
 
 
 # ---------------------------------------------------------------------------

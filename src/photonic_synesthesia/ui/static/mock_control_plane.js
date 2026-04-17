@@ -227,6 +227,14 @@ function shiftColor(hex, shifts = {}) {
   };
 }
 
+function paletteColor(visual, index, fallback) {
+  const palette = Array.isArray(visual?.scene?.palette) ? visual.scene.palette.filter(Boolean) : [];
+  if (palette.length === 0) {
+    return colorObject(fallback);
+  }
+  return colorObject(palette[((index % palette.length) + palette.length) % palette.length]);
+}
+
 async function api(path, options = {}) {
   const request = {
     method: options.method || "GET",
@@ -280,7 +288,16 @@ function playbackRenderKey(playback) {
   if (!playback || !playback.available) {
     return "none";
   }
-  return `${playback.session_id || "no-session"}|${playback.audio_url}`;
+  return [
+    playback.session_id || "no-session",
+    playback.audio_url || "no-audio",
+    playback.track_key || "no-track",
+    playback.show_plan_path || "no-show-plan",
+    playback.selection_mode || "procedural",
+    Number(playback.selection_variance || 0).toFixed(3),
+    Number(playback.metadata_bound_at || 0).toFixed(3),
+    String((playback.show_sections || []).length),
+  ].join("|");
 }
 
 function applyPlaybackState(playback) {
@@ -370,6 +387,70 @@ function applyMockState(state, { preserveSelection = true } = {}) {
   }
 }
 
+function playbackSelectionVariance(value) {
+  return clamp(Number(value || 0), 0, 1);
+}
+
+function playbackSelectionMode(value) {
+  if (value === "ai_assisted" || value === "local_ollama_cpu") {
+    return value;
+  }
+  return "procedural";
+}
+
+function selectionModeLabel(selectionMode) {
+  if (selectionMode === "ai_assisted") {
+    return "AI-Assisted";
+  }
+  if (selectionMode === "local_ollama_cpu") {
+    return "Local Ollama (CPU)";
+  }
+  return "Procedural";
+}
+
+function selectionModeHint(selectionMode) {
+  if (selectionMode === "ai_assisted") {
+    return "semantic scorer active";
+  }
+  if (selectionMode === "local_ollama_cpu") {
+    return "qwen2.5:1.5b constrained chooser";
+  }
+  return "procedural rotation active";
+}
+
+function selectionVarianceDescriptor(value) {
+  if (value <= 0.08) {
+    return "Locked";
+  }
+  if (value <= 0.3) {
+    return "Tight";
+  }
+  if (value <= 0.62) {
+    return "Balanced";
+  }
+  if (value <= 0.85) {
+    return "Adventurous";
+  }
+  return "Wild";
+}
+
+function selectionVarianceHint(value, selectionMode) {
+  const descriptor = selectionVarianceDescriptor(value).toLowerCase();
+  if (selectionMode === "ai_assisted") {
+    return value <= 0.08
+      ? "semantic top-choice lock"
+      : `${descriptor} softmax spread`;
+  }
+  if (selectionMode === "local_ollama_cpu") {
+    return value <= 0.08
+      ? "seeded local model lock"
+      : `${descriptor} local candidate temperature`;
+  }
+  return value <= 0.08
+    ? "ordered candidate lock"
+    : `${descriptor} weighted rotation`;
+}
+
 function renderPlayback() {
   if (!elements.playbackPanel) {
     return;
@@ -383,6 +464,11 @@ function renderPlayback() {
   }
 
   elements.playbackPanel.className = "playback-panel";
+  const selectionMode = playbackSelectionMode(playback.selection_mode);
+  const selectionVariance = playbackSelectionVariance(playback.selection_variance);
+  const selectionVariancePercent = Math.round(selectionVariance * 100);
+  const hasAudio = Boolean(playback.audio_url);
+  const seekable = Boolean(playback.seekable);
   elements.playbackPanel.innerHTML = `
     <div class="playback-meta">
       <div>
@@ -392,87 +478,192 @@ function renderPlayback() {
       <span>${(playback.show_sections || []).length} sections</span>
     </div>
     <div class="playback-artifacts">
-      <span>Autosave ${safeText(playback.show_plan_path, "pending")}</span>
+      <span>Show ${titleCaseWords(safeText(playback.show_source, "generated"))} · metadata ${titleCaseWords(safeText(playback.metadata_source, "manual"))} · autosave ${safeText(playback.show_plan_path, "pending")}</span>
       ${playback.ilda_export_url ? `<a class="playback-export" href="${playback.ilda_export_url}">Download ${safeText(playback.ilda_transport_type, "ILDA").toUpperCase()}</a>` : "<span>No ILDA export yet</span>"}
     </div>
     <div class="playback-controls">
-      <button type="button" id="sync-audio">Sync To Live</button>
-      <button type="button" id="toggle-follow">Follow Live Off</button>
+      <div class="playback-control-buttons">
+        <button type="button" id="sync-audio" ${hasAudio ? "" : "disabled"}>Sync To Live</button>
+        <button type="button" id="toggle-follow" ${hasAudio ? "" : "disabled"}>Follow Live Off</button>
+      </div>
+      <div class="playback-selection-controls">
+        <label class="playback-mode-toggle" for="selection-mode-select">
+          <div class="playback-mode-copy">
+            <span>Selection Engine</span>
+            <small id="selection-mode-hint">${selectionModeHint(selectionMode)}</small>
+          </div>
+          <select id="selection-mode-select">
+            <option value="procedural" ${selectionMode === "procedural" ? "selected" : ""}>Procedural</option>
+            <option value="ai_assisted" ${selectionMode === "ai_assisted" ? "selected" : ""}>AI-Assisted</option>
+            <option value="local_ollama_cpu" ${selectionMode === "local_ollama_cpu" ? "selected" : ""}>Local Ollama (CPU)</option>
+          </select>
+        </label>
+        <label class="playback-variance-control" for="selection-variance-slider">
+          <div class="playback-variance-copy">
+            <span>Exploration</span>
+            <strong id="selection-variance-value">${selectionVariancePercent}% · ${selectionVarianceDescriptor(selectionVariance)}</strong>
+          </div>
+          <input
+            type="range"
+            id="selection-variance-slider"
+            min="0"
+            max="100"
+            step="1"
+            value="${selectionVariancePercent}"
+          >
+          <small id="selection-variance-hint">${selectionVarianceHint(selectionVariance, selectionMode)}</small>
+        </label>
+      </div>
       <span id="playback-status">Waiting for browser audio…</span>
     </div>
-    <audio id="track-audio" controls preload="auto" src="${playback.audio_url}"></audio>
-    <canvas id="waveform-canvas" width="640" height="96"></canvas>
-    <div id="show-editor" class="show-editor"></div>
+    ${hasAudio
+      ? `<audio id="track-audio" controls preload="auto" src="${playback.audio_url}"></audio>
+    <canvas id="waveform-canvas" width="640" height="96"></canvas>`
+      : `<div class="playback-live-note">Live metadata session: track binding and phrase timeline are active without local browser audio.</div>`}
   `;
 
   const audio = elements.playbackPanel.querySelector("#track-audio");
   const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");
   const syncButton = elements.playbackPanel.querySelector("#sync-audio");
   const followButton = elements.playbackPanel.querySelector("#toggle-follow");
+  const selectionModeSelect = elements.playbackPanel.querySelector("#selection-mode-select");
+  const selectionModeHintNode = elements.playbackPanel.querySelector("#selection-mode-hint");
+  const selectionVarianceSlider = elements.playbackPanel.querySelector("#selection-variance-slider");
+  const selectionVarianceValue = elements.playbackPanel.querySelector("#selection-variance-value");
+  const selectionVarianceHintNode = elements.playbackPanel.querySelector("#selection-variance-hint");
 
   elements.playbackAudio = audio;
   elements.waveformCanvas = waveformCanvas;
   elements.playbackStatus = elements.playbackPanel.querySelector("#playback-status");
   elements.playbackSyncButton = syncButton;
   elements.playbackFollowButton = followButton;
-  elements.showEditor = elements.playbackPanel.querySelector("#show-editor");
+  elements.playbackSelectionModeSelect = selectionModeSelect;
 
-  syncButton.addEventListener("click", async () => {
-    const target = playbackTargetTime();
-    if (Number.isFinite(target)) {
-      audio.currentTime = target;
+  const renderSelectionVarianceLabel = () => {
+    if (!selectionVarianceSlider || !selectionVarianceValue || !selectionVarianceHintNode) {
+      return;
     }
-    try {
-      await audio.play();
-    } catch (error) {
-      console.error(error);
+    const nextVariance = playbackSelectionVariance(Number(selectionVarianceSlider.value) / 100);
+    const nextMode = playbackSelectionMode(selectionModeSelect?.value);
+    selectionVarianceValue.textContent = `${Math.round(nextVariance * 100)}% · ${selectionVarianceDescriptor(nextVariance)}`;
+    selectionVarianceHintNode.textContent = selectionVarianceHint(nextVariance, nextMode);
+    if (selectionModeHintNode) {
+      selectionModeHintNode.textContent = selectionModeHint(nextMode);
     }
-    syncPlaybackAudio(true);
-  });
-  followButton.addEventListener("click", () => {
-    playbackFollowEnabled = !playbackFollowEnabled;
-    updatePlaybackFollowButton();
-    if (playbackFollowEnabled) {
-      syncPlaybackAudio(true);
-    } else if (audio) {
-      audio.playbackRate = 1;
-    }
-    updatePlaybackStatus();
-  });
+  };
 
-  audio.addEventListener("play", () => {
-    if (playbackFollowEnabled) {
+  if (audio && syncButton && followButton) {
+    syncButton.addEventListener("click", async () => {
+      const target = playbackTargetTime();
+      if (Number.isFinite(target)) {
+        audio.currentTime = target;
+      }
+      try {
+        await audio.play();
+      } catch (error) {
+        console.error(error);
+      }
       syncPlaybackAudio(true);
-    } else {
+    });
+    followButton.addEventListener("click", () => {
+      playbackFollowEnabled = !playbackFollowEnabled;
+      updatePlaybackFollowButton();
+      if (playbackFollowEnabled) {
+        syncPlaybackAudio(true);
+      } else if (audio) {
+        audio.playbackRate = 1;
+      }
+      updatePlaybackStatus();
+    });
+  }
+  if (selectionModeSelect) {
+    selectionModeSelect.addEventListener("change", async () => {
+      const previousMode = selectionMode;
+      const nextMode = playbackSelectionMode(selectionModeSelect.value);
+      selectionModeSelect.disabled = true;
+      if (selectionVarianceSlider) {
+        selectionVarianceSlider.disabled = true;
+      }
+      renderSelectionVarianceLabel();
+      try {
+        await updatePlaybackSelectionMode(nextMode);
+      } catch (error) {
+        console.error(error);
+        selectionModeSelect.value = previousMode;
+        renderSelectionVarianceLabel();
+      } finally {
+        selectionModeSelect.disabled = false;
+        if (selectionVarianceSlider) {
+          selectionVarianceSlider.disabled = false;
+        }
+      }
+    });
+  }
+  if (selectionVarianceSlider) {
+    selectionVarianceSlider.addEventListener("input", () => {
+      renderSelectionVarianceLabel();
+    });
+    selectionVarianceSlider.addEventListener("change", async () => {
+      const nextVariance = playbackSelectionVariance(Number(selectionVarianceSlider.value) / 100);
+      selectionVarianceSlider.disabled = true;
+      if (selectionModeSelect) {
+        selectionModeSelect.disabled = true;
+      }
+      try {
+        await updatePlaybackSelectionVariance(nextVariance);
+      } catch (error) {
+        console.error(error);
+        selectionVarianceSlider.value = String(selectionVariancePercent);
+        renderSelectionVarianceLabel();
+      } finally {
+        selectionVarianceSlider.disabled = false;
+        if (selectionModeSelect) {
+          selectionModeSelect.disabled = false;
+        }
+      }
+    });
+  }
+
+  if (audio) {
+    audio.addEventListener("play", () => {
+      if (playbackFollowEnabled) {
+        syncPlaybackAudio(true);
+      } else {
+        updatePlaybackStatus();
+        drawPlaybackWaveform();
+      }
+    });
+    audio.addEventListener("timeupdate", () => {
       updatePlaybackStatus();
       drawPlaybackWaveform();
-    }
-  });
-  audio.addEventListener("timeupdate", () => {
-    updatePlaybackStatus();
-    drawPlaybackWaveform();
-  });
-  audio.addEventListener("loadedmetadata", () => {
-    audio.playbackRate = 1;
-    if (playbackFollowEnabled) {
-      syncPlaybackAudio(true);
-    }
-    updatePlaybackStatus();
-    drawPlaybackWaveform();
-  });
-  audio.addEventListener("seeked", () => {
-    updatePlaybackStatus();
-    drawPlaybackWaveform();
-  });
-  waveformCanvas.addEventListener("click", (event) => {
-    const rect = waveformCanvas.getBoundingClientRect();
-    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    const duration = Number(playback.duration_seconds || 0);
-    seekPlaybackTo(duration * ratio).catch((error) => {
-      console.error(error);
     });
-  });
-  audio.playbackRate = 1;
+    audio.addEventListener("loadedmetadata", () => {
+      audio.playbackRate = 1;
+      if (playbackFollowEnabled) {
+        syncPlaybackAudio(true);
+      }
+      updatePlaybackStatus();
+      drawPlaybackWaveform();
+    });
+    audio.addEventListener("seeked", () => {
+      updatePlaybackStatus();
+      drawPlaybackWaveform();
+    });
+  }
+  if (waveformCanvas && seekable) {
+    waveformCanvas.addEventListener("click", (event) => {
+      const rect = waveformCanvas.getBoundingClientRect();
+      const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+      const duration = Number(playback.duration_seconds || 0);
+      seekPlaybackTo(duration * ratio).catch((error) => {
+        console.error(error);
+      });
+    });
+  }
+  if (audio) {
+    audio.playbackRate = 1;
+  }
+  renderSelectionVarianceLabel();
   updatePlaybackStatus();
   drawPlaybackWaveform();
   renderShowEditor();
@@ -497,6 +688,9 @@ async function patchShowSection(sectionId, changes) {
 }
 
 async function seekPlaybackTo(seconds) {
+  if (!appState.playback?.seekable) {
+    return;
+  }
   const playback = await api("/api/mock/playback/seek", {
     method: "POST",
     body: { seconds },
@@ -508,6 +702,24 @@ async function seekPlaybackTo(seconds) {
   updatePlaybackStatus();
   drawPlaybackWaveform();
   updateShowEditorActiveState();
+}
+
+async function updatePlaybackSelectionMode(selectionMode) {
+  const playback = await api("/api/mock/playback/selection-mode", {
+    method: "PATCH",
+    body: { selection_mode: selectionMode },
+  });
+  applyPlaybackState(playback);
+  renderPlayback();
+}
+
+async function updatePlaybackSelectionVariance(selectionVariance) {
+  const playback = await api("/api/mock/playback/selection-variance", {
+    method: "PATCH",
+    body: { selection_variance: selectionVariance },
+  });
+  applyPlaybackState(playback);
+  renderPlayback();
 }
 
 function renderShowEditor() {
@@ -523,6 +735,18 @@ function renderShowEditor() {
   }
 
   const activeSection = currentShowSection();
+  const jumpToSection = (sectionId) => {
+    if (!appState.playback?.seekable) {
+      return;
+    }
+    const section = sections.find((item) => item.id === sectionId);
+    if (!section) {
+      return;
+    }
+    seekPlaybackTo(Number(section.start_seconds)).catch((error) => {
+      console.error(error);
+    });
+  };
   const patternSummary = (section) => {
     const families = [
       section.laser_enabled ? "lasers" : null,
@@ -896,10 +1120,10 @@ function renderShowEditor() {
                 <span>Fill Cadence</span>
                 <input data-field="laser_program.fill_trigger_every_bars" type="number" min="1" max="16" step="1" value="${pathValue(section, "laser_program.fill_trigger_every_bars", 4)}" />
               </label>
-              ${laserLookEditor(section, "laser_program.launch", "Launch Look")}
+              ${laserLookEditor(section, "laser_program.launch", "Launch Hook")}
               ${laserLookEditors(section, "laser_program.sustain", "Sustain", 2)}
               ${laserLookEditors(section, "laser_program.fills", "Fill", 2)}
-              ${laserLookEditor(section, "laser_program.release", "Release Look")}
+              ${laserLookEditor(section, "laser_program.release", "Release Hook")}
             </div>
             <div class="show-toggle-row">
               <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
@@ -918,6 +1142,13 @@ function renderShowEditor() {
     if (!section) {
       return;
     }
+    card.addEventListener("click", (event) => {
+      const interactiveTarget = event.target.closest("button, input, select, textarea, label, option");
+      if (interactiveTarget) {
+        return;
+      }
+      jumpToSection(section.id);
+    });
     card.querySelectorAll("select,input,textarea").forEach((input) => {
       const eventName = input.type === "range" ? "input" : "change";
       if (input.dataset.field === "scene_id") {
@@ -958,13 +1189,7 @@ function renderShowEditor() {
 
   elements.showEditor.querySelectorAll("[data-jump-section]").forEach((button) => {
     button.addEventListener("click", () => {
-      const section = sections.find((item) => item.id === button.dataset.jumpSection);
-      if (!section) {
-        return;
-      }
-      seekPlaybackTo(Number(section.start_seconds)).catch((error) => {
-        console.error(error);
-      });
+      jumpToSection(button.dataset.jumpSection);
     });
   });
   elements.showEditor.querySelectorAll("[data-jump-look]").forEach((button) => {
@@ -977,6 +1202,9 @@ function renderShowEditor() {
       const windows = [...laserProgramMainWindows(section), ...laserProgramFillWindows(section)];
       const target = windows.find((window) => window.path === lookPath);
       if (!target) {
+        return;
+      }
+      if (!appState.playback?.seekable) {
         return;
       }
       const sectionStart = Number(section.start_seconds || 0);
@@ -1111,6 +1339,13 @@ function updatePlaybackStatus() {
   }
   const audio = elements.playbackAudio;
   const target = playbackTargetTime();
+  if (!audio) {
+    const section = currentShowSection(target);
+    const stateLabel = appState.playback.playing ? "live metadata" : "metadata standby";
+    const sectionText = section ? ` · ${section.label}` : "";
+    elements.playbackStatus.textContent = `${stateLabel}${sectionText} · source ${titleCaseWords(safeText(appState.playback.metadata_source, "manual"))} · server ${target.toFixed(2)}s`;
+    return;
+  }
   const browserTime = audio ? Number(audio.currentTime || 0) : 0;
   const drift = browserTime - target;
   const section = currentShowSection(target);
@@ -1491,6 +1726,102 @@ function moverPatternFamily(pattern) {
   return "drift";
 }
 
+function textHash(value) {
+  const text = safeText(value, "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash * 33) + text.charCodeAt(index)) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+function synchronizedMoverProfile(section, visual, activeProgramLook) {
+  const basePattern = safeText(section?.mover_pattern, "drift");
+  const baseFamily = moverPatternFamily(basePattern);
+  if (!activeProgramLook) {
+    return {
+      pattern: basePattern,
+      family: baseFamily,
+      role: "",
+      renderFamily: "",
+      phaseScale: 1,
+      phaseOffset: 0,
+      motionScale: 1,
+      beamScale: 1,
+    };
+  }
+
+  const lookRole = safeText(activeProgramLook.__role, "");
+  const renderFamily = laserRenderFamily(activeProgramLook.pattern, activeProgramLook.geometry_family);
+  const lookMotion = clamp(Number(activeProgramLook.motion || 1), 0.35, 2);
+  const lookEmphasis = clamp(Number(activeProgramLook.emphasis || 0.5), 0, 1);
+
+  let candidates;
+  if (lookRole === "release") {
+    candidates = ["hold", "drift", "leaf"];
+  } else if (lookRole === "fill") {
+    if (["burst", "grouped", "lattice", "array"].includes(renderFamily)) {
+      candidates = ["snap_hits", "cross_sweep", "mirror_fan"];
+    } else if (["sequence", "scan", "rake"].includes(renderFamily)) {
+      candidates = ["line_bounce", "cross_sweep", "mirror_fan"];
+    } else if (["tunnel", "cone", "helix"].includes(renderFamily)) {
+      candidates = ["ping_pong_tilt", "rise", "cross_sweep"];
+    } else {
+      candidates = ["snap_hits", "square", "diamond"];
+    }
+  } else if (lookRole === "launch") {
+    if (["burst", "grouped", "array"].includes(renderFamily)) {
+      candidates = ["cross_sweep", "mirror_fan", "square"];
+    } else if (["tunnel", "cone", "sky", "helix"].includes(renderFamily)) {
+      candidates = ["rise", "mirror_fan", "figure_eight"];
+    } else if (["sequence", "scan", "rake"].includes(renderFamily)) {
+      candidates = ["cross_sweep", "line_bounce", "ping_pong_tilt"];
+    } else {
+      candidates = ["figure_eight", "circle", "mirror_fan"];
+    }
+  } else if (["trace", "sheet"].includes(renderFamily)) {
+    candidates = ["figure_eight", "circle", "leaf"];
+  } else if (["sequence", "scan", "rake"].includes(renderFamily)) {
+    candidates = ["cross_sweep", "line_bounce", "mirror_fan"];
+  } else if (["tunnel", "cone", "sky", "helix"].includes(renderFamily)) {
+    candidates = ["rise", "circle", "figure_eight"];
+  } else if (["burst", "grouped", "lattice", "array"].includes(renderFamily)) {
+    candidates = ["square", "diamond", "cross_sweep"];
+  } else {
+    candidates = baseFamily === "hits"
+      ? ["snap_hits", "cross_sweep", "mirror_fan"]
+      : baseFamily === "shape"
+        ? ["figure_eight", "circle", "leaf"]
+        : baseFamily === "cross"
+          ? ["cross_sweep", "mirror_fan", "line_bounce"]
+          : baseFamily === "rise"
+            ? ["rise", "ping_pong_tilt", "circle"]
+            : ["drift", "circle", "leaf"];
+  }
+
+  const token = `${section?.id || ""}:${lookRole}:${renderFamily}:${activeProgramLook.pattern}:${basePattern}`;
+  const hash = textHash(token);
+  const pattern = candidates[hash % candidates.length];
+  const phaseScale = (lookRole === "fill" ? 1.4 : lookRole === "launch" ? 1.2 : lookRole === "release" ? 0.68 : 1)
+    * (0.84 + lookMotion * 0.24);
+  const phaseOffset = ((hash % 628) / 100);
+  const motionScale = (lookRole === "release" ? 0.45 : lookRole === "fill" ? 1.18 : lookRole === "launch" ? 1.08 : 0.96)
+    * (0.82 + lookMotion * 0.22);
+  const beamScale = (lookRole === "fill" ? 0.92 : lookRole === "launch" ? 1.08 : lookRole === "release" ? 1.12 : 1)
+    * (0.86 + lookEmphasis * 0.28);
+
+  return {
+    pattern,
+    family: moverPatternFamily(pattern),
+    role: lookRole,
+    renderFamily,
+    phaseScale,
+    phaseOffset,
+    motionScale,
+    beamScale,
+  };
+}
+
 function washPatternFamily(pattern) {
   if (["fade", "breakdown_glow"].includes(pattern)) return "fade";
   if (["bloom", "build_ramp", "center_out", "outside_in", "gradient_roll"].includes(pattern)) return "bloom";
@@ -1558,22 +1889,23 @@ function describeLaserBehavior(output, visual) {
 
 function describeMoverBehavior(output, visual) {
   const family = moverPatternFamily(output.pattern);
+  const roleText = output.syncRole ? `${output.syncRole} sync` : "";
   if (family === "hold") {
-    return "held focus look";
+    return [roleText, "held focus look"].filter(Boolean).join(" · ");
   }
   if (family === "hits") {
-    return visual.beatPulse > 0.45 ? "snap hits on beat" : "waiting for hit";
+    return [roleText, visual.beatPulse > 0.45 ? "snap hits on beat" : "waiting for hit"].filter(Boolean).join(" · ");
   }
   if (family === "cross") {
-    return "wide cross sweeps";
+    return [roleText, "wide cross sweeps"].filter(Boolean).join(" · ");
   }
   if (family === "shape") {
-    return "figure motion across stage";
+    return [roleText, "figure motion across stage"].filter(Boolean).join(" · ");
   }
   if (family === "rise") {
-    return "lifting tilt arc";
+    return [roleText, "lifting tilt arc"].filter(Boolean).join(" · ");
   }
-  return "slow pan/tilt drift";
+  return [roleText, "slow pan/tilt drift"].filter(Boolean).join(" · ");
 }
 
 function describeWashBehavior(output) {
@@ -1638,6 +1970,10 @@ function laserBeamColor(baseColor, laserExpression, output, visual) {
   const whiteAccent = clamp(Number(laserExpression.white_accent || 0), 0, 1);
   const cycleRate = Number(laserExpression.color_cycle_rate || 1) * (0.75 + visual.colorDrive * 0.85);
   const phase = Number(output.phase || 0);
+  const base = colorObject(baseColor);
+  const scenePrimary = paletteColor(visual, 0, baseColor);
+  const sceneSecondary = paletteColor(visual, 1, shiftColor(baseColor, { r: 80, g: -70, b: -80 }));
+  const sceneTertiary = paletteColor(visual, 2, shiftColor(baseColor, { r: 135, g: -120, b: 35 }));
 
   if (mode === "white_hits") {
     const mix = clamp(
@@ -1649,27 +1985,24 @@ function laserBeamColor(baseColor, laserExpression, output, visual) {
       0,
       1,
     );
-    return mixColor(baseColor, "#ffffff", mix);
+    const accent = mixColor(scenePrimary, "#ffffff", 0.18 + visual.colorDrive * 0.2);
+    return mixColor(accent, "#ffffff", mix);
   }
   if (mode === "morph") {
-    const target = shiftColor(baseColor, {
-      r: 15 + visual.pitchHeight * 55,
-      g: -45 + visual.harmonicChange * 30,
-      b: 35 + visual.melodicSmoothness * 45,
-    });
-    const mix = ((Math.sin(phase * cycleRate) + 1) * 0.5) * (0.45 + visual.colorDrive * 0.6);
-    return mixColor(baseColor, target, mix);
+    const targetA = mixColor(sceneSecondary, sceneTertiary, visual.pitchHeight * 0.55);
+    const targetB = mixColor(scenePrimary, "#ffffff", 0.12 + visual.melodicSmoothness * 0.28);
+    const morphBase = mixColor(base, targetA, 0.48 + visual.colorDrive * 0.32);
+    const travel = (Math.sin(phase * cycleRate) + 1) * 0.5;
+    return mixColor(morphBase, targetB, clamp(travel * (0.42 + visual.colorDrive * 0.42), 0, 1));
   }
   if (mode === "dual_cycle") {
-    const alt = shiftColor(baseColor, {
-      r: -30 + visual.timbralHarshness * 35,
-      g: 35 + visual.melodicSmoothness * 45,
-      b: 20 + visual.pitchSalience * 65,
-    });
-    const mix = triangleWave(phase * cycleRate * 0.8) * (0.35 + visual.colorDrive * 0.7);
-    return mixColor(baseColor, alt, mix);
+    const altA = mixColor(sceneSecondary, "#ffffff", 0.08 + visual.timbralHarshness * 0.18);
+    const altB = mixColor(sceneTertiary, base, 0.22 + visual.pitchSalience * 0.28);
+    const cycle = triangleWave(phase * cycleRate * 0.8);
+    const swing = mixColor(altA, altB, cycle);
+    return mixColor(scenePrimary, swing, 0.52 + visual.colorDrive * 0.32);
   }
-  return hexToRgb(baseColor);
+  return mixColor(base, scenePrimary, 0.18 + visual.colorDrive * 0.14);
 }
 
 function laserDynamicTargetBias(targetBias, visual, dropMode) {
@@ -2079,6 +2412,7 @@ function renderInspector() {
 function fixtureOutput(fixture, visual) {
   const phase = (visual.motionPhase * appState.masterSpeed) + fixture.phaseOffset;
   const section = visual.section;
+  const activeProgramLook = currentLaserProgramLook(section, visual);
   const fixtureEnabled = fixture.type === "laser"
     ? section?.laser_enabled !== false
     : fixture.type === "moving_head"
@@ -2121,7 +2455,6 @@ function fixtureOutput(fixture, visual) {
   if (fixture.type === "laser") {
     const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
     const rebuildMode = fixtureMode === "rebuild" || visual.structure === "build";
-    const activeProgramLook = currentLaserProgramLook(section, visual);
     const laserPattern = String(activeProgramLook?.pattern || section?.laser_pattern || "fan");
     const laserVariant = sectionVariant(section, "laser_variant");
     const laserExpression = sectionVariant(section, "laser_expression");
@@ -2316,10 +2649,11 @@ function fixtureOutput(fixture, visual) {
 
   if (fixture.type === "moving_head") {
     const motionBias = visual.motionStyle === "sparse" ? 0.55 : visual.motionStyle === "aggressive" ? 1.25 : 1;
-    const moverPattern = String(section?.mover_pattern || "drift");
     const moverVariant = sectionVariant(section, "mover_variant");
-    const moverPhase = phase * Number(moverVariant.phase_scale || 1);
-    const moverFamily = moverPatternFamily(moverPattern);
+    const moverSync = synchronizedMoverProfile(section, visual, activeProgramLook);
+    const moverPattern = moverSync.pattern;
+    const moverPhase = (phase + moverSync.phaseOffset) * Number(moverVariant.phase_scale || 1) * moverSync.phaseScale;
+    const moverFamily = moverSync.family;
     const shapePan = moverFamily === "shape"
       ? Math.sin(moverPhase * 0.9) * Math.cos(moverPhase * 0.46)
       : moverFamily === "cross"
@@ -2342,11 +2676,12 @@ function fixtureOutput(fixture, visual) {
       type: "moving_head",
       color,
       intensity,
-      pan: fixture.pan + shapePan * fixture.pan_range * motionBias * motionGate * Number(moverVariant.pan_scale || 1),
-      tilt: fixture.tilt + shapeTilt * fixture.tilt_range * motionBias * motionGate * Number(moverVariant.tilt_scale || 1),
-      beamWidth: fixture.beam_width * (moverFamily === "hits" ? 0.78 + Number(moverVariant.hit_bias || 0) * 0.16 : 0.9 + visual.beatPulse * 0.25) * Number(moverVariant.beam_scale || 1),
+      pan: fixture.pan + shapePan * fixture.pan_range * motionBias * motionGate * moverSync.motionScale * Number(moverVariant.pan_scale || 1),
+      tilt: fixture.tilt + shapeTilt * fixture.tilt_range * motionBias * motionGate * moverSync.motionScale * Number(moverVariant.tilt_scale || 1),
+      beamWidth: fixture.beam_width * (moverFamily === "hits" ? 0.78 + Number(moverVariant.hit_bias || 0) * 0.16 : 0.9 + visual.beatPulse * 0.25) * moverSync.beamScale * Number(moverVariant.beam_scale || 1),
       pattern: moverPattern,
       variantLabel: safeText(moverVariant.label, ""),
+      syncRole: safeText(moverSync.role, ""),
       phase,
     };
   }
@@ -3146,6 +3481,7 @@ async function boot() {
   elements.dmxMonitor = qs("dmx-monitor");
   elements.stageCanvas = qs("stage-canvas");
   elements.playbackPanel = qs("playback-panel");
+  elements.showEditor = qs("show-editor");
   elements.fixtureActivity = qs("fixture-activity");
 
   await loadCatalog();
