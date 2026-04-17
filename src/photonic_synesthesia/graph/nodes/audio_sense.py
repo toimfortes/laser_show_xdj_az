@@ -12,14 +12,14 @@ import time
 from collections import deque
 
 import numpy as np
-import structlog
 from numpy.typing import NDArray
 
 from photonic_synesthesia.core.config import AudioConfig
 from photonic_synesthesia.core.exceptions import AudioCaptureError, AudioDeviceNotFoundError
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # Import sounddevice conditionally for testing
 try:

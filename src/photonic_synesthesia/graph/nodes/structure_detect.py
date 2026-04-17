@@ -12,12 +12,12 @@ from collections import deque
 from typing import cast
 
 import numpy as np
-import structlog
 
 from photonic_synesthesia.core.config import StructureDetectionConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import MusicStructure, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class StructureDetectNode:

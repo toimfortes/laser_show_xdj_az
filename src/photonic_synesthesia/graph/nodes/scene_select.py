@@ -10,12 +10,11 @@ import json
 import time
 from typing import Any
 
-import structlog
-
 from photonic_synesthesia.core.config import SceneConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import MusicStructure, PhotonicState, SceneState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class SceneSelectNode:
@@ -79,16 +78,29 @@ class SceneSelectNode:
         current_scene = state["scene_state"]["current_scene"]
         pending_scene = None
         transition_progress = state["scene_state"]["transition_progress"]
+        control_state = state["control_state"]
+
+        # =================================================================
+        # Priority 0: Control Plane Scene Hold / Launch
+        # =================================================================
+        held_scene = control_state["scene_hold"]
+        launched_scene = control_state["launched_scene"]
+        if held_scene:
+            pending_scene = held_scene
+        elif launched_scene:
+            pending_scene = launched_scene
+            state["control_state"]["launched_scene"] = None
 
         # =================================================================
         # Priority 1: MIDI Pad Override
         # =================================================================
-        pad_triggers = state["midi_state"]["pad_triggers"]
-        for pad in pad_triggers:
-            if pad in self.pad_overrides:
-                pending_scene = self.pad_overrides[pad]
-                logger.info("Pad override triggered", pad=pad, scene=pending_scene)
-                break
+        if pending_scene is None:
+            pad_triggers = state["midi_state"]["pad_triggers"]
+            for pad in pad_triggers:
+                if pad in self.pad_overrides:
+                    pending_scene = self.pad_overrides[pad]
+                    logger.info("Pad override triggered", pad=pad, scene=pending_scene)
+                    break
 
         # =================================================================
         # Priority 2: Drop Detection
@@ -139,7 +151,8 @@ class SceneSelectNode:
                 transition_progress = 0.0
             else:
                 # Continue existing transition
-                transition_time = self.config.transition_time_s
+                speed_scalar = max(0.1, float(control_state["global_speed"]))
+                transition_time = self.config.transition_time_s / speed_scalar
                 elapsed = current_time - state["scene_state"]["transition_start_time"]
                 transition_progress = min(1.0, elapsed / transition_time)
 

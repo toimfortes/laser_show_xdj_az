@@ -33,6 +33,7 @@ def test_extract_channel_payload_contract() -> None:
 def test_dmx_output_ignores_out_of_range_channels() -> None:
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
     state = create_initial_state()
+    state["control_state"]["armed_live"] = True
     state["fixture_commands"] = [
         {
             "fixture_id": "fx1",
@@ -51,3 +52,21 @@ def test_dmx_output_ignores_out_of_range_channels() -> None:
     assert universe[1] == 123
     assert universe[0] == DMX_START_CODE
     assert universe[512] == 0
+
+
+def test_dmx_output_blackouts_when_disarmed() -> None:
+    node = DMXOutputNode(DMXConfig(interface_type="artnet"))
+    state = create_initial_state()
+    state["fixture_commands"] = [
+        {
+            "fixture_id": "fx1",
+            "fixture_type": "laser",
+            "channel_values": {
+                1: 123,
+            },
+        }
+    ]
+
+    result = node(state)
+
+    assert result["dmx_universe"][1] == 0

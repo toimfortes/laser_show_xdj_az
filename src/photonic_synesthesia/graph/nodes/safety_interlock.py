@@ -17,17 +17,11 @@ from collections.abc import Callable
 from typing import Protocol
 
 from photonic_synesthesia.core.config import FixtureConfig, SafetyConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState, SafetyState
 from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
-try:
-    import structlog
-
-    logger = structlog.get_logger()
-except ImportError:  # pragma: no cover - fallback for minimal test envs
-    import logging
-
-    logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SupportsBlackout(Protocol):
@@ -99,8 +93,8 @@ class HeartbeatWatchdog:
             if elapsed > self._timeout_s and not self._timeout_triggered:
                 self._timeout_triggered = True
                 logger.critical(
-                    "Heartbeat watchdog timeout - triggering blackout (elapsed=%.3fs)",
-                    elapsed,
+                    "Heartbeat watchdog timeout - triggering blackout",
+                    elapsed=round(elapsed, 3),
                 )
                 self._on_timeout()
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -66,6 +66,20 @@ class DMXConfig(BaseModel):
     artnet_broadcast: bool = True
     artnet_net: int = 0
     artnet_subnet: int = 0
+
+
+class ILDAConfig(BaseModel):
+    """ILDA frame generation/export configuration."""
+
+    enabled: bool = True
+    transport_type: str = "memory"  # "memory", "json", "ild", "ether_dream"
+    points_per_frame: int = 120
+    target_fps: float = 30.0
+    export_path: Path | None = None
+    ether_dream_host: str = "127.0.0.1"
+    ether_dream_port: int = 7765
+    ether_dream_timeout_s: float = 1.0
+    ether_dream_low_water_mark: int = 0
 
 
 class FixtureConfig(BaseModel):
@@ -151,6 +165,7 @@ class RuntimeFlagsConfig(BaseModel):
     hybrid_pacing: bool = True
     streaming_dsp: bool = False
     dual_loop: bool = False
+    allow_unverified_laser_profiles: bool = False
 
 
 class Settings(BaseSettings):
@@ -174,6 +189,7 @@ class Settings(BaseSettings):
     pro_dj_link: ProDJLinkConfig = Field(default_factory=ProDJLinkConfig)
     cv: CVConfig = Field(default_factory=CVConfig)
     dmx: DMXConfig = Field(default_factory=DMXConfig)
+    ilda: ILDAConfig = Field(default_factory=ILDAConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     beat_tracking: BeatTrackingConfig = Field(default_factory=BeatTrackingConfig)
     structure_detection: StructureDetectionConfig = Field(default_factory=StructureDetectionConfig)

@@ -20,6 +20,15 @@ class DirectorDecision:
     color_theme: str
     movement_style: str
     strobe_budget_hz: float
+    melodic_smoothness: float
+    laser_aggression: float
+    color_drive: float
+    laser_motion_energy: float
+    laser_color_energy: float
+    phrase_role: str
+    subphrase_role: str
+    fill_pressure: float
+    phrase_intensity: float
     allow_scene_transition: bool
 
 
@@ -66,12 +75,44 @@ class DirectorEngine:
         else:
             movement_style = "steady"
 
+        melodic_smoothness = self._compute_melodic_smoothness(state)
+        laser_aggression = self._compute_laser_aggression(state, structure)
+        color_drive = self._compute_color_drive(state)
+        laser_motion_energy = self._compute_laser_motion_energy(state, structure, laser_aggression)
+        laser_color_energy = self._compute_laser_color_energy(state, color_drive)
+        phrase_role = self._phrase_role(structure)
+        bars_since_structure_change = self._bars_since_structure_change(state)
+        fill_pressure = self._compute_fill_pressure(state, structure, bars_since_structure_change)
+        subphrase_role = self._subphrase_role(
+            state,
+            structure=structure,
+            bars_since_structure_change=bars_since_structure_change,
+            fill_pressure=fill_pressure,
+        )
+        phrase_intensity = self._compute_phrase_intensity(
+            state,
+            structure=structure,
+            subphrase_role=subphrase_role,
+            bars_since_structure_change=bars_since_structure_change,
+            energy=energy,
+            laser_aggression=laser_aggression,
+        )
+
         strobe_budget = 0.0
         if structure == MusicStructure.DROP:
-            # Keep a conservative ceiling for safety.
-            strobe_budget = 8.0 + (energy * 2.0)
+            if subphrase_role == "launch":
+                strobe_budget = 6.0 + (energy * 1.4) + (laser_aggression * 2.0)
+            elif subphrase_role == "fill":
+                strobe_budget = 4.6 + (energy * 1.1) + (fill_pressure * 2.0)
+            elif subphrase_role == "variation":
+                strobe_budget = 3.6 + (energy * 0.9) + (laser_aggression * 1.3)
+            else:
+                strobe_budget = 1.2 + (energy * 0.7) + (laser_aggression * 0.8)
         elif structure == MusicStructure.BUILDUP:
-            strobe_budget = 3.0 + (energy * 2.0)
+            if subphrase_role == "pre_drop":
+                strobe_budget = 2.4 + (energy * 1.0) + (fill_pressure * 1.0)
+            else:
+                strobe_budget = 0.8 + (energy * 0.7) + (laser_aggression * 0.5)
 
         return DirectorDecision(
             target_scene=target_scene,
@@ -79,8 +120,23 @@ class DirectorEngine:
             color_theme=color_theme,
             movement_style=movement_style,
             strobe_budget_hz=min(12.0, max(0.0, strobe_budget)),
+            melodic_smoothness=melodic_smoothness,
+            laser_aggression=laser_aggression,
+            color_drive=color_drive,
+            laser_motion_energy=laser_motion_energy,
+            laser_color_energy=laser_color_energy,
+            phrase_role=phrase_role,
+            subphrase_role=subphrase_role,
+            fill_pressure=fill_pressure,
+            phrase_intensity=phrase_intensity,
             allow_scene_transition=allow_transition,
         )
+
+    @staticmethod
+    def _bars_since_structure_change(state: PhotonicState) -> float:
+        bpm = max(1.0, float(state["fused_bpm"] or state["beat_info"]["bpm"] or 128.0))
+        seconds = max(0.0, float(state["time_since_structure_change"]))
+        return seconds * (bpm / 60.0) / 4.0
 
     def _pick_scene(self, structure: MusicStructure, ml_stream: MLStreamState) -> str:
         if ml_stream.get("confidence", 0.0) >= 0.7:
@@ -103,6 +159,188 @@ class DirectorEngine:
         beat_confidence = float(state["beat_info"]["confidence"])
         weighted = (audio_energy * 0.65) + (transient * 0.25) + (beat_confidence * 0.10)
         return min(1.0, max(0.0, weighted))
+
+    def _compute_melodic_smoothness(self, state: PhotonicState) -> float:
+        features = state["audio_features"]
+        smoothness = (
+            float(features["harmonic_ratio"]) * 0.45
+            + float(features["tonal_stability"]) * 0.3
+            + float(features["pitch_salience"]) * 0.15
+            + (1.0 - float(features["timbral_harshness"])) * 0.1
+        )
+        return min(1.0, max(0.0, smoothness))
+
+    def _compute_laser_aggression(self, state: PhotonicState, structure: MusicStructure) -> float:
+        features = state["audio_features"]
+        aggression = (
+            float(features["percussive_ratio"]) * 0.34
+            + float(features["timbral_harshness"]) * 0.28
+            + float(features["spectral_flux"]) * 0.18
+            + float(features["onset_density"]) * 0.08
+            + float(state["rule_stream"]["transient"]) * 0.12
+            + (0.12 if structure == MusicStructure.DROP else 0.04 if structure == MusicStructure.BUILDUP else 0.0)
+        )
+        return min(1.0, max(0.0, aggression))
+
+    def _compute_color_drive(self, state: PhotonicState) -> float:
+        features = state["audio_features"]
+        drive = (
+            float(features["harmonic_change"]) * 0.42
+            + float(features["harmonic_tension"]) * 0.12
+            + float(features["pitch_salience"]) * 0.18
+            + float(features["pitch_height"]) * 0.1
+            + float(features["spectral_flux"]) * 0.15
+            + float(features["spectral_centroid"] / 12000.0) * 0.15
+        )
+        return min(1.0, max(0.0, drive))
+
+    def _compute_laser_motion_energy(
+        self,
+        state: PhotonicState,
+        structure: MusicStructure,
+        laser_aggression: float,
+    ) -> float:
+        features = state["audio_features"]
+        motion = (
+            laser_aggression * 0.36
+            + float(features["onset_density"]) * 0.18
+            + (1.0 - float(features["melodic_stability"])) * 0.12
+            + float(features["melodic_contour"]) * 0.08
+            + float(state["rule_stream"]["transient"]) * 0.16
+            + (0.1 if structure == MusicStructure.BUILDUP else 0.16 if structure == MusicStructure.DROP else 0.0)
+        )
+        return min(1.0, max(0.0, motion))
+
+    def _compute_laser_color_energy(self, state: PhotonicState, color_drive: float) -> float:
+        features = state["audio_features"]
+        color_energy = (
+            color_drive * 0.42
+            + float(features["harmonic_tension"]) * 0.18
+            + float(features["harmonic_change"]) * 0.14
+            + float(features["pitch_salience"]) * 0.1
+            + abs(float(features["melodic_contour"]) - 0.5) * 0.12
+            + (1.0 - float(features["tonal_stability"])) * 0.04
+        )
+        return min(1.0, max(0.0, color_energy))
+
+    def _compute_fill_pressure(
+        self,
+        state: PhotonicState,
+        structure: MusicStructure,
+        bars_since_structure_change: float,
+    ) -> float:
+        features = state["audio_features"]
+        phrase_cycle = bars_since_structure_change % 4.0
+        phrase_edge = max(0.0, min(1.0, (phrase_cycle - 2.5) / 1.5))
+        pressure = (
+            float(features["harmonic_tension"]) * 0.28
+            + float(features["onset_density"]) * 0.2
+            + float(features["spectral_flux"]) * 0.14
+            + float(state["rule_stream"]["transient"]) * 0.18
+            + float(features["percussive_ratio"]) * 0.1
+            + phrase_edge * 0.1
+            + (0.08 if state["beat_info"]["downbeat"] else 0.0)
+            + (0.12 if structure == MusicStructure.BUILDUP else 0.16 if structure == MusicStructure.DROP else 0.0)
+        )
+        return min(1.0, max(0.0, pressure))
+
+    def _subphrase_role(
+        self,
+        state: PhotonicState,
+        *,
+        structure: MusicStructure,
+        bars_since_structure_change: float,
+        fill_pressure: float,
+    ) -> str:
+        features = state["audio_features"]
+        harmonic_tension = float(features["harmonic_tension"])
+        onset_density = float(features["onset_density"])
+        melodic_smoothness = self._compute_melodic_smoothness(state)
+        phrase_cycle = bars_since_structure_change % 4.0
+        near_phrase_end = phrase_cycle >= 3.0
+
+        if structure == MusicStructure.DROP:
+            if bars_since_structure_change < 1.5:
+                return "launch"
+            if bars_since_structure_change < 4.0:
+                return "settle"
+            if near_phrase_end and fill_pressure >= 0.68:
+                return "fill"
+            if harmonic_tension >= 0.58 or onset_density >= 0.46 or bars_since_structure_change >= 8.0:
+                return "variation"
+            return "groove"
+        if structure == MusicStructure.BUILDUP:
+            if bars_since_structure_change < 1.5:
+                return "lift"
+            if near_phrase_end and fill_pressure >= 0.72:
+                return "pre_drop"
+            if harmonic_tension >= 0.54 or onset_density >= 0.4:
+                return "pressure"
+            return "riser"
+        if structure == MusicStructure.BREAKDOWN:
+            if bars_since_structure_change < 2.0:
+                return "bloom"
+            if harmonic_tension >= 0.5 or melodic_smoothness < 0.5:
+                return "lift"
+            return "float"
+        if structure == MusicStructure.INTRO:
+            return "set"
+        if structure == MusicStructure.OUTRO:
+            return "strip"
+        return "groove"
+
+    def _compute_phrase_intensity(
+        self,
+        state: PhotonicState,
+        *,
+        structure: MusicStructure,
+        subphrase_role: str,
+        bars_since_structure_change: float,
+        energy: float,
+        laser_aggression: float,
+    ) -> float:
+        if structure == MusicStructure.DROP:
+            if subphrase_role == "launch":
+                base = 1.0
+            elif subphrase_role == "fill":
+                base = 0.92
+            elif subphrase_role == "variation":
+                base = 0.84
+            elif subphrase_role == "settle":
+                base = 0.68
+            else:
+                base = 0.74
+            if bars_since_structure_change > 12.0:
+                base -= 0.05
+        elif structure == MusicStructure.BUILDUP:
+            ramp = min(1.0, bars_since_structure_change / 8.0)
+            base = 0.46 + ramp * 0.28
+            if subphrase_role == "pre_drop":
+                base += 0.12
+            elif subphrase_role == "pressure":
+                base += 0.07
+        elif structure == MusicStructure.BREAKDOWN:
+            base = 0.32 if subphrase_role == "float" else 0.42
+        elif structure == MusicStructure.INTRO:
+            base = 0.3
+        elif structure == MusicStructure.OUTRO:
+            base = 0.24
+        else:
+            base = 0.48
+        base += energy * 0.08 + laser_aggression * 0.05
+        return min(1.1, max(0.18, base))
+
+    @staticmethod
+    def _phrase_role(structure: MusicStructure) -> str:
+        return {
+            MusicStructure.INTRO: "intro",
+            MusicStructure.VERSE: "groove",
+            MusicStructure.BUILDUP: "build",
+            MusicStructure.DROP: "drop",
+            MusicStructure.BREAKDOWN: "breakdown",
+            MusicStructure.OUTRO: "outro",
+            MusicStructure.UNKNOWN: "unknown",
+        }[structure]
 
     def _at_phrase_boundary(self, state: PhotonicState) -> bool:
         beat = state["beat_info"]

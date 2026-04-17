@@ -12,12 +12,12 @@ import time
 from collections import deque
 
 import numpy as np
-import structlog
 
 from photonic_synesthesia.core.config import BeatTrackingConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import BeatInfo, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 # Try importing beat tracking backends
 BEATNET_AVAILABLE = False

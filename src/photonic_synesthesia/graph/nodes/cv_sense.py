@@ -10,25 +10,30 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
-import structlog
 
 from photonic_synesthesia.core.config import CVConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import CVState, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
+_cv2: Any = None
+_mss: Any = None
 try:
-    import cv2
-    import mss
+    import cv2 as _cv2_import
+    import mss as _mss_import
 
+    _cv2 = _cv2_import
+    _mss = _mss_import
     CV_AVAILABLE = True
 except ImportError:
     CV_AVAILABLE = False
-    cv2 = None
-    mss = None
+
+cv2: Any = _cv2
+mss: Any = _mss
 
 
 class CVSenseNode:
@@ -282,17 +287,23 @@ class CVSenseNode:
 
         # Convert to HSV for color detection
         hsv = cv2.cvtColor(lookahead, cv2.COLOR_BGR2HSV)
+        blue_lower = np.array([100, 50, 50], dtype=np.uint8)
+        blue_upper = np.array([130, 255, 255], dtype=np.uint8)
+        amber_lower = np.array([10, 100, 100], dtype=np.uint8)
+        amber_upper = np.array([25, 255, 255], dtype=np.uint8)
+        white_lower = np.array([0, 0, 200], dtype=np.uint8)
+        white_upper = np.array([180, 30, 255], dtype=np.uint8)
 
         # Blue detection (bass) - H: 100-130
-        blue_mask = cv2.inRange(hsv, (100, 50, 50), (130, 255, 255))
+        blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
         bass_intensity = np.sum(blue_mask) / (255 * blue_mask.size)
 
         # Orange/amber detection (mids) - H: 10-25
-        amber_mask = cv2.inRange(hsv, (10, 100, 100), (25, 255, 255))
+        amber_mask = cv2.inRange(hsv, amber_lower, amber_upper)
         mid_intensity = np.sum(amber_mask) / (255 * amber_mask.size)
 
         # White detection (highs) - Low saturation, high value
-        white_mask = cv2.inRange(hsv, (0, 0, 200), (180, 30, 255))
+        white_mask = cv2.inRange(hsv, white_lower, white_upper)
         high_intensity = np.sum(white_mask) / (255 * white_mask.size)
 
         return (
