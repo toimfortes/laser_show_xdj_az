@@ -363,6 +363,52 @@ def test_selection_variance_changes_deterministic_plan_with_same_mode() -> None:
     assert locked_signature != exploratory_signature
 
 
+def test_semantic_profile_changes_track_pattern_plan() -> None:
+    base_sections = _default_show_sections(
+        _markers(),
+        360.0,
+        track_seed="same-song",
+        selection_mode="procedural",
+        selection_variance=0.2,
+    )
+    progressive_sections = _default_show_sections(
+        _markers(),
+        360.0,
+        track_seed="same-song",
+        semantic_profile={
+            "genre_hints": ["Progressive House"],
+            "style_bias": {
+                "progressive_patience": 0.85,
+                "drop_aggression": 0.35,
+                "atmosphere": 0.75,
+            },
+        },
+        selection_mode="procedural",
+        selection_variance=0.2,
+    )
+
+    base_signature = [
+        (
+            section["laser_pattern"],
+            section["mover_pattern"],
+            section["wash_pattern"],
+            section["led_pattern"],
+        )
+        for section in base_sections
+    ]
+    progressive_signature = [
+        (
+            section["laser_pattern"],
+            section["mover_pattern"],
+            section["wash_pattern"],
+            section["led_pattern"],
+        )
+        for section in progressive_sections
+    ]
+
+    assert base_signature != progressive_signature
+
+
 def test_resolve_show_sections_refreshes_generated_fields_when_selection_mode_changes() -> None:
     persisted_sections = _default_show_sections(
         _markers(),

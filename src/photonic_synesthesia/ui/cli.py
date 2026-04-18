@@ -607,6 +607,7 @@ def _build_show_catalog_entry(
         structure_markers,
         duration_seconds,
         track_seed=track_key,
+        semantic_profile=semantic_profile,
         selection_mode=selection_mode,
         selection_variance=selection_variance,
     )
@@ -623,6 +624,7 @@ def _build_show_catalog_entry(
                 structure_markers,
                 duration_seconds,
                 track_seed=track_key,
+                semantic_profile=semantic_profile,
                 selection_mode=selection_mode,
                 selection_variance=variance,
             ),
@@ -1135,11 +1137,13 @@ def _build_track_metadata_binding_callback(
             if metadata.get("selection_variance") is not None
             else (persisted_show_plan or {}).get("selection_variance")
         )
+        semantic_profile = copy.deepcopy((persisted_show_plan or {}).get("semantic_profile", {}))
         show_sections = _resolve_show_sections(
             persisted_show_plan,
             structure_markers,
             duration_seconds,
             track_seed=track_key,
+            semantic_profile=semantic_profile,
             selection_mode=selection_mode,
             selection_variance=selection_variance,
         )
@@ -1149,6 +1153,7 @@ def _build_track_metadata_binding_callback(
             "track_key": track_key,
             "file_name": f"{track_artist} - {track_title}".strip(" -") if track_title else fallback_title,
             "duration_seconds": duration_seconds,
+            "semantic_profile": semantic_profile,
             "structure_markers": structure_markers,
             "show_sections": show_sections,
             "selection_mode": selection_mode,
@@ -1294,6 +1299,150 @@ def _pattern_candidates(
     return _dedupe(transition_candidates + profile_candidates + base_candidates)
 
 
+def _semantic_tokens(semantic_profile: dict[str, Any] | None) -> set[str]:
+    if not isinstance(semantic_profile, dict):
+        return set()
+    tokens: set[str] = set()
+    for value in semantic_profile.get("genre_hints", []):
+        text = str(value).strip().lower()
+        if text:
+            tokens.add(text)
+    for value in semantic_profile.get("descriptors", []):
+        text = str(value).strip().lower()
+        if text:
+            tokens.add(text)
+    return tokens
+
+
+def _semantic_style_bias(semantic_profile: dict[str, Any] | None, key: str) -> float:
+    if not isinstance(semantic_profile, dict):
+        return 0.0
+    style_bias = semantic_profile.get("style_bias", {})
+    if not isinstance(style_bias, dict):
+        return 0.0
+    try:
+        return float(style_bias.get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _semantic_pattern_score_bonus(
+    *,
+    family: str,
+    stage: str,
+    context: str,
+    candidate: str,
+    energy_scale: float,
+    semantic_profile: dict[str, Any] | None,
+) -> float:
+    tokens = _semantic_tokens(semantic_profile)
+    if not tokens:
+        return 0.0
+
+    progressive = any("progressive house" in token for token in tokens)
+    melodic = any("melodic house" in token for token in tokens)
+    patience = _semantic_style_bias(semantic_profile, "progressive_patience")
+    aggression = _semantic_style_bias(semantic_profile, "drop_aggression")
+    atmosphere = _semantic_style_bias(semantic_profile, "atmosphere")
+
+    score = 0.0
+    if family == "laser":
+        if stage in {"intro", "breakdown", "outro"}:
+            if candidate in {"thin_scan", "wave", "liquid_sky", "circle_trace", "fan", "horizontal_line_trace", "spirograph", "helix"}:
+                score += 0.22
+            if candidate in {"shutter_hits", "burst_fan", "starburst", "point_array", "mixed_beam_fx", "beam_sequence_counterclockwise"}:
+                score -= 0.36
+        elif stage == "build":
+            if candidate in {"horizontal_rake", "scan_slice", "cone", "spiral_tunnel", "wave", "rotor"}:
+                score += 0.18
+            if candidate in {"target_step_chase", "target_split_chase"} and progressive:
+                score -= 0.14
+        elif stage == "drop":
+            if progressive or melodic:
+                if candidate in {"spiral_tunnel", "tunnel", "sheet", "crisscross", "alternating_beam_groups", "spoke_wheel", "mixed_beam_fx"}:
+                    score += 0.24
+                if candidate in {"starburst", "point_array", "shutter_hits", "beam_sequence_counterclockwise"}:
+                    score -= 0.24
+        if progressive:
+            if stage in {"intro", "breakdown"} and candidate in {"wave", "thin_scan", "horizontal_line_trace"}:
+                score += 0.06
+            if stage == "drop" and candidate in {"tunnel", "crisscross", "spoke_wheel"}:
+                score += 0.08
+        if melodic:
+            if stage in {"intro", "breakdown"} and candidate in {"helix", "spirograph", "circle_trace"}:
+                score += 0.06
+            if stage == "build" and candidate in {"cone", "spiral_tunnel", "rotor"}:
+                score += 0.08
+            if stage == "drop" and candidate in {"mixed_beam_fx", "sheet", "spiral_tunnel", "alternating_beam_groups"}:
+                score += 0.08
+    elif family == "mover":
+        if stage in {"intro", "breakdown", "outro"}:
+            if candidate in {"drift", "circle", "hold", "leaf"}:
+                score += 0.18
+            if candidate in {"snap_hits", "square", "diamond"}:
+                score -= 0.22
+        elif stage == "drop":
+            if candidate in {"cross_sweep", "mirror_fan", "diamond", "ping_pong_tilt"}:
+                score += 0.16
+            if candidate == "snap_hits" and (progressive or melodic):
+                score -= 0.22
+        if progressive and candidate in {"drift", "circle", "cross_sweep"}:
+            score += 0.04
+        if melodic and candidate in {"mirror_fan", "diamond", "figure_eight"}:
+            score += 0.06
+    elif family == "wash":
+        if stage in {"intro", "breakdown", "outro"}:
+            if candidate in {"ambient", "breath", "gradient_roll", "fade"}:
+                score += 0.16
+            if candidate in {"drop_slam", "punch", "white_peak"}:
+                score -= 0.28
+        elif stage == "build":
+            if candidate in {"bloom", "build_ramp", "center_out", "gradient_roll"}:
+                score += 0.14
+        elif stage == "drop":
+            if candidate in {"downbeat_hit", "white_peak", "punch"}:
+                score += 0.12
+            if candidate == "drop_slam" and (progressive or melodic):
+                score -= 0.28
+        if progressive and candidate in {"breath", "gradient_roll", "white_peak"}:
+            score += 0.04
+        if melodic and candidate in {"center_out", "bloom", "downbeat_hit"}:
+            score += 0.05
+    elif family == "led":
+        if stage in {"intro", "breakdown", "outro"}:
+            if candidate in {"fade", "pulse", "horizontal_lines", "sparkle", "horizontal_ramp"}:
+                score += 0.14
+            if candidate in {"snake", "audio_spectrum", "chase"}:
+                score -= 0.18
+        elif stage == "build":
+            if candidate in {"vertical_build", "vertical_offset", "rotating_line"}:
+                score += 0.14
+        elif stage == "drop":
+            if candidate in {"chase", "rotating_line", "audio_spectrum"}:
+                score += 0.14
+            if candidate == "snake" and (progressive or melodic):
+                score -= 0.18
+        if progressive and candidate in {"fade", "rotating_line"}:
+            score += 0.04
+        if melodic and candidate in {"audio_spectrum", "vertical_offset", "sparkle"}:
+            score += 0.05
+
+    if patience >= 0.7 and stage in {"intro", "breakdown"} and energy_scale <= 0.6:
+        if family == "laser" and candidate in {"thin_scan", "wave", "liquid_sky", "circle_trace", "fan"}:
+            score += 0.08
+        if family == "wash" and candidate in {"ambient", "breath", "fade"}:
+            score += 0.06
+    if aggression <= 0.45 and context == "drop_launch":
+        if candidate in {"drop_slam", "snap_hits", "starburst", "point_array"}:
+            score -= 0.18
+    if atmosphere >= 0.7 and stage in {"breakdown", "outro"}:
+        if family == "laser" and candidate in {"liquid_sky", "spirograph", "helix", "circle_trace"}:
+            score += 0.08
+        if family == "mover" and candidate in {"drift", "leaf", "hold"}:
+            score += 0.06
+    return score
+
+
 def _ai_assisted_pattern_score(
     *,
     family: str,
@@ -1306,6 +1455,9 @@ def _ai_assisted_pattern_score(
     candidate: str,
     candidates: list[str],
     previous_pattern: str | None,
+    recent_patterns: list[str] | None = None,
+    usage_count: int = 0,
+    semantic_profile: dict[str, Any] | None = None,
 ) -> float:
     stage = _pattern_stage(kind)
     candidate_index = candidates.index(candidate)
@@ -1314,6 +1466,20 @@ def _ai_assisted_pattern_score(
 
     if candidate == previous_pattern:
         score -= 1.5
+    if usage_count > 0:
+        score -= min(0.9, usage_count * 0.28)
+    if recent_patterns:
+        recent_hits = sum(1 for value in recent_patterns if value == candidate)
+        score -= recent_hits * 0.22
+
+    score += _semantic_pattern_score_bonus(
+        family=family,
+        stage=stage,
+        context=context,
+        candidate=candidate,
+        energy_scale=energy_scale,
+        semantic_profile=semantic_profile,
+    )
 
     if family == "laser":
         geometry = _LASER_PATTERN_GEOMETRY.get(candidate, "fan")
@@ -1382,6 +1548,9 @@ def _candidate_priority(
     ordinal: int,
     energy_scale: float,
     previous_pattern: str | None,
+    recent_patterns: list[str] | None = None,
+    usage_count_by_pattern: dict[str, int] | None = None,
+    semantic_profile: dict[str, Any] | None = None,
 ) -> list[str]:
     candidates = _pattern_candidates(family=family, kind=kind, context=context, profile=profile)
     if not candidates:
@@ -1399,6 +1568,9 @@ def _candidate_priority(
             candidate=candidate,
             candidates=candidates,
             previous_pattern=previous_pattern,
+            recent_patterns=recent_patterns,
+            usage_count=(usage_count_by_pattern or {}).get(candidate, 0),
+            semantic_profile=semantic_profile,
         )
         scored_candidates.append((candidate, score))
     scored_candidates.sort(key=lambda item: item[1], reverse=True)
@@ -1455,6 +1627,9 @@ def _ollama_section_selection(
     ordinal: int,
     energy_scale: float,
     previous_patterns: dict[str, str | None],
+    pattern_history: dict[str, list[str]] | None,
+    usage_count_by_family: dict[str, dict[str, int]] | None,
+    semantic_profile: dict[str, Any] | None,
     selection_variance: float,
 ) -> dict[str, str] | None:
     selection_variance = _normalize_selection_variance(selection_variance)
@@ -1470,6 +1645,9 @@ def _ollama_section_selection(
             ordinal=ordinal,
             energy_scale=energy_scale,
             previous_pattern=previous_patterns.get(family),
+            recent_patterns=(pattern_history or {}).get(family, [])[-4:],
+            usage_count_by_pattern=(usage_count_by_family or {}).get(family, {}),
+            semantic_profile=semantic_profile,
         )
         limited = ranked[:_OLLAMA_CPU_MAX_CANDIDATES]
         if not limited:
@@ -1554,6 +1732,9 @@ def _select_pattern(
     marker_name: str,
     ordinal: int,
     previous_pattern: str | None,
+    recent_patterns: list[str] | None = None,
+    usage_count_by_pattern: dict[str, int] | None = None,
+    semantic_profile: dict[str, Any] | None = None,
     selection_mode: str = "procedural",
     energy_scale: float = 0.6,
     selection_variance: float = 0.0,
@@ -1579,6 +1760,9 @@ def _select_pattern(
                 candidate=candidate,
                 candidates=candidates,
                 previous_pattern=previous_pattern,
+                recent_patterns=recent_patterns,
+                usage_count=(usage_count_by_pattern or {}).get(candidate, 0),
+                semantic_profile=semantic_profile,
             )
             scored_candidates.append((candidate, score))
         scored_candidates.sort(key=lambda item: item[1], reverse=True)
@@ -1597,7 +1781,25 @@ def _select_pattern(
     digest = _stable_digest(f"{track_seed}:{family}:{kind}:{context}:{ordinal}:{marker_name}")
     start_index = int.from_bytes(digest[:2], "big") % len(candidates)
     ordered = candidates[start_index:] + candidates[:start_index]
+    recent_pattern_set = set(recent_patterns or [])
+    usage_counts = usage_count_by_pattern or {}
     ordered_nonrepeat = [candidate for candidate in ordered if candidate != previous_pattern] or ordered
+    stage = _pattern_stage(kind)
+    ordered_nonrepeat.sort(
+        key=lambda candidate: (
+            -_semantic_pattern_score_bonus(
+                family=family,
+                stage=stage,
+                context=context,
+                candidate=candidate,
+                energy_scale=energy_scale,
+                semantic_profile=semantic_profile,
+            ),
+            candidate in recent_pattern_set,
+            usage_counts.get(candidate, 0),
+            ordered.index(candidate),
+        )
+    )
     if selection_variance <= 0:
         return ordered_nonrepeat[0]
     scale = 0.35 + selection_variance * 1.55
@@ -1620,6 +1822,9 @@ def _select_section_patterns(
     marker_name: str,
     ordinal: int,
     previous_patterns: dict[str, str | None],
+    pattern_history: dict[str, list[str]] | None,
+    usage_count_by_family: dict[str, dict[str, int]] | None,
+    semantic_profile: dict[str, Any] | None,
     selection_mode: str,
     energy_scale: float,
     selection_variance: float,
@@ -1642,6 +1847,9 @@ def _select_section_patterns(
             ordinal=ordinal,
             energy_scale=energy_scale,
             previous_patterns=previous_patterns,
+            pattern_history=pattern_history,
+            usage_count_by_family=usage_count_by_family,
+            semantic_profile=semantic_profile,
             selection_variance=selection_variance,
         )
     for family in ("laser", "mover", "wash", "led"):
@@ -1662,6 +1870,9 @@ def _select_section_patterns(
             marker_name=marker_name,
             ordinal=ordinal,
             previous_pattern=previous_patterns.get(family),
+            recent_patterns=(pattern_history or {}).get(family, [])[-4:],
+            usage_count_by_pattern=(usage_count_by_family or {}).get(family, {}),
+            semantic_profile=semantic_profile,
             selection_mode=fallback_mode,
             energy_scale=energy_scale,
             selection_variance=selection_variance,
@@ -2301,6 +2512,7 @@ def _default_show_sections(
     duration_seconds: float,
     *,
     track_seed: str | None = None,
+    semantic_profile: dict[str, Any] | None = None,
     selection_mode: str = "procedural",
     selection_variance: float = 0.0,
 ) -> list[dict[str, Any]]:
@@ -2318,6 +2530,8 @@ def _default_show_sections(
 
     sections: list[dict[str, Any]] = []
     previous_patterns: dict[str, str | None] = {"laser": None, "mover": None, "wash": None, "led": None}
+    pattern_history: dict[str, list[str]] = {"laser": [], "mover": [], "wash": [], "led": []}
+    usage_count_by_family: dict[str, dict[str, int]] = {"laser": {}, "mover": {}, "wash": {}, "led": {}}
     kind_counts: dict[str, int] = {}
     ordered = sorted(markers, key=lambda item: float(item["start_seconds"]))
     for index, marker in enumerate(ordered):
@@ -2362,6 +2576,9 @@ def _default_show_sections(
             marker_name=str(marker["name"]),
             ordinal=ordinal,
             previous_patterns=previous_patterns,
+            pattern_history=pattern_history,
+            usage_count_by_family=usage_count_by_family,
+            semantic_profile=semantic_profile,
             selection_mode=selection_mode,
             energy_scale=energy_scale,
             selection_variance=selection_variance,
@@ -2376,6 +2593,9 @@ def _default_show_sections(
             "wash": wash_pattern,
             "led": led_pattern,
         })
+        for family, pattern in section_patterns.items():
+            pattern_history[family].append(pattern)
+            usage_count_by_family[family][pattern] = usage_count_by_family[family].get(pattern, 0) + 1
         laser_enabled, movers_enabled, washes_enabled, leds_enabled = _fixture_enablement(
             kind=kind,
             context=context,
@@ -2477,6 +2697,7 @@ def _resolve_show_sections(
     duration_seconds: float,
     *,
     track_seed: str,
+    semantic_profile: dict[str, Any] | None = None,
     selection_mode: str | None = None,
     selection_variance: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -2560,6 +2781,7 @@ def _resolve_show_sections(
                 markers,
                 duration_seconds,
                 track_seed=track_seed,
+                semantic_profile=semantic_profile,
                 selection_mode=resolved_selection_mode,
                 selection_variance=resolved_selection_variance,
             )
@@ -3308,11 +3530,13 @@ def run_file(
             if persisted_show_plan
             else 0.0
         )
+        semantic_profile = copy.deepcopy((persisted_show_plan or {}).get("semantic_profile", {}))
         active_show_sections = _resolve_show_sections(
             persisted_show_plan,
             structure_markers,
             audio_node.duration_seconds,
             track_seed=track_key,
+            semantic_profile=semantic_profile,
             selection_mode=selection_mode,
             selection_variance=selection_variance,
         )
@@ -3327,6 +3551,7 @@ def run_file(
                 structure_markers,
                 audio_node.duration_seconds,
                 track_seed=track_key,
+                semantic_profile=semantic_profile,
                 selection_mode=mode,
                 selection_variance=variance,
             )
