@@ -65,7 +65,7 @@ class PhotonicGraph:
 
     def __init__(
         self,
-        graph: Any,  # Compiled StateGraph
+        graph: Any,  # Compiled sequential pipeline
         settings: Settings,
         nodes: dict[str, Any],
         control_plane_service: ControlPlaneStateService | None = None,
@@ -132,6 +132,7 @@ class PhotonicGraph:
         """Execute one iteration of the graph."""
         with self._state_lock:
             self._sync_control_state()
+            self._sync_output_blackout_latches()
             self._state = self.graph.invoke(self._state)
             if self.control_plane_service is not None:
                 node_stats = {
@@ -151,6 +152,25 @@ class PhotonicGraph:
         self._state["control_state"].update(
             self.control_plane_service.consume_control_snapshot_for_graph(),
         )
+
+    def _sync_output_blackout_latches(self) -> None:
+        control_state = self._state["control_state"]
+        safety_state = self._state["safety_state"]
+        should_blackout = bool(
+            not control_state["armed_live"]
+            or control_state["blackout_active"]
+            or safety_state["emergency_stop"]
+        )
+
+        for output_name in ("dmx_output", "ilda_output", "ilda_transport"):
+            output = self.nodes.get(output_name)
+            if output is None:
+                continue
+            if should_blackout:
+                if hasattr(output, "request_blackout"):
+                    output.request_blackout()
+            elif hasattr(output, "clear_blackout_request"):
+                output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""

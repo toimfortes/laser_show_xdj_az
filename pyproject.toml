@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "photonic-synesthesia"
 version = "0.1.0"
-description = "AI-driven laser show controller for AlphaTheta XDJ-AZ using LangGraph"
+description = "AI-driven laser show controller for AlphaTheta XDJ-AZ with a deterministic node pipeline"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
     { name = "Photonic Synesthesia Team" }
 ]
-keywords = ["dmx", "lighting", "ai", "langgraph", "audio-reactive", "laser", "xdj-az"]
+keywords = ["dmx", "lighting", "ai", "audio-reactive", "laser", "xdj-az"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -26,10 +26,6 @@ classifiers = [
 ]
 
 dependencies = [
-    # LangGraph Orchestration
-    "langgraph>=0.2.0",
-    "langchain-core>=0.3.0",
-
     # Audio Analysis
     "numpy>=1.24.0",
     "scipy>=1.11.0",
