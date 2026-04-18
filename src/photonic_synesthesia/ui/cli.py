@@ -70,6 +70,15 @@ from photonic_synesthesia.showplan._variants import (
     wash_variant as _wash_variant,
 )
 from photonic_synesthesia.showplan.sections import (
+    apply_show_section_validators as _apply_show_section_validators,
+)
+from photonic_synesthesia.showplan.sections import (
+    compatible_laser_pattern as _compatible_laser_pattern,
+)
+from photonic_synesthesia.showplan.sections import (
+    fixture_capability_graph as _fixture_capability_graph,
+)
+from photonic_synesthesia.showplan.sections import (
     fixture_role_map as _fixture_role_map,
 )
 from photonic_synesthesia.showplan.sections import (
@@ -106,16 +115,10 @@ from photonic_synesthesia.showplan.types import (
     VENUE_MODES as _VENUE_MODES,
 )
 from photonic_synesthesia.showplan.types import (
-    apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
-)
-from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
 )
 from photonic_synesthesia.showplan.types import (
     cue_family_id as _cue_family_id,
-)
-from photonic_synesthesia.showplan.types import (
-    laser_zone_policy as _laser_zone_policy,
 )
 from photonic_synesthesia.showplan.types import (
     normalize_venue_mode as _normalize_venue_mode,
@@ -1225,227 +1228,6 @@ def _venue_profile(venue_mode: str | None) -> dict[str, Any]:
     }
 
 
-
-def _fixture_capability_graph(venue_mode: str) -> dict[str, dict[str, Any]]:
-    venue = _normalize_venue_mode(venue_mode)
-    if venue == "medium_room_150_400":
-        laser_geometries = {
-            "intro": ["fan", "scan", "sky", "cone", "trace", "helix", "sheet"],
-            "build": ["fan", "scan", "cone", "rake", "helix", "trace", "sheet", "tunnel", "grouped"],
-            "drop": ["fan", "scan", "sheet", "tunnel", "helix", "trace", "cone", "grouped", "lattice", "burst", "array"],
-            "outro": ["fan", "scan", "sky", "cone", "trace", "helix", "sheet"],
-        }
-        return {
-            "laser": {
-                "supports_hero": True,
-                "allowed_geometries": laser_geometries,
-                "max_density_cap": 0.86,
-                "max_motion_scale": 1.05,
-            },
-            "mover": {"supports_hero": True, "max_motion_scale": 1.0},
-            "wash": {"supports_hero": True, "max_motion_scale": 0.8},
-            "led": {"supports_hero": True, "max_motion_scale": 0.9},
-        }
-    laser_geometries = {
-        "intro": ["fan", "scan", "sky", "cone", "trace", "helix"],
-        "build": ["fan", "scan", "cone", "rake", "helix", "trace"],
-        "drop": ["fan", "scan", "sheet", "tunnel", "helix", "trace", "cone"],
-        "outro": ["fan", "scan", "sky", "cone", "trace", "helix"],
-    }
-    return {
-        "laser": {
-            "supports_hero": False,
-            "allowed_geometries": laser_geometries,
-            "max_density_cap": 0.72,
-            "max_motion_scale": 0.85,
-        },
-        "mover": {"supports_hero": True, "max_motion_scale": 0.9},
-        "wash": {"supports_hero": True, "max_motion_scale": 0.7},
-        "led": {"supports_hero": True, "max_motion_scale": 0.8},
-    }
-
-
-def _capability_stage_for_role(section_role: str) -> str:
-    if section_role in {"build_1", "build_2"}:
-        return "build"
-    if section_role in {"drop_1", "drop_variation"}:
-        return "drop"
-    if section_role == "outro":
-        return "outro"
-    return "intro"
-
-
-def _compatible_laser_pattern(
-    *,
-    base_pattern: str,
-    kind: str,
-    context: str,
-    profile: dict[str, Any],
-    section_role: str,
-    venue_mode: str,
-) -> tuple[str, list[str]]:
-    capability_graph = _fixture_capability_graph(venue_mode)
-    allowed_geometries = set(
-        capability_graph["laser"]["allowed_geometries"].get(
-            _capability_stage_for_role(section_role),
-            capability_graph["laser"]["allowed_geometries"]["intro"],
-        )
-    )
-    geometry = _LASER_PATTERN_GEOMETRY.get(base_pattern, "fan")
-    if geometry in allowed_geometries:
-        return base_pattern, []
-
-    candidates = _pattern_candidates(
-        family="laser",
-        kind=kind,
-        context=context,
-        profile=profile,
-    )
-    for candidate in candidates:
-        candidate_geometry = _LASER_PATTERN_GEOMETRY.get(candidate, "fan")
-        if candidate_geometry in allowed_geometries:
-            return candidate, [
-                f"laser_pattern_degraded:{base_pattern}->{candidate}",
-                f"unsupported_geometry:{geometry}",
-            ]
-    return base_pattern, [f"laser_pattern_unverified:{base_pattern}"]
-
-
-def _sync_section_role_state(
-    *,
-    section: dict[str, Any],
-    lead_family: str,
-    fixture_role_map: dict[str, dict[str, Any]],
-) -> None:
-    section["lead_family"] = lead_family
-    section["fixture_role_map"] = copy.deepcopy(fixture_role_map)
-    cue_recipe = section.get("cue_recipe")
-    if isinstance(cue_recipe, dict):
-        cue_recipe["lead_family"] = lead_family
-        cue_recipe["fixture_role_map"] = copy.deepcopy(fixture_role_map)
-        families = cue_recipe.get("families")
-        if isinstance(families, dict):
-            for family, role_meta in fixture_role_map.items():
-                family_payload = families.get(family)
-                if not isinstance(family_payload, dict):
-                    continue
-                family_payload["role"] = str(role_meta.get("role") or "off")
-                family_payload["coupling_mode"] = str(role_meta.get("coupling_mode") or "independent")
-                family_payload["intensity_ceiling"] = float(role_meta.get("intensity_ceiling") or 0.0)
-                enabled_key = {
-                    "laser": "laser_enabled",
-                    "mover": "movers_enabled",
-                    "wash": "washes_enabled",
-                    "led": "leds_enabled",
-                }[family]
-                family_payload["enabled"] = bool(section.get(enabled_key, family_payload.get("enabled")))
-
-
-def _strobe_level_cap(*, section_role: str, venue_mode: str) -> float:
-    venue = _normalize_venue_mode(venue_mode)
-    if section_role in {"intro", "vocal", "breakdown", "outro"}:
-        return 0.0
-    if section_role == "bridge":
-        return 0.08
-    if venue == "small_room_50_100":
-        if section_role == "drop_variation":
-            return 0.28
-        if section_role == "drop_1":
-            return 0.32
-        if section_role in {"build_1", "build_2"}:
-            return 0.18
-        return 0.14
-    if section_role == "drop_variation":
-        return 0.42
-    if section_role == "drop_1":
-        return 0.46
-    if section_role in {"build_1", "build_2"}:
-        return 0.24
-    return 0.16
-
-
-def _apply_strobe_policy(section: dict[str, Any], venue_mode: str) -> None:
-    section_role = str(section.get("section_role") or "")
-    cap = _strobe_level_cap(section_role=section_role, venue_mode=venue_mode)
-    current_level = float(section.get("strobe_level") or 0.0)
-    level = round(_clamp(min(current_level, cap), 0.0, 1.0), 3)
-    section["strobe_level"] = level
-    profile = section.get("strobe_profile")
-    if isinstance(profile, dict):
-        profile["floor"] = round(min(float(profile.get("floor") or 0.0), level), 3)
-        profile["ceiling"] = round(min(float(profile.get("ceiling") or 0.0), level), 3)
-        if level <= 0:
-            profile["mode"] = "restraint"
-            profile["label"] = "restrained accents"
-
-
-def _apply_laser_policy(section: dict[str, Any], venue_mode: str) -> None:
-    section_role = str(section.get("section_role") or "")
-    allowed = bool(section.get("laser_enabled", False))
-    if section_role in {"vocal", "breakdown"}:
-        allowed = False
-    section["laser_enabled"] = allowed
-    cue_recipe = section.get("cue_recipe")
-    zone_policy = _apply_venue_laser_zone_policy(
-        venue_mode,
-        str(section.get("laser_program", {}).get("zone_policy") or _laser_zone_policy(str(section.get("kind") or ""), str(cue_recipe.get("intent") if isinstance(cue_recipe, dict) else ""))),
-    )
-    laser_program = section.get("laser_program")
-    if isinstance(laser_program, dict):
-        laser_program["zone_policy"] = zone_policy
-    if isinstance(cue_recipe, dict):
-        families = cue_recipe.get("families")
-        if isinstance(families, dict) and isinstance(families.get("laser"), dict):
-            families["laser"]["enabled"] = allowed
-            families["laser"]["zone_policy"] = zone_policy
-
-
-def _drop_variation_lead_family(section: dict[str, Any], previous_drop: dict[str, Any], venue_mode: str) -> str:
-    current = str(section.get("lead_family") or "")
-    previous = str(previous_drop.get("lead_family") or "")
-    if current != previous and current:
-        return current
-    enabled = {
-        "laser": bool(section.get("laser_enabled")),
-        "mover": bool(section.get("movers_enabled")),
-        "wash": bool(section.get("washes_enabled")),
-        "led": bool(section.get("leds_enabled")),
-    }
-    venue = _normalize_venue_mode(venue_mode)
-    preference = ["led", "mover", "wash", "laser"] if venue == "small_room_50_100" else ["laser", "led", "mover", "wash"]
-    for family in preference:
-        if enabled[family] and family != previous:
-            return family
-    return current or previous or "wash"
-
-
-def _apply_show_section_validators(
-    sections: list[dict[str, Any]],
-    *,
-    venue_mode: str,
-) -> list[dict[str, Any]]:
-    validated = [copy.deepcopy(section) for section in sections]
-    previous_drop: dict[str, Any] | None = None
-    for section in validated:
-        section_role = str(section.get("section_role") or "")
-        current_lead = str(section.get("lead_family") or "")
-        if section_role == "drop_variation" and previous_drop is not None:
-            current_lead = _drop_variation_lead_family(section, previous_drop, venue_mode)
-        lead_family, fixture_role_map = _fixture_role_map(
-            section_role=section_role,
-            venue_mode=venue_mode,
-            laser_enabled=bool(section.get("laser_enabled")),
-            movers_enabled=bool(section.get("movers_enabled")),
-            washes_enabled=bool(section.get("washes_enabled")),
-            leds_enabled=bool(section.get("leds_enabled")),
-            preferred_lead_family=current_lead,
-        )
-        _sync_section_role_state(section=section, lead_family=lead_family, fixture_role_map=fixture_role_map)
-        _apply_strobe_policy(section, venue_mode)
-        _apply_laser_policy(section, venue_mode)
-        if section_role in {"drop_1", "drop_variation"}:
-            previous_drop = section
-    return validated
 
 
 def _pattern_candidates(
