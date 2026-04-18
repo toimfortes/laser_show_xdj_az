@@ -32,6 +32,8 @@ from photonic_synesthesia.showplan import (
     build_catalog_model_payload as _build_catalog_model_payload,
     build_cue_recipe as _cue_recipe,
     build_laser_program as _laser_program,
+    build_show_catalog_entry as _showplan_build_show_catalog_entry,
+    resolve_show_sections as _showplan_resolve_show_sections,
 )
 from photonic_synesthesia.showplan.semantic_profile import (
     build_semantic_profile as _showplan_build_semantic_profile,
@@ -3904,12 +3906,6 @@ def analyze(ctx: click.Context, duration: float) -> None:
     finally:
         audio.stop()
         click.echo()
-
-
-from photonic_synesthesia.showplan import (
-    build_show_catalog_entry as _showplan_build_show_catalog_entry,
-    resolve_show_sections as _showplan_resolve_show_sections,
-)
 
 
 def _build_show_catalog_entry(**kwargs: Any) -> dict[str, Any]:
