@@ -8,6 +8,10 @@ from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_selection_variance,
     normalize_venue_mode,
 )
+from photonic_synesthesia.platform.runtime_context_operator_intents import (
+    apply_operator_intent_to_section,
+    intent_expired,
+)
 from photonic_synesthesia.platform.runtime_context_playback_scope import section_ids_for_scope
 from photonic_synesthesia.platform.runtime_context_section_mutations import (
     promote_family_to_hero,
@@ -80,3 +84,24 @@ def test_promote_family_to_hero_updates_fixture_roles_and_cue_recipe() -> None:
     assert section["lead_family"] == "wash"
     assert section["fixture_role_map"]["wash"]["role"] == "hero"
     assert section["cue_recipe"]["lead_family"] == "wash"
+
+
+def test_intent_expired_at_threshold() -> None:
+    assert intent_expired({"expires_at": "at:5"}, [], 5.1, 10.0) is True
+
+
+def test_apply_operator_intent_to_section_reduces_strobe() -> None:
+    updated = apply_operator_intent_to_section(
+        {
+            "strobe_level": 0.8,
+            "strobe_profile": {"ceiling": 0.9, "floor": 0.2},
+            "cue_recipe": {},
+        },
+        intent="less_strobe",
+        target="strobes",
+        amount=0.5,
+        duration_seconds=60.0,
+    )
+
+    assert updated["strobe_level"] == 0.4
+    assert updated["strobe_profile"]["ceiling"] == 0.45
