@@ -90,8 +90,14 @@ def test_graph_does_not_clear_blackout_while_disarmed() -> None:
         control_plane_service=service,
     )
     graph._state = create_initial_state()
-    graph._state["control_state"]["armed_live"] = False
-    graph._state["control_state"]["blackout_active"] = True
+    service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.BLACKOUT,
+        )
+    )
 
     service.accept_command(
         OperatorCommand(
@@ -107,3 +113,31 @@ def test_graph_does_not_clear_blackout_while_disarmed() -> None:
     assert graph.state["control_state"]["blackout_active"] is True
     dmx_output.clear_blackout_request.assert_not_called()
     ilda_output.clear_blackout_request.assert_not_called()
+
+
+def test_graph_consumes_launch_scene_once() -> None:
+    service = ControlPlaneStateService()
+    graph = PhotonicGraph(
+        graph=_IdentityGraph(),
+        settings=Settings(),
+        nodes={},
+        control_plane_service=service,
+    )
+    graph._state = create_initial_state()
+
+    service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.LAUNCH_SCENE,
+            payload={"scene_id": "intro_ambient"},
+        )
+    )
+
+    graph.step()
+    assert graph.state["control_state"]["launched_scene"] == "intro_ambient"
+
+    graph.step()
+    assert graph.state["control_state"]["launched_scene"] is None
+    assert service.snapshot().pending_scene_id is None

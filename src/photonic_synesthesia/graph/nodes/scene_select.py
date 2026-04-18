@@ -20,8 +20,8 @@ class SceneSelectNode:
     """
     Selects appropriate lighting scene based on current state.
 
-    The director provides a proposed scene; this node applies operator and
-    structural precedence and enforces transition constraints.
+    The director provides the target scene. This node applies operator
+    overrides and transition constraints, then falls back only when needed.
     """
 
     def __init__(self, config: SceneConfig):
@@ -85,7 +85,6 @@ class SceneSelectNode:
             pending_scene = held_scene
         elif launched_scene:
             pending_scene = launched_scene
-            state["control_state"]["launched_scene"] = None
 
         # =================================================================
         # Priority 1: MIDI Pad Override
@@ -99,7 +98,7 @@ class SceneSelectNode:
                     break
 
         # =================================================================
-        # Priority 2: Director-directed transition
+        # Priority 2: Director-directed transition (single source of target scene)
         # =================================================================
         if pending_scene is None:
             director = state.get("director_state")
@@ -122,6 +121,8 @@ class SceneSelectNode:
                         )
                     else:
                         pending_scene = current_scene
+                elif not allow_transition:
+                    pending_scene = current_scene
 
         # =================================================================
         # Priority 3: Structure-based fallback

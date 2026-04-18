@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, cast
 
-from photonic_synesthesia.core.state import MusicStructure, PhotonicState
+from photonic_synesthesia.core.state import ControlState, MusicStructure, PhotonicState
 from photonic_synesthesia.platform.authority import ControlAuthorityService
 from photonic_synesthesia.platform.clock import PlatformClock, SystemClock
 from photonic_synesthesia.platform.commands import CommandReceipt, InMemoryCommandBus
@@ -263,6 +263,21 @@ class ControlPlaneStateService:
             frame_number=state["frame_number"],
         )
         return self.snapshot()
+
+    def consume_control_snapshot_for_graph(self) -> ControlState:
+        """Return the current control state and consume one-shot launch command state."""
+        with self._lock:
+            control_state: ControlState = {
+                "armed_live": self._armed_live,
+                "blackout_active": self._blackout_active,
+                "global_intensity": self._global_intensity,
+                "global_speed": self._global_speed,
+                "scene_hold": self._scene_hold,
+                "launched_scene": self._pending_scene_id,
+            }
+            self._pending_scene_id = None
+
+        return control_state
 
     def _apply_command_effects(self, command: OperatorCommand) -> None:
         with self._lock:

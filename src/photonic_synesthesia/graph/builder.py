@@ -35,7 +35,7 @@ from photonic_synesthesia.graph.nodes import (
     StructureDetectNode,
     LaserVectorInterlockNode,
 )
-from photonic_synesthesia.platform import CommandType, OperatorCommand
+from photonic_synesthesia.platform import CommandType
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
@@ -115,6 +115,7 @@ class PhotonicGraph:
 
     def step(self) -> PhotonicState:
         """Execute one iteration of the graph."""
+        self._sync_control_state()
         self._drain_control_commands()
         self._state = self.graph.invoke(self._state)
         if self.control_plane_service is not None:
@@ -129,38 +130,29 @@ class PhotonicGraph:
     def _drain_control_commands(self) -> None:
         if self.control_plane_service is None:
             return
-        for command in self.control_plane_service.commands.drain():
-            self._apply_control_command(command)
+        commands = self.control_plane_service.commands.drain()
+        if not commands:
+            return
 
-    def _apply_control_command(self, command: OperatorCommand) -> None:
-        control_state = self._state["control_state"]
+        should_blackout = False
+        should_clear_blackout = False
+        for command in commands:
+            if command.command_type in {CommandType.BLACKOUT, CommandType.DISARM}:
+                should_blackout = True
+            if command.command_type == CommandType.CLEAR_BLACKOUT:
+                should_clear_blackout = True
 
-        if command.command_type == CommandType.ARM:
-            control_state["armed_live"] = True
-        elif command.command_type == CommandType.DISARM:
-            control_state["armed_live"] = False
-            control_state["blackout_active"] = True
+        if should_blackout:
             self._request_blackout()
-        elif command.command_type == CommandType.BLACKOUT:
-            control_state["blackout_active"] = True
-            self._request_blackout()
-        elif command.command_type == CommandType.CLEAR_BLACKOUT:
-            if control_state["armed_live"]:
-                control_state["blackout_active"] = False
-                self._clear_blackout()
-        elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
-            intensity = float(command.payload.get("intensity", control_state["global_intensity"]))
-            control_state["global_intensity"] = max(0.0, min(1.0, intensity))
-        elif command.command_type == CommandType.SET_GLOBAL_SPEED:
-            speed = float(command.payload.get("speed", control_state["global_speed"]))
-            control_state["global_speed"] = max(0.1, speed)
-        elif command.command_type == CommandType.LAUNCH_SCENE:
-            control_state["launched_scene"] = str(command.payload.get("scene_id", "idle"))
-        elif command.command_type == CommandType.HOLD_SCENE:
-            scene_id = command.payload.get("scene_id") or self._state["scene_state"]["current_scene"]
-            control_state["scene_hold"] = str(scene_id)
-        elif command.command_type == CommandType.RELEASE_SCENE_HOLD:
-            control_state["scene_hold"] = None
+        elif should_clear_blackout and self._state["control_state"]["armed_live"]:
+            self._clear_blackout()
+
+    def _sync_control_state(self) -> None:
+        if self.control_plane_service is None:
+            return
+        self._state["control_state"].update(
+            self.control_plane_service.consume_control_snapshot_for_graph(),
+        )
 
     def _request_blackout(self) -> None:
         dmx_output = self.nodes.get("dmx_output")
