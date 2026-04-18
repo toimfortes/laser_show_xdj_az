@@ -5,11 +5,20 @@ from photonic_synesthesia.showplan import (
     build_laser_program,
     select_section_patterns,
 )
+from photonic_synesthesia.showplan.sections import (
+    compatible_laser_pattern as _compatible_laser_pattern,
+)
+from photonic_synesthesia.showplan.sections import (
+    fixture_role_map as _fixture_role_map,
+)
+from photonic_synesthesia.showplan.sections import (
+    transition_context as _transition_context,
+)
+from photonic_synesthesia.showplan.validation import show_fingerprint as _show_fingerprint
 from photonic_synesthesia.ui.cli import (
     _LASER_PATTERN_POOLS,
     _default_show_sections,
     _resolve_show_sections,
-    _transition_context,
 )
 
 
@@ -362,7 +371,7 @@ def test_validator_enforces_drop_variation_novelty_by_lead_family() -> None:
 def test_small_room_capability_compiler_degrades_dense_laser_geometry() -> None:
     _, profile = cli_module._creative_profile("same-song", _markers())
 
-    small_pattern, small_notes = cli_module._compatible_laser_pattern(
+    small_pattern, small_notes = _compatible_laser_pattern(
         base_pattern="point_array",
         kind="drop",
         context="drop_launch",
@@ -370,7 +379,7 @@ def test_small_room_capability_compiler_degrades_dense_laser_geometry() -> None:
         section_role="drop_1",
         venue_mode="small_room_50_100",
     )
-    medium_pattern, medium_notes = cli_module._compatible_laser_pattern(
+    medium_pattern, medium_notes = _compatible_laser_pattern(
         base_pattern="point_array",
         kind="drop",
         context="drop_launch",
@@ -456,7 +465,7 @@ def test_show_fingerprint_preserves_motif_and_laser_repetition_counts() -> None:
         },
     ]
 
-    fingerprint = cli_module._show_fingerprint(sections)
+    fingerprint = _show_fingerprint(sections)
 
     assert fingerprint["motif_ids"].count("laser:fan") == 3
     assert fingerprint["motif_counts"]["laser:fan"] == 3
@@ -465,7 +474,7 @@ def test_show_fingerprint_preserves_motif_and_laser_repetition_counts() -> None:
 
 
 def test_medium_room_preferred_lead_family_keeps_single_hero() -> None:
-    lead_family, role_map = cli_module._fixture_role_map(
+    lead_family, role_map = _fixture_role_map(
         section_role="drop_1",
         venue_mode="medium_room_150_400",
         laser_enabled=True,
@@ -482,7 +491,7 @@ def test_medium_room_preferred_lead_family_keeps_single_hero() -> None:
 
 
 def test_medium_room_drop_variation_preferred_led_keeps_single_hero() -> None:
-    lead_family, role_map = cli_module._fixture_role_map(
+    lead_family, role_map = _fixture_role_map(
         section_role="drop_variation",
         venue_mode="medium_room_150_400",
         laser_enabled=True,
