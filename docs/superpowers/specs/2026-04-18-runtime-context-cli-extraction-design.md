@@ -283,6 +283,7 @@ Subproject B must define one stable facade for `ui/cli.py` to call. The facade i
 - Borderline rule:
   - persistence adapters may live outside `ui/cli.py`, but CLI remains responsible for deciding when to print, exit, or raise `click.ClickException`
 - `showplan/` modules must not import `ui/cli.py`
+- `showplan/` modules must not import from `platform/runtime_context*`; the CLI reads runtime context and passes explicit inputs into facade entrypoints
 - `showplan/` sibling modules may only depend on lower-level helpers or `showplan/types.py`
 - `showplan/sections.py` owns show-plan section resolution and persisted-plan fallback behavior
 - `runtime_context_playback_scope.py` owns live playback section targeting for operator-intent scope only
@@ -430,10 +431,10 @@ Each slice should leave the CLI runnable and covered by targeted tests.
 
 ### Slice-to-module mapping
 
-- Slice 1: `catalog.py`, `semantic_profile.py`, `sections.py`
+- Slice 1: `types.py`, `catalog.py`, `semantic_profile.py`, `sections.py`
 - Slice 2: `cue_recipe.py`
 - Slice 3: `validation.py`, `selection.py`
-- Slice 4: `laser_program.py`, `model_payloads.py`, `types.py`
+- Slice 4: `laser_program.py`, `model_payloads.py`
 - Slice 5: final `ui/cli.py` shell cleanup and facade tightening
 
 ### Rollback policy
