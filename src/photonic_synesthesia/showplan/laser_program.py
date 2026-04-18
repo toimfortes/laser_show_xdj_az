@@ -21,10 +21,13 @@ from photonic_synesthesia.showplan._patterns import (
     pattern_candidates,
     pattern_stage,
 )
-
-_LASER_PROGRAM_VERSION = 3
-
-_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
+from photonic_synesthesia.showplan.types import (
+    LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+    VENUE_MODES as _VENUE_MODES,
+    apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
+    laser_zone_policy as _laser_zone_policy,
+    normalize_venue_mode as _normalize_venue_mode,
+)
 
 _PHRASE_ENVELOPES: dict[str, dict[str, Any]] = {
     "intro": {
@@ -150,33 +153,6 @@ _GEOMETRY_STRATEGIES: dict[str, dict[str, str]] = {
         "color_strategy": "target_color_steps",
     },
 }
-
-
-def _normalize_venue_mode(value: str | None) -> str:
-    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
-    return normalized if normalized in _VENUE_MODES else "small_room_50_100"
-
-
-def _apply_venue_laser_zone_policy(venue_mode: str, zone_policy: str) -> str:
-    venue = _normalize_venue_mode(venue_mode)
-    if venue == "small_room_50_100":
-        return "overhead_only"
-    if zone_policy == "crowd_punctuate":
-        return "overhead_bias"
-    return zone_policy
-
-
-def _laser_zone_policy(kind: str, context: str) -> str:
-    stage = pattern_stage(kind)
-    if stage == "breakdown":
-        return "overhead_only"
-    if context == "drop_launch":
-        return "crowd_punctuate"
-    if stage == "build":
-        return "mixed_air"
-    if stage == "drop":
-        return "mixed_air"
-    return "overhead_bias"
 
 
 def _pick_word(track_seed: str, token: str, words: list[str]) -> str:

@@ -8,11 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-# Version constants mirrored here so the module can stamp provenance without
-# importing the CLI. If these drift from the CLI's copies, tests will catch it.
-_CATALOG_VERSION = 7
-_SHOW_SECTION_GENERATOR_VERSION = 7
-_LASER_PROGRAM_VERSION = 3
+from photonic_synesthesia.showplan.types import (
+    CATALOG_VERSION as _CATALOG_VERSION,
+    LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+    SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
+)
 
 
 def _identity_selection_mode(selection_mode: str | None) -> str:

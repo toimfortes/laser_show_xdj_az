@@ -18,8 +18,12 @@ from photonic_synesthesia.showplan._patterns import (
     pattern_candidates,
     pattern_stage,
 )
+from photonic_synesthesia.showplan.types import (
+    VENUE_MODES as _VENUE_MODES,
+    clamp as _clamp,
+    normalize_venue_mode as _normalize_venue_mode,
+)
 
-_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
 _OLLAMA_CPU_MAX_CANDIDATES = 6
 
 _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
@@ -136,13 +140,6 @@ _CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def _normalize_venue_mode(value: str | None) -> str:
-    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
-    return normalized if normalized in _VENUE_MODES else "small_room_50_100"
 
 
 def _venue_profile(venue_mode: str | None) -> dict[str, Any]:

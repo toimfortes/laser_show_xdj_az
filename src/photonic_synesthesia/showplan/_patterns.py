@@ -16,6 +16,11 @@ import urllib.request as urllib_request
 from hashlib import sha1
 from typing import Any
 
+from photonic_synesthesia.showplan.types import (
+    clamp as _clamp,
+    pattern_stage,
+)
+
 _logger = logging.getLogger(__name__)
 
 SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
@@ -223,22 +228,6 @@ def normalize_selection_variance(value: Any | None) -> float:
     except (TypeError, ValueError):
         return 0.0
     return round(_clamp(normalized, 0.0, 1.0), 3)
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def pattern_stage(kind: str) -> str:
-    if kind == "drop":
-        return "drop"
-    if kind == "build":
-        return "build"
-    if kind in {"breakdown", "bridge", "verse", "vocal"}:
-        return "breakdown"
-    if kind == "outro":
-        return "outro"
-    return "intro"
 
 
 def _stable_digest(label: str) -> bytes:

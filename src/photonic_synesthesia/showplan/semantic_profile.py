@@ -5,11 +5,11 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-SEMANTIC_PROFILE_VERSION = 1
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
+from photonic_synesthesia.showplan.types import (
+    SEMANTIC_PROFILE_VERSION,
+    clamp as _clamp,
+    safe_confidence_value,
+)
 
 
 def auto_markers_for_duration(duration_seconds: float) -> list[dict[str, Any]]:
@@ -162,14 +162,6 @@ def build_semantic_profile(
             },
         },
     }
-
-
-def safe_confidence_value(raw: Any, default: float = 0.0) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = default
-    return round(_clamp(value, 0.0, 1.0), 3)
 
 
 def metadata_confidence(

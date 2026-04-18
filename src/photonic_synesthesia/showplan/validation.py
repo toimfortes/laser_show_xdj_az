@@ -6,9 +6,7 @@ import json
 from hashlib import sha1
 from typing import Any
 
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
+from photonic_synesthesia.showplan.types import clamp as _clamp
 
 
 def show_fingerprint(show_sections: list[dict[str, Any]]) -> dict[str, Any]:

@@ -37,21 +37,30 @@ from photonic_synesthesia.showplan.semantic_profile import (
     build_semantic_profile as _showplan_build_semantic_profile,
     metadata_confidence as _showplan_metadata_confidence,
 )
+from photonic_synesthesia.showplan.types import (
+    CATALOG_VERSION as _CATALOG_VERSION,
+    CUE_RECIPE_VERSION as _CUE_RECIPE_VERSION,
+    LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+    SEMANTIC_PROFILE_VERSION as _SEMANTIC_PROFILE_VERSION,
+    SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
+    VENUE_MODES as _VENUE_MODES,
+    apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
+    clamp as _clamp,
+    cue_family_id as _cue_family_id,
+    laser_zone_policy as _laser_zone_policy,
+    normalize_venue_mode as _normalize_venue_mode,
+    pattern_stage as _pattern_stage,
+    safe_confidence_value as _safe_confidence_value,
+)
 
 logger = get_logger(__name__)
 
-_LASER_PROGRAM_VERSION = 3
-_SHOW_SECTION_GENERATOR_VERSION = 7
-_SEMANTIC_PROFILE_VERSION = 1
-_CUE_RECIPE_VERSION = 6
 _SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
-_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
 _OLLAMA_CPU_MODEL = "qwen2.5:1.5b"
 _OLLAMA_DEFAULT_HOST = "http://127.0.0.1:11434"
 _OLLAMA_CPU_KEEP_ALIVE = "10m"
 _OLLAMA_CPU_TIMEOUT_SECONDS = 6.0
 _OLLAMA_CPU_MAX_CANDIDATES = 6
-_CATALOG_VERSION = 7
 _CATALOG_AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 
 _DEFAULT_REKORDBOX_XML_CANDIDATES = [
@@ -629,14 +638,6 @@ def _build_semantic_profile(
     )
 
 
-def _safe_confidence_value(raw: Any, default: float = 0.0) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = default
-    return round(_clamp(value, 0.0, 1.0), 3)
-
-
 def _metadata_confidence(
     *,
     structure_markers: list[dict[str, Any]],
@@ -654,39 +655,6 @@ def _metadata_confidence(
         web_enrichment=web_enrichment,
         matched_rekordbox_track=matched_rekordbox_track,
     )
-
-
-def _cue_family_id(section_role: str, lead_family: str, venue_mode: str) -> str:
-    return f"{_normalize_venue_mode(venue_mode)}::{section_role}::{lead_family}"
-
-
-def _apply_venue_laser_zone_policy(venue_mode: str, zone_policy: str) -> str:
-    venue = _normalize_venue_mode(venue_mode)
-    if venue == "small_room_50_100":
-        return "overhead_only"
-    if zone_policy == "crowd_punctuate":
-        return "overhead_bias"
-    return zone_policy
-
-
-def _model_payload_candidates(
-    *,
-    family: str,
-    kind: str,
-    context: str,
-    profile: dict[str, Any],
-    selected_pattern: str = "",
-) -> list[str]:
-    candidates = _pattern_candidates(
-        family=family,
-        kind=kind,
-        context=context,
-        profile=profile,
-    )
-    limited = list(candidates[:_OLLAMA_CPU_MAX_CANDIDATES])
-    if selected_pattern and selected_pattern not in limited and selected_pattern in candidates:
-        limited.append(selected_pattern)
-    return limited
 
 
 def _section_motif_ids(section: dict[str, Any]) -> list[str]:
@@ -1085,10 +1053,6 @@ def _build_track_metadata_binding_callback(
     return _bind
 
 
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
 def _scene_for_marker_kind(kind: str) -> str:
     if kind == "drop":
         return "drop_intense"
@@ -1106,18 +1070,6 @@ def _fixture_mode_for_marker_kind(kind: str) -> str:
         return "peak_return"
     if kind == "build":
         return "rebuild"
-    if kind in {"breakdown", "bridge", "verse", "vocal"}:
-        return "breakdown"
-    if kind == "outro":
-        return "outro"
-    return "intro"
-
-
-def _pattern_stage(kind: str) -> str:
-    if kind == "drop":
-        return "drop"
-    if kind == "build":
-        return "build"
     if kind in {"breakdown", "bridge", "verse", "vocal"}:
         return "breakdown"
     if kind == "outro":
@@ -1166,11 +1118,6 @@ def _normalize_selection_variance(value: Any | None) -> float:
     except (TypeError, ValueError):
         return 0.0
     return round(_clamp(normalized, 0.0, 1.0), 3)
-
-
-def _normalize_venue_mode(value: str | None) -> str:
-    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
-    return normalized if normalized in _VENUE_MODES else "small_room_50_100"
 
 
 def _venue_profile(venue_mode: str | None) -> dict[str, Any]:
@@ -2514,66 +2461,6 @@ def _laser_expression(
         "crowd_bias": round(_stable_float(f"{token}:crowd_bias"), 3),
         "ceiling_bias": round(_stable_float(f"{token}:ceiling_bias"), 3),
     }
-
-
-def _laser_color_mode_for_strategy(color_strategy: str, context: str) -> str:
-    if color_strategy in {"white_accent_launch"} or context == "drop_launch":
-        return "white_hits"
-    if color_strategy in {"target_color_steps", "contrast_flips", "texture_flip", "dual_cycle_contrast"}:
-        return "dual_cycle"
-    if color_strategy in {"single_hue_focus"}:
-        return "static"
-    return "morph"
-
-
-def _laser_look(
-    *,
-    track_seed: str,
-    base_pattern: str,
-    context: str,
-    kind: str,
-    ordinal: int,
-    token_suffix: str,
-) -> dict[str, Any]:
-    token = f"laser-look:{kind}:{context}:{ordinal}:{base_pattern}:{token_suffix}"
-    geometry_family = _LASER_PATTERN_GEOMETRY.get(base_pattern, "fan")
-    strategy = _GEOMETRY_STRATEGIES.get(geometry_family, _GEOMETRY_STRATEGIES["fan"])
-    target_bias = ["crowd", "mid_air", "ceiling"][int(_stable_float(f"{token}:target_bias") * 3) % 3]
-    return {
-        "id": f"{token_suffix}_{base_pattern}",
-        "label": _variant_label(
-            track_seed,
-            token,
-            base_pattern,
-            ["Vector", "Prism", "Arc", "Nova", "Pulse", "Aerial"],
-            ["Look", "Pass", "Sweep", "Launch", "Fill", "Shape"],
-        ),
-        "pattern": base_pattern,
-        "geometry_family": geometry_family,
-        "content_family": strategy["content_family"],
-        "target_strategy": strategy["target_strategy"],
-        "blanking_strategy": strategy["blanking_strategy"],
-        "color_strategy": strategy["color_strategy"],
-        "color_mode": _laser_color_mode_for_strategy(strategy["color_strategy"], context),
-        "target_bias": target_bias,
-        "density": round(0.72 + _stable_float(f"{token}:density") * 0.95, 3),
-        "motion": round(0.7 + _stable_float(f"{token}:motion") * 1.05, 3),
-        "emphasis": round(0.3 + _stable_float(f"{token}:emphasis") * 0.7, 3),
-        "bars": 4,
-    }
-
-
-def _laser_zone_policy(kind: str, context: str) -> str:
-    stage = _pattern_stage(kind)
-    if stage == "breakdown":
-        return "overhead_only"
-    if context == "drop_launch":
-        return "crowd_punctuate"
-    if stage == "build":
-        return "mixed_air"
-    if stage == "drop":
-        return "mixed_air"
-    return "overhead_bias"
 
 
 def _mover_variant(

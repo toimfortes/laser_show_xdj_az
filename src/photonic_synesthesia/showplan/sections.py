@@ -5,15 +5,12 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
-# Generator/version constants are mirrored here so the module can verify
-# persisted section payloads without importing the CLI.
-_LASER_PROGRAM_VERSION = 3
-_SHOW_SECTION_GENERATOR_VERSION = 7
-_CUE_RECIPE_VERSION = 6
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
+from photonic_synesthesia.showplan.types import (
+    CUE_RECIPE_VERSION as _CUE_RECIPE_VERSION,
+    LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+    SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
+    clamp as _clamp,
+)
 
 
 def _identity_selection_mode(selection_mode: str | None) -> str:

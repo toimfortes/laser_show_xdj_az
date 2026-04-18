@@ -5,66 +5,17 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-# Version constant mirrored here so the module can stamp provenance without
-# importing the CLI. If this drifts from the CLI's copy, tests will catch it.
-_CUE_RECIPE_VERSION = 6
-
-_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
-
-
-def _safe_confidence_value(raw: Any, default: float = 0.0) -> float:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = default
-    return round(_clamp(value, 0.0, 1.0), 3)
-
-
-def _normalize_venue_mode(value: str | None) -> str:
-    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
-    return normalized if normalized in _VENUE_MODES else "small_room_50_100"
-
-
-def _pattern_stage(kind: str) -> str:
-    if kind == "drop":
-        return "drop"
-    if kind == "build":
-        return "build"
-    if kind in {"breakdown", "bridge", "verse", "vocal"}:
-        return "breakdown"
-    if kind == "outro":
-        return "outro"
-    return "intro"
-
-
-def _laser_zone_policy(kind: str, context: str) -> str:
-    stage = _pattern_stage(kind)
-    if stage == "breakdown":
-        return "overhead_only"
-    if context == "drop_launch":
-        return "crowd_punctuate"
-    if stage == "build":
-        return "mixed_air"
-    if stage == "drop":
-        return "mixed_air"
-    return "overhead_bias"
-
-
-def _apply_venue_laser_zone_policy(venue_mode: str, zone_policy: str) -> str:
-    venue = _normalize_venue_mode(venue_mode)
-    if venue == "small_room_50_100":
-        return "overhead_only"
-    if zone_policy == "crowd_punctuate":
-        return "overhead_bias"
-    return zone_policy
-
-
-def _cue_family_id(section_role: str, lead_family: str, venue_mode: str) -> str:
-    return f"{_normalize_venue_mode(venue_mode)}::{section_role}::{lead_family}"
+from photonic_synesthesia.showplan.types import (
+    CUE_RECIPE_VERSION as _CUE_RECIPE_VERSION,
+    VENUE_MODES as _VENUE_MODES,
+    apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
+    clamp as _clamp,
+    cue_family_id as _cue_family_id,
+    laser_zone_policy as _laser_zone_policy,
+    normalize_venue_mode as _normalize_venue_mode,
+    pattern_stage as _pattern_stage,
+    safe_confidence_value as _safe_confidence_value,
+)
 
 
 def _cue_recipe_group_name(*, family: str, stage: str) -> str:
