@@ -314,12 +314,15 @@ def build_photonic_graph(
         settings.fixtures,
     )
 
-    # Safety node
+    # Safety node. require_watchdog=True fails loudly if the dead-man
+    # switch couldn't be installed (e.g., no outputs wired in the
+    # settings).
     nodes["safety_interlock"] = SafetyInterlockNode(
         settings.safety,
         settings.fixtures,
         dmx_output=nodes["dmx_output"],
         ilda_output=nodes["ilda_transport"],
+        require_watchdog=True,
     )
     safety_monitor = SafetyMonitor(
         dmx_output=nodes["dmx_output"],
@@ -391,6 +394,7 @@ def build_minimal_graph(
             settings.safety,
             settings.fixtures,
             dmx_output=dmx_output,
+            require_watchdog=True,
         ),
     }
     safety_monitor = SafetyMonitor(
