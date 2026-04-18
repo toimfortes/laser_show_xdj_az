@@ -10,3 +10,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .codex_tmp/
+
+# Editor/agent workspace artifacts
+.codex
+.claude/
