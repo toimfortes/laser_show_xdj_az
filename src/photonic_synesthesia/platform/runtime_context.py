@@ -17,6 +17,20 @@ _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
 _PLAYBACK_SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
+_PLAYBACK_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
+_PLAYBACK_OPERATOR_INTENTS = {
+    "darken",
+    "brighten",
+    "reduce_laser_density",
+    "less_strobe",
+    "favor_overhead",
+    "freeze_hero_family",
+    "hold_current_palette",
+    "delay_peak",
+    "promote_washes",
+}
+_PLAYBACK_OPERATOR_SCOPES = {"current_section", "next_phrase", "track", "set"}
+_PLAYBACK_OPERATOR_TARGETS = {"all", "lasers", "movers", "washes", "leds", "strobes"}
 
 
 def _normalize_selection_mode(selection_mode: str | None) -> str:
@@ -37,6 +51,281 @@ def _normalize_metadata_source(source: str | None) -> str:
     return value or "manual"
 
 
+def _normalize_venue_mode(value: str | None) -> str:
+    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
+    return normalized if normalized in _PLAYBACK_VENUE_MODES else "small_room_50_100"
+
+
+def _normalize_operator_intent(value: str | None) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_")
+    return normalized if normalized in _PLAYBACK_OPERATOR_INTENTS else ""
+
+
+def _normalize_operator_scope(value: str | None) -> str:
+    normalized = str(value or "track").strip().lower().replace("-", "_")
+    return normalized if normalized in _PLAYBACK_OPERATOR_SCOPES else "track"
+
+
+def _normalize_operator_target(value: str | None) -> str:
+    normalized = str(value or "all").strip().lower().replace("-", "_")
+    return normalized if normalized in _PLAYBACK_OPERATOR_TARGETS else "all"
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def _section_ids_for_scope(show_sections: list[dict[str, Any]], playhead_seconds: float, scope: str) -> set[str]:
+    if not show_sections:
+        return set()
+    if scope in {"track", "set"}:
+        return {str(section.get("id") or "") for section in show_sections}
+    active_index = len(show_sections) - 1
+    for index, section in enumerate(show_sections):
+        start = float(section.get("start_seconds") or 0.0)
+        end = float(section.get("end_seconds") or start)
+        if start <= playhead_seconds < end:
+            active_index = index
+            break
+    if scope == "current_section":
+        return {str(show_sections[active_index].get("id") or "")}
+    next_index = min(active_index + 1, max(0, len(show_sections) - 1))
+    return {str(show_sections[next_index].get("id") or "")}
+
+
+def _set_family_intensity(section: dict[str, Any], family: str, scale: float) -> None:
+    fixture_role_map = section.get("fixture_role_map")
+    if isinstance(fixture_role_map, dict) and isinstance(fixture_role_map.get(family), dict):
+        role_meta = fixture_role_map[family]
+        role_meta["intensity_ceiling"] = round(
+            _clamp(float(role_meta.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
+            3,
+        )
+    cue_recipe = section.get("cue_recipe")
+    if not isinstance(cue_recipe, dict):
+        return
+    cue_map = cue_recipe.get("fixture_role_map")
+    if isinstance(cue_map, dict) and isinstance(cue_map.get(family), dict):
+        role_meta = cue_map[family]
+        role_meta["intensity_ceiling"] = round(
+            _clamp(float(role_meta.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
+            3,
+        )
+    families = cue_recipe.get("families")
+    if isinstance(families, dict) and isinstance(families.get(family), dict):
+        family_payload = families[family]
+        family_payload["intensity_ceiling"] = round(
+            _clamp(float(family_payload.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
+            3,
+        )
+
+
+def _intent_expired(
+    intent_payload: dict[str, Any],
+    show_sections: list[dict[str, Any]],
+    playhead_seconds: float,
+    duration_seconds: float,
+) -> bool:
+    expires_at = str(intent_payload.get("expires_at") or "").strip().lower().replace("-", "_")
+    if not expires_at:
+        return False
+    if expires_at == "end_of_track":
+        return playhead_seconds >= max(0.0, duration_seconds)
+    if expires_at == "next_phrase":
+        target_ids = set(str(item) for item in list(intent_payload.get("target_ids") or []))
+        if not target_ids:
+            return False
+        for section in show_sections:
+            if str(section.get("id") or "") in target_ids:
+                return playhead_seconds >= float(section.get("end_seconds") or 0.0)
+        return False
+    if expires_at == "next_drop":
+        applied_playhead = float(intent_payload.get("applied_playhead_seconds") or 0.0)
+        for section in show_sections:
+            if str(section.get("section_role") or "").startswith("drop") and float(section.get("start_seconds") or 0.0) > applied_playhead:
+                return playhead_seconds >= float(section.get("start_seconds") or 0.0)
+        return False
+    if expires_at.startswith("at:"):
+        try:
+            threshold = float(expires_at.split(":", 1)[1])
+        except (TypeError, ValueError):
+            return False
+        return playhead_seconds >= threshold
+    return False
+
+
+def _sync_cue_family_family_id(section: dict[str, Any], family: str) -> None:
+    cue_family_id = str(section.get("cue_family_id") or "")
+    if "::" in cue_family_id:
+        prefix = cue_family_id.rsplit("::", 1)[0]
+        cue_family_id = f"{prefix}::{family}"
+        section["cue_family_id"] = cue_family_id
+    cue_recipe = section.get("cue_recipe")
+    if isinstance(cue_recipe, dict):
+        cue_recipe["lead_family"] = family
+        if "::" in str(cue_recipe.get("cue_family_id") or ""):
+            prefix = str(cue_recipe["cue_family_id"]).rsplit("::", 1)[0]
+            cue_recipe["cue_family_id"] = f"{prefix}::{family}"
+        recipe_bundle = cue_recipe.get("recipe_bundle")
+        if isinstance(recipe_bundle, dict):
+            recipe_bundle["lead_family"] = family
+            if "::" in str(recipe_bundle.get("cue_family_id") or ""):
+                prefix = str(recipe_bundle["cue_family_id"]).rsplit("::", 1)[0]
+                recipe_bundle["cue_family_id"] = f"{prefix}::{family}"
+
+
+def _promote_family_to_hero(section: dict[str, Any], family: str) -> None:
+    section["lead_family"] = family
+    fixture_role_map = section.get("fixture_role_map")
+    if isinstance(fixture_role_map, dict):
+        for name, payload in fixture_role_map.items():
+            if not isinstance(payload, dict):
+                continue
+            if name == family:
+                payload["role"] = "hero"
+            elif payload.get("role") == "hero":
+                payload["role"] = "support"
+    cue_recipe = section.get("cue_recipe")
+    if isinstance(cue_recipe, dict):
+        cue_recipe["lead_family"] = family
+        cue_map = cue_recipe.get("fixture_role_map")
+        if isinstance(cue_map, dict):
+            for name, payload in cue_map.items():
+                if not isinstance(payload, dict):
+                    continue
+                if name == family:
+                    payload["role"] = "hero"
+                elif payload.get("role") == "hero":
+                    payload["role"] = "support"
+    _sync_cue_family_family_id(section, family)
+
+
+def _update_operator_override(section: dict[str, Any], key: str, value: Any) -> None:
+    section.setdefault("operator_overrides", {})
+    if isinstance(section["operator_overrides"], dict):
+        section["operator_overrides"][key] = value
+    cue_recipe = section.get("cue_recipe")
+    if isinstance(cue_recipe, dict):
+        cue_recipe.setdefault("operator_overrides", {})
+        if isinstance(cue_recipe["operator_overrides"], dict):
+            cue_recipe["operator_overrides"][key] = value
+
+
+def _apply_operator_intent_to_section(
+    section: dict[str, Any],
+    *,
+    intent: str,
+    target: str,
+    amount: float,
+    duration_seconds: float,
+) -> dict[str, Any]:
+    updated = copy.deepcopy(section)
+    cue_recipe = updated.get("cue_recipe")
+    family_target = {
+        "lasers": "laser",
+        "movers": "mover",
+        "washes": "wash",
+        "leds": "led",
+    }.get(target, "")
+
+    if intent in {"darken", "brighten"} and target in {"all", "lasers", "movers", "washes", "leds"}:
+        scale = 1.0 - amount if intent == "darken" else 1.0 + amount
+        if target == "all":
+            updated["intensity_multiplier"] = round(
+                _clamp(float(updated.get("intensity_multiplier") or 0.0) * scale, 0.1, 1.5),
+                3,
+            )
+        elif family_target:
+            _set_family_intensity(updated, family_target, scale)
+        _update_operator_override(updated, "intensity_bias", intent)
+
+    if intent == "less_strobe" and target in {"all", "strobes"}:
+        updated["strobe_level"] = round(
+            _clamp(float(updated.get("strobe_level") or 0.0) * (1.0 - amount), 0.0, 1.0),
+            3,
+        )
+        strobe_profile = updated.get("strobe_profile")
+        if isinstance(strobe_profile, dict):
+            for field_name in ("ceiling", "floor"):
+                if field_name in strobe_profile:
+                    strobe_profile[field_name] = round(
+                        _clamp(float(strobe_profile.get(field_name) or 0.0) * (1.0 - amount), 0.0, 1.0),
+                        3,
+                    )
+        _update_operator_override(updated, "strobe_bias", "reduced")
+
+    if intent == "reduce_laser_density" and target in {"all", "lasers"}:
+        laser_expression = updated.get("laser_expression")
+        if isinstance(laser_expression, dict) and "sweep_density" in laser_expression:
+            laser_expression["sweep_density"] = round(
+                _clamp(float(laser_expression.get("sweep_density") or 0.0) * (1.0 - amount), 0.0, 2.0),
+                3,
+            )
+        laser_program = updated.get("laser_program")
+        if isinstance(laser_program, dict):
+            for key in ("launch", "release"):
+                payload = laser_program.get(key)
+                if isinstance(payload, dict) and "density" in payload:
+                    payload["density"] = round(
+                        _clamp(float(payload.get("density") or 0.0) * (1.0 - amount), 0.0, 2.0),
+                        3,
+                    )
+            for key in ("sustain", "fills"):
+                looks = laser_program.get(key)
+                if isinstance(looks, list):
+                    for look in looks:
+                        if isinstance(look, dict) and "density" in look:
+                            look["density"] = round(
+                                _clamp(float(look.get("density") or 0.0) * (1.0 - amount), 0.0, 2.0),
+                                3,
+                            )
+        _update_operator_override(updated, "laser_density", "reduced")
+
+    if intent == "favor_overhead" and target in {"all", "lasers"}:
+        laser_program = updated.get("laser_program")
+        if isinstance(laser_program, dict):
+            laser_program["zone_policy"] = "overhead_only"
+        if isinstance(cue_recipe, dict):
+            families = cue_recipe.get("families")
+            if isinstance(families, dict) and isinstance(families.get("laser"), dict):
+                families["laser"]["zone_policy"] = "overhead_only"
+                recipe_line = families["laser"].get("recipe_line")
+                if isinstance(recipe_line, dict):
+                    recipe_line["zone_policy"] = "overhead_only"
+        _update_operator_override(updated, "target_mode", "overhead")
+
+    if intent == "freeze_hero_family":
+        _update_operator_override(updated, "hero_family_locked", str(updated.get("lead_family") or ""))
+
+    if intent == "hold_current_palette":
+        _update_operator_override(updated, "palette_hold", True)
+
+    if intent == "delay_peak":
+        section_role = str(updated.get("section_role") or "")
+        start_fraction = float(updated.get("start_seconds") or 0.0) / max(duration_seconds, 0.001)
+        if section_role in {"build_2", "drop_1", "drop_variation"} and start_fraction < 0.7:
+            updated["intensity_multiplier"] = round(
+                _clamp(float(updated.get("intensity_multiplier") or 0.0) * (1.0 - amount * 0.5), 0.1, 1.5),
+                3,
+            )
+            updated["strobe_level"] = round(
+                _clamp(float(updated.get("strobe_level") or 0.0) * (1.0 - amount), 0.0, 1.0),
+                3,
+            )
+            _update_operator_override(updated, "peak_delay", True)
+
+    if intent == "promote_washes" and target in {"all", "washes"} and bool(updated.get("washes_enabled")):
+        _promote_family_to_hero(updated, "wash")
+        _update_operator_override(updated, "wash_promoted", True)
+
+    if family_target and isinstance(cue_recipe, dict):
+        cue_recipe.setdefault("operator_targets", {})
+        if isinstance(cue_recipe["operator_targets"], dict):
+            cue_recipe["operator_targets"][intent] = family_target
+
+    return updated
+
+
 @dataclass(slots=True)
 class PlaybackContext:
     """Process-local playback metadata exposed to the web control plane."""
@@ -53,6 +342,9 @@ class PlaybackContext:
     show_sections: list[dict[str, Any]] = field(default_factory=list)
     selection_mode: str = "procedural"
     selection_variance: float = 0.0
+    venue_mode: str = "small_room_50_100"
+    metadata_confidence: dict[str, Any] = field(default_factory=dict)
+    operator_intents: list[dict[str, Any]] = field(default_factory=list)
     metadata_source: str = "file_playback"
     metadata_bound_at: float = 0.0
     show_source: str = "generated"
@@ -71,7 +363,52 @@ class PlaybackContext:
     _save_callback: Callable[[dict[str, Any]], str | None] | None = field(default=None, repr=False)
     _regenerate_callback: Callable[[str, float], list[dict[str, Any]]] | None = field(default=None, repr=False)
     _metadata_bind_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = field(default=None, repr=False)
+    _base_show_sections: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        self.selection_mode = _normalize_selection_mode(self.selection_mode)
+        self.selection_variance = _normalize_selection_variance(self.selection_variance)
+        self.venue_mode = _normalize_venue_mode(self.venue_mode)
+        self.metadata_source = _normalize_metadata_source(self.metadata_source)
+        self._base_show_sections = copy.deepcopy(self.show_sections)
+        with self._lock:
+            self._refresh_operator_intents_locked()
+
+    def _refresh_operator_intents_locked(self) -> None:
+        active_intents = [
+            copy.deepcopy(intent_payload)
+            for intent_payload in self.operator_intents
+            if not _intent_expired(intent_payload, self._base_show_sections, self.playhead_seconds, self.duration_seconds)
+        ]
+        sections = copy.deepcopy(self._base_show_sections)
+        for intent_payload in active_intents:
+            target_ids = set(str(item) for item in list(intent_payload.get("target_ids") or []))
+            if not target_ids:
+                target_ids = _section_ids_for_scope(
+                    sections,
+                    float(intent_payload.get("applied_playhead_seconds") or self.playhead_seconds),
+                    _normalize_operator_scope(intent_payload.get("scope")),
+                )
+                intent_payload["target_ids"] = sorted(target_ids)
+            updated_sections: list[dict[str, Any]] = []
+            for section in sections:
+                section_id = str(section.get("id") or "")
+                if section_id in target_ids:
+                    updated_sections.append(
+                        _apply_operator_intent_to_section(
+                            section,
+                            intent=_normalize_operator_intent(intent_payload.get("intent")),
+                            target=_normalize_operator_target(intent_payload.get("target")),
+                            amount=_clamp(float(intent_payload.get("amount") or 0.0), 0.0, 1.0),
+                            duration_seconds=self.duration_seconds,
+                        )
+                    )
+                else:
+                    updated_sections.append(copy.deepcopy(section))
+            sections = updated_sections
+        self.operator_intents = active_intents
+        self.show_sections = sections
 
     def update_transport(
         self,
@@ -89,12 +426,14 @@ class PlaybackContext:
             self.finished = finished
             self.realtime = realtime
             self.speed = max(0.01, speed)
+            self._refresh_operator_intents_locked()
             self.server_time = time.time()
             self.transport_revision += 1
 
     def snapshot(self) -> dict[str, Any]:
         """Return a thread-safe snapshot for API responses."""
         with self._lock:
+            self._refresh_operator_intents_locked()
             export_available = bool(self.ilda_export_path and Path(self.ilda_export_path).is_file())
             audio_available = bool(self.file_path and Path(self.file_path).is_file())
             seekable = self._seek_callback is not None
@@ -128,6 +467,9 @@ class PlaybackContext:
                 "show_sections": copy.deepcopy(self.show_sections),
                 "selection_mode": _normalize_selection_mode(self.selection_mode),
                 "selection_variance": _normalize_selection_variance(self.selection_variance),
+                "venue_mode": _normalize_venue_mode(self.venue_mode),
+                "metadata_confidence": copy.deepcopy(self.metadata_confidence),
+                "operator_intents": copy.deepcopy(self.operator_intents),
                 "metadata_source": _normalize_metadata_source(self.metadata_source),
                 "metadata_bound_at": self.metadata_bound_at,
                 "show_source": str(self.show_source or "generated"),
@@ -148,7 +490,7 @@ class PlaybackContext:
             for index, section in enumerate(self.show_sections):
                 if str(section.get("id")) != section_id:
                     continue
-                updated = copy.deepcopy(section)
+                updated = copy.deepcopy(self._base_show_sections[index] if index < len(self._base_show_sections) else section)
                 for key, value in changes.items():
                     if key in {
                         "scene_id",
@@ -170,9 +512,13 @@ class PlaybackContext:
                         updated[key] = str(value)
                     elif "." in key:
                         self._apply_nested_change(updated, key, value)
-                self.show_sections[index] = updated
+                if index < len(self._base_show_sections):
+                    self._base_show_sections[index] = copy.deepcopy(updated)
+                else:
+                    self._base_show_sections.append(copy.deepcopy(updated))
+                self._refresh_operator_intents_locked()
                 save_payload = self._show_plan_payload_locked()
-                updated_section = copy.deepcopy(updated)
+                updated_section = copy.deepcopy(self.show_sections[index])
                 break
         if save_payload is not None and updated_section is not None:
             self._persist_show_plan(save_payload)
@@ -290,6 +636,9 @@ class PlaybackContext:
             "show_sections": copy.deepcopy(self.show_sections),
             "selection_mode": _normalize_selection_mode(self.selection_mode),
             "selection_variance": _normalize_selection_variance(self.selection_variance),
+            "venue_mode": _normalize_venue_mode(self.venue_mode),
+            "metadata_confidence": copy.deepcopy(self.metadata_confidence),
+            "operator_intents": copy.deepcopy(self.operator_intents),
             "metadata_source": _normalize_metadata_source(self.metadata_source),
         }
 
@@ -351,7 +700,8 @@ class PlaybackContext:
         with self._lock:
             self.selection_mode = normalized_mode
             self.selection_variance = normalized_variance
-            self.show_sections = copy.deepcopy(regenerated_sections)
+            self._base_show_sections = copy.deepcopy(regenerated_sections)
+            self._refresh_operator_intents_locked()
             payload = self._show_plan_payload_locked()
         self._persist_show_plan(payload)
         return self.snapshot()
@@ -363,6 +713,41 @@ class PlaybackContext:
     def set_selection_variance(self, selection_variance: float) -> dict[str, Any]:
         """Regenerate the current show plan using a different exploration setting."""
         return self._regenerate_selection(selection_variance=selection_variance)
+
+    def apply_operator_intent(
+        self,
+        *,
+        intent: str,
+        scope: str = "track",
+        target: str = "all",
+        amount: float = 0.25,
+        expires_at: str = "",
+    ) -> dict[str, Any]:
+        """Apply a typed operator steering intent to the current playback plan."""
+        normalized_intent = _normalize_operator_intent(intent)
+        if not normalized_intent:
+            raise RuntimeError("Unsupported operator intent")
+        normalized_scope = _normalize_operator_scope(scope)
+        normalized_target = _normalize_operator_target(target)
+        normalized_amount = round(_clamp(float(amount), 0.0, 1.0), 3)
+
+        with self._lock:
+            target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
+            intent_payload = {
+                "intent": normalized_intent,
+                "scope": normalized_scope,
+                "target": normalized_target,
+                "amount": normalized_amount,
+                "expires_at": str(expires_at or ""),
+                "target_ids": sorted(target_ids),
+                "applied_playhead_seconds": round(self.playhead_seconds, 3),
+                "applied_at": time.time(),
+            }
+            self.operator_intents.append(intent_payload)
+            self._refresh_operator_intents_locked()
+            payload = self._show_plan_payload_locked()
+        self._persist_show_plan(payload)
+        return self.snapshot()
 
     def bind_track_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Resolve live track metadata into playback metadata and a show plan."""
@@ -382,13 +767,20 @@ class PlaybackContext:
             self.structure_markers = [
                 dict(marker) for marker in binding.get("structure_markers", self.structure_markers)
             ]
-            self.show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
+            self._base_show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
             self.selection_mode = _normalize_selection_mode(
                 binding.get("selection_mode", self.selection_mode)
             )
             self.selection_variance = _normalize_selection_variance(
                 binding.get("selection_variance", self.selection_variance)
             )
+            self.venue_mode = _normalize_venue_mode(
+                binding.get("venue_mode", self.venue_mode)
+            )
+            confidence = binding.get("metadata_confidence", self.metadata_confidence)
+            self.metadata_confidence = copy.deepcopy(confidence if isinstance(confidence, dict) else {})
+            intents = binding.get("operator_intents", self.operator_intents)
+            self.operator_intents = copy.deepcopy(intents if isinstance(intents, list) else [])
             self.metadata_source = _normalize_metadata_source(
                 binding.get("metadata_source", metadata.get("metadata_source", self.metadata_source))
             )
@@ -420,6 +812,7 @@ class PlaybackContext:
                 except (TypeError, ValueError):
                     pass
             self.server_time = time.time()
+            self._refresh_operator_intents_locked()
             self.transport_revision += 1
             payload = self._show_plan_payload_locked()
 

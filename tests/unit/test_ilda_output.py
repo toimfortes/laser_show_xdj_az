@@ -466,13 +466,45 @@ def test_ilda_output_blackout_blanks_frames_and_streams_blank_transport() -> Non
         state = create_initial_state()
         state["control_state"]["blackout_active"] = True
         result = node(state)
-        node.stop()
+    node.stop()
 
     frame = result["ilda_frames"][0]
     assert frame["geometry_family"] == "blank"
     assert all(point["blanked"] for point in frame["points"])
     args, kwargs = fake_client.ensure_streaming.call_args
     assert kwargs["point_rate"] == 50
+    streamed_frame = args[0]
+    assert streamed_frame["geometry_family"] == "composite"
+    assert all(point["blanked"] for point in streamed_frame["points"])
+
+
+def test_ilda_output_emergency_blackout_streams_repeated_blank_frames() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDAOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
+            [fixture],
+            LaserSafetyConfig(ilda_blackout_hold_s=0.08),
+            fixtures_dir=Path("config/fixtures"),
+        )
+        node.start()
+        node.emergency_blackout()
+        # Allow background emergency loop to transmit at least a couple frames.
+        import time
+
+        time.sleep(0.12)
+        node.stop()
+
+    assert fake_client.ensure_streaming.call_count >= 2
+    args, _ = fake_client.ensure_streaming.call_args
     streamed_frame = args[0]
     assert streamed_frame["geometry_family"] == "composite"
     assert all(point["blanked"] for point in streamed_frame["points"])

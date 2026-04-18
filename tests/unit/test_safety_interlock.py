@@ -30,6 +30,15 @@ class _DMXBlackoutRequestProbe(_DMXBlackoutProbe):
         self.requested += 1
 
 
+class _EmergencyBlackoutProbe(_DMXBlackoutProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.emergency = 0
+
+    def emergency_blackout(self) -> None:
+        self.emergency += 1
+
+
 def test_safety_interlock_uses_configured_laser_offsets() -> None:
     fixture = FixtureConfig(
         id="laser-1",
@@ -96,6 +105,24 @@ def test_heartbeat_watchdog_prefers_request_blackout_when_available() -> None:
 
     assert dmx_probe.requested >= 1
     assert dmx_probe.blackouts == 0
+
+
+def test_heartbeat_watchdog_triggers_all_outputs_when_available() -> None:
+    safety = SafetyConfig(heartbeat_timeout_s=0.05)
+    dmx_probe = _DMXBlackoutRequestProbe()
+    ilda_probe = _EmergencyBlackoutProbe()
+    node = SafetyInterlockNode(config=safety, fixtures=[], dmx_output=dmx_probe, ilda_output=ilda_probe)
+
+    node.start()
+    deadline = time.monotonic() + 0.5
+    try:
+        while (dmx_probe.requested == 0 and ilda_probe.emergency == 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        node.stop()
+
+    assert dmx_probe.requested >= 1
+    assert ilda_probe.emergency >= 1
 
 
 def test_strobe_duration_limit_enters_cooldown_and_suppresses_strobe_channels() -> None:

@@ -32,16 +32,17 @@ from photonic_synesthesia.core.logging import configure_logging, get_logger
 logger = get_logger(__name__)
 
 _LASER_PROGRAM_VERSION = 3
-_SHOW_SECTION_GENERATOR_VERSION = 3
+_SHOW_SECTION_GENERATOR_VERSION = 7
 _SEMANTIC_PROFILE_VERSION = 1
-_CUE_RECIPE_VERSION = 1
+_CUE_RECIPE_VERSION = 6
 _SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
+_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
 _OLLAMA_CPU_MODEL = "qwen2.5:1.5b"
 _OLLAMA_DEFAULT_HOST = "http://127.0.0.1:11434"
 _OLLAMA_CPU_KEEP_ALIVE = "10m"
 _OLLAMA_CPU_TIMEOUT_SECONDS = 6.0
 _OLLAMA_CPU_MAX_CANDIDATES = 6
-_CATALOG_VERSION = 4
+_CATALOG_VERSION = 7
 _CATALOG_AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".aiff", ".aif", ".m4a", ".ogg"}
 
 _DEFAULT_REKORDBOX_XML_CANDIDATES = [
@@ -503,6 +504,13 @@ def _catalog_entry_as_show_plan(catalog_entry: dict[str, Any] | None) -> dict[st
         "track_artist": str(catalog_entry.get("track_artist") or ""),
         "duration_seconds": catalog_entry.get("duration_seconds"),
         "semantic_profile": copy.deepcopy(catalog_entry.get("semantic_profile", {})),
+        "metadata_confidence": copy.deepcopy(catalog_entry.get("metadata_confidence", {})),
+        "motif_registry": copy.deepcopy(catalog_entry.get("motif_registry", {})),
+        "show_fingerprint": copy.deepcopy(catalog_entry.get("show_fingerprint", {})),
+        "anti_template_validation": copy.deepcopy(catalog_entry.get("anti_template_validation", {})),
+        "scorer_bundle": copy.deepcopy(catalog_entry.get("scorer_bundle", {})),
+        "preview_artifacts": copy.deepcopy(catalog_entry.get("preview_artifacts", {})),
+        "venue_mode": _normalize_venue_mode(catalog_entry.get("venue_mode")),
         "structure_markers": [dict(marker) for marker in catalog_entry.get("structure_markers", [])],
         "show_sections": [dict(section) for section in catalog_entry.get("show_sections", [])],
         "selection_mode": catalog_entry.get("selection_mode"),
@@ -588,6 +596,7 @@ def _build_show_catalog_entry(
     track_artist: str,
     selection_mode: str,
     selection_variance: float,
+    venue_mode: str,
     rekordbox_source: Path | None,
     rekordbox_track_id: str = "",
     rekordbox_average_bpm: float | None = None,
@@ -595,6 +604,15 @@ def _build_show_catalog_entry(
 ) -> dict[str, Any]:
     selection_mode = _normalize_selection_mode(selection_mode)
     selection_variance = _normalize_selection_variance(selection_variance)
+    venue_mode = _normalize_venue_mode(venue_mode)
+    metadata_confidence = _metadata_confidence(
+        structure_markers=structure_markers,
+        metadata_source="rekordbox_export" if rekordbox_source is not None else "catalog",
+        rekordbox_track_id=rekordbox_track_id,
+        rekordbox_average_bpm=rekordbox_average_bpm,
+        web_enrichment=web_enrichment,
+        matched_rekordbox_track=bool(rekordbox_track_id),
+    )
     semantic_profile = _build_semantic_profile(
         track_title=track_title,
         track_artist=track_artist,
@@ -610,7 +628,30 @@ def _build_show_catalog_entry(
         semantic_profile=semantic_profile,
         selection_mode=selection_mode,
         selection_variance=selection_variance,
+        venue_mode=venue_mode,
+        metadata_confidence=metadata_confidence,
     )
+    show_sections = _decorate_show_sections_with_motifs(show_sections)
+    recent_catalog_entries = _recent_catalog_entries(track_key)
+    show_fingerprint = _show_fingerprint(show_sections)
+    anti_template_validation = _anti_template_validation(
+        track_key=track_key,
+        show_sections=show_sections,
+        semantic_profile=semantic_profile,
+        recent_catalog_entries=recent_catalog_entries,
+    )
+    motif_registry = _motif_registry(
+        track_key=track_key,
+        show_sections=show_sections,
+        recent_catalog_entries=recent_catalog_entries,
+    )
+    scorer_bundle = _scorer_bundle(
+        show_sections=show_sections,
+        semantic_profile=semantic_profile,
+        anti_template_validation=anti_template_validation,
+        venue_mode=venue_mode,
+    )
+    preview_artifacts = _preview_artifacts(track_key, show_sections)
     alternate_variances = {
         "tight": 0.0,
         "balanced": 0.35,
@@ -627,6 +668,8 @@ def _build_show_catalog_entry(
                 semantic_profile=semantic_profile,
                 selection_mode=selection_mode,
                 selection_variance=variance,
+                venue_mode=venue_mode,
+                metadata_confidence=metadata_confidence,
             ),
         }
         for label, variance in alternate_variances.items()
@@ -640,10 +683,17 @@ def _build_show_catalog_entry(
         show_sections=show_sections,
         selection_mode=selection_mode,
         selection_variance=selection_variance,
+        venue_mode=venue_mode,
         rekordbox_track_id=rekordbox_track_id,
         rekordbox_average_bpm=rekordbox_average_bpm,
         semantic_profile=semantic_profile,
+        metadata_confidence=metadata_confidence,
         web_enrichment=web_enrichment,
+        motif_registry=motif_registry,
+        show_fingerprint=show_fingerprint,
+        anti_template_validation=anti_template_validation,
+        scorer_bundle=scorer_bundle,
+        preview_artifacts=preview_artifacts,
     )
     return {
         "catalog_version": _CATALOG_VERSION,
@@ -656,7 +706,14 @@ def _build_show_catalog_entry(
         "structure_markers": [dict(marker) for marker in structure_markers],
         "selection_mode": selection_mode,
         "selection_variance": selection_variance,
+        "venue_mode": venue_mode,
         "semantic_profile": semantic_profile,
+        "metadata_confidence": metadata_confidence,
+        "motif_registry": motif_registry,
+        "show_fingerprint": show_fingerprint,
+        "anti_template_validation": anti_template_validation,
+        "scorer_bundle": scorer_bundle,
+        "preview_artifacts": preview_artifacts,
         "show_sections": show_sections,
         "alternates": alternates,
         "model_payload": model_payload,
@@ -672,6 +729,7 @@ def _build_show_catalog_entry(
             "laser_program_version": _LASER_PROGRAM_VERSION,
             "selection_mode": selection_mode,
             "selection_variance": selection_variance,
+            "venue_mode": venue_mode,
             "ollama_model": _ollama_model_name() if selection_mode == "local_ollama_cpu" else "",
             "ollama_num_gpu": _ollama_num_gpu_option() if selection_mode == "local_ollama_cpu" else "",
             "generator_host": socket.gethostname(),
@@ -786,6 +844,85 @@ def _build_semantic_profile(
     }
 
 
+def _safe_confidence_value(raw: Any, default: float = 0.0) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return round(_clamp(value, 0.0, 1.0), 3)
+
+
+def _metadata_confidence(
+    *,
+    structure_markers: list[dict[str, Any]],
+    metadata_source: str,
+    rekordbox_track_id: str = "",
+    rekordbox_average_bpm: float | None = None,
+    web_enrichment: dict[str, Any] | None = None,
+    matched_rekordbox_track: bool = False,
+) -> dict[str, Any]:
+    normalized_source = str(metadata_source or "manual").strip().lower().replace("-", "_") or "manual"
+    markers_present = bool(structure_markers)
+    web_confidence = copy.deepcopy((web_enrichment or {}).get("confidence", {}))
+    web_score = _safe_confidence_value(
+        web_confidence.get("overall", web_confidence.get("consensus", 0.45)),
+        default=0.45 if web_enrichment else 0.0,
+    )
+
+    track_match_confidence = 0.35
+    phrase_confidence = 0.25
+    beatgrid_confidence = 0.3
+    transport_confidence = 0.2
+
+    if rekordbox_track_id or matched_rekordbox_track:
+        track_match_confidence = 0.96 if matched_rekordbox_track else 0.88
+        beatgrid_confidence = 0.94
+    elif markers_present:
+        track_match_confidence = 0.72
+        beatgrid_confidence = 0.62
+
+    if markers_present:
+        phrase_confidence = 0.9 if matched_rekordbox_track or rekordbox_track_id else 0.7
+
+    if normalized_source == "pro_dj_link":
+        transport_confidence = 0.93 if matched_rekordbox_track or rekordbox_track_id else 0.74
+    elif normalized_source == "file_playback":
+        transport_confidence = 0.58 if markers_present else 0.42
+    elif normalized_source in {"rekordbox_export", "catalog"}:
+        transport_confidence = 0.65 if markers_present else 0.38
+
+    if rekordbox_average_bpm is not None:
+        beatgrid_confidence = max(beatgrid_confidence, 0.86)
+
+    confidence_tier = "degraded"
+    if transport_confidence >= 0.85 and phrase_confidence >= 0.8:
+        confidence_tier = "strict"
+    elif beatgrid_confidence >= 0.7:
+        confidence_tier = "beat_safe"
+
+    return {
+        "track_match_confidence": round(track_match_confidence, 3),
+        "phrase_confidence": round(phrase_confidence, 3),
+        "beatgrid_confidence": round(beatgrid_confidence, 3),
+        "web_enrichment_confidence": web_score,
+        "transport_confidence": round(transport_confidence, 3),
+        "confidence_tier": confidence_tier,
+        "source_precedence": [
+            "rekordbox_edited_markers",
+            "rekordbox_track_match",
+            "beatgrid_transport",
+            "audio_fallback",
+            "web_enrichment",
+        ],
+        "sources": {
+            "rekordbox_markers": markers_present,
+            "rekordbox_track_match": bool(rekordbox_track_id or matched_rekordbox_track),
+            "live_transport": normalized_source == "pro_dj_link",
+            "web_enrichment": bool(web_enrichment),
+        },
+    }
+
+
 def _cue_recipe_group_name(*, family: str, stage: str) -> str:
     if family == "laser":
         return {
@@ -849,6 +986,158 @@ def _cue_recipe_transition_strategy(stage: str, context: str) -> str:
     return "set"
 
 
+def _cue_family_id(section_role: str, lead_family: str, venue_mode: str) -> str:
+    return f"{_normalize_venue_mode(venue_mode)}::{section_role}::{lead_family}"
+
+
+def _phaser_family_name(*, family: str, stage: str, context: str, pattern: str) -> str:
+    if family == "laser":
+        if stage == "drop":
+            return "laser_drop_sweep" if context == "drop_launch" else "laser_afterglow_drift"
+        if stage == "build":
+            return "laser_riser_contract"
+        if stage == "breakdown":
+            return "laser_trace_follow"
+        return "laser_breathe_8bar"
+    if family == "mover":
+        if stage == "drop":
+            return "mover_drop_sweep"
+        if stage == "build":
+            return "mover_diagonal_push"
+        if pattern in {"drift", "leaf", "hold"}:
+            return "mover_afterglow_drift"
+        return "mover_groove_call_response"
+    if family == "wash":
+        return "wash_breathe_8bar" if stage in {"intro", "breakdown", "outro"} else "wash_phrase_bloom"
+    return "led_pixel_hook" if stage in {"build", "drop"} else "led_afterglow_drift"
+
+
+def _phaser_family(
+    *,
+    family: str,
+    stage: str,
+    context: str,
+    pattern: str,
+    timing_master: str,
+    role_meta: dict[str, Any],
+) -> dict[str, Any]:
+    sync_mode = "phrase_locked" if stage in {"intro", "breakdown", "outro"} else "beat"
+    measure = 4 if stage in {"build", "drop"} else 8
+    transition_profile = "smooth" if stage in {"intro", "breakdown", "outro"} else "punctuated"
+    width_profile = "wide" if str(role_meta.get("role") or "") in {"hero", "support"} else "narrow"
+    return {
+        "family": _phaser_family_name(
+            family=family,
+            stage=stage,
+            context=context,
+            pattern=pattern,
+        ),
+        "target_family": family,
+        "pattern": pattern,
+        "measure": measure,
+        "width_profile": width_profile,
+        "transition_profile": transition_profile,
+        "phase_distribution": "sym_wide" if str(role_meta.get("coupling_mode") or "") in {"mirror", "widen"} else "linear",
+        "sync_mode": sync_mode,
+        "timing_master": timing_master,
+        "free_run": stage in {"intro", "breakdown", "outro"} and family in {"wash", "led"},
+    }
+
+
+def _recipe_line(
+    *,
+    family: str,
+    pattern: str,
+    stage: str,
+    timing_master: str,
+    role_meta: dict[str, Any],
+    enabled: bool,
+    zone_policy: str = "",
+) -> dict[str, Any]:
+    line = {
+        "group_ref": _cue_recipe_group_name(family=family, stage=stage),
+        "preset_ref": f"{family}/{stage}/{pattern}",
+        "feature_group": _cue_recipe_feature_group(family),
+        "matricks_ref": "sym_wide" if str(role_meta.get("coupling_mode") or "") in {"mirror", "widen"} else "linear",
+        "speed_ref": timing_master,
+        "phase_ref": "0..300" if str(role_meta.get("role") or "") == "hero" else "0..180",
+        "merge_mode": "layered",
+        "enabled": enabled,
+    }
+    if family == "laser":
+        line["zone_policy"] = zone_policy
+    return line
+
+
+def _recipe_bundle(
+    *,
+    section_role: str,
+    venue_mode: str,
+    timing_master: str,
+    lead_family: str,
+    transition_intent: dict[str, Any],
+    recipe_lines: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "cue_family_id": _cue_family_id(
+            section_role,
+            lead_family,
+            venue_mode,
+        ),
+        "lead_family": lead_family,
+        "timing_master": timing_master,
+        "transition_intent": copy.deepcopy(transition_intent),
+        "recipe_lines": copy.deepcopy(recipe_lines),
+    }
+
+
+def _trigger_policy(
+    *,
+    section_role: str,
+    metadata_confidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    confidence = metadata_confidence if isinstance(metadata_confidence, dict) else {}
+    transport_confidence = _safe_confidence_value(confidence.get("transport_confidence"), default=0.2)
+    phrase_confidence = _safe_confidence_value(confidence.get("phrase_confidence"), default=0.2)
+    beatgrid_confidence = _safe_confidence_value(confidence.get("beatgrid_confidence"), default=0.2)
+
+    if transport_confidence >= 0.9 and phrase_confidence >= 0.85:
+        primary = "phrase_head"
+        fallback = "next_downbeat"
+        tier = "strict"
+    elif beatgrid_confidence >= 0.72:
+        primary = "next_downbeat"
+        fallback = "bar_head"
+        tier = "beat_safe"
+    else:
+        primary = "section_estimate"
+        fallback = "free_run"
+        tier = "degraded"
+
+    if section_role in {"intro", "outro", "breakdown", "vocal"} and primary == "phrase_head":
+        fallback = "bar_head"
+    if section_role in {"drop_1", "drop_variation"} and tier == "degraded":
+        fallback = "bar_head"
+
+    return {
+        "primary": primary,
+        "fallback": fallback,
+        "confidence_tier": tier,
+        "phrase_confidence": phrase_confidence,
+        "transport_confidence": transport_confidence,
+        "beatgrid_confidence": beatgrid_confidence,
+    }
+
+
+def _apply_venue_laser_zone_policy(venue_mode: str, zone_policy: str) -> str:
+    venue = _normalize_venue_mode(venue_mode)
+    if venue == "small_room_50_100":
+        return "overhead_only"
+    if zone_policy == "crowd_punctuate":
+        return "overhead_bias"
+    return zone_policy
+
+
 def _cue_recipe_family(
     *,
     family: str,
@@ -856,6 +1145,9 @@ def _cue_recipe_family(
     stage: str,
     timing_master: str,
     enabled: bool,
+    role_meta: dict[str, Any],
+    phaser_family: dict[str, Any],
+    recipe_line: dict[str, Any],
     zone_policy: str = "",
 ) -> dict[str, Any]:
     payload = {
@@ -866,6 +1158,11 @@ def _cue_recipe_family(
         "effect": f"phaser/{family}/{pattern}",
         "timing_master": timing_master,
         "pattern": pattern,
+        "role": str(role_meta.get("role") or "off"),
+        "coupling_mode": str(role_meta.get("coupling_mode") or "independent"),
+        "intensity_ceiling": float(role_meta.get("intensity_ceiling") or 0.0),
+        "phaser_family": copy.deepcopy(phaser_family),
+        "recipe_line": copy.deepcopy(recipe_line),
     }
     if family == "laser":
         payload["zone_policy"] = zone_policy
@@ -884,47 +1181,112 @@ def _cue_recipe(
     movers_enabled: bool,
     washes_enabled: bool,
     leds_enabled: bool,
+    section_role: str,
+    venue_mode: str,
+    venue_profile: dict[str, Any],
+    transition_intent: dict[str, Any],
+    cue_family_id: str,
+    lead_family: str,
+    fixture_role_map: dict[str, dict[str, Any]],
+    capability_graph: dict[str, dict[str, Any]],
+    capability_notes: list[str],
+    metadata_confidence: dict[str, Any] | None,
 ) -> dict[str, Any]:
     stage = _pattern_stage(kind)
     timing_master = _cue_recipe_timing_master(stage, context)
-    zone_policy = _laser_zone_policy(kind, context)
+    zone_policy = _apply_venue_laser_zone_policy(venue_mode, _laser_zone_policy(kind, context))
+    family_configs = {
+        "laser": {
+            "pattern": laser_pattern,
+            "enabled": laser_enabled,
+            "zone_policy": zone_policy,
+        },
+        "mover": {
+            "pattern": mover_pattern,
+            "enabled": movers_enabled,
+            "zone_policy": "",
+        },
+        "wash": {
+            "pattern": wash_pattern,
+            "enabled": washes_enabled,
+            "zone_policy": "",
+        },
+        "led": {
+            "pattern": led_pattern,
+            "enabled": leds_enabled,
+            "zone_policy": "",
+        },
+    }
+    compiled_families: dict[str, dict[str, Any]] = {}
+    phaser_bundle: list[dict[str, Any]] = []
+    recipe_lines: list[dict[str, Any]] = []
+    for family in ("laser", "mover", "wash", "led"):
+        family_config = family_configs[family]
+        role_meta = fixture_role_map.get(family, {})
+        phaser_family = _phaser_family(
+            family=family,
+            stage=stage,
+            context=context,
+            pattern=str(family_config["pattern"]),
+            timing_master=timing_master,
+            role_meta=role_meta,
+        )
+        recipe_line = _recipe_line(
+            family=family,
+            pattern=str(family_config["pattern"]),
+            stage=stage,
+            timing_master=timing_master,
+            role_meta=role_meta,
+            enabled=bool(family_config["enabled"]),
+            zone_policy=str(family_config["zone_policy"]),
+        )
+        compiled_family = _cue_recipe_family(
+            family=family,
+            pattern=str(family_config["pattern"]),
+            stage=stage,
+            timing_master=timing_master,
+            enabled=bool(family_config["enabled"]),
+            role_meta=role_meta,
+            phaser_family=phaser_family,
+            recipe_line=recipe_line,
+            zone_policy=str(family_config["zone_policy"]),
+        )
+        compiled_families[family] = compiled_family
+        phaser_bundle.append(copy.deepcopy(phaser_family))
+        if compiled_family["enabled"]:
+            recipe_lines.append(copy.deepcopy(recipe_line))
+    recipe_bundle = _recipe_bundle(
+        section_role=section_role,
+        venue_mode=venue_mode,
+        timing_master=timing_master,
+        lead_family=lead_family,
+        transition_intent=transition_intent,
+        recipe_lines=recipe_lines,
+    )
+    trigger_policy = _trigger_policy(
+        section_role=section_role,
+        metadata_confidence=metadata_confidence,
+    )
     return {
         "version": _CUE_RECIPE_VERSION,
         "intent": context,
         "stage": stage,
+        "section_role": section_role,
+        "venue_mode": _normalize_venue_mode(venue_mode),
+        "venue_profile": copy.deepcopy(venue_profile),
+        "cue_family_id": cue_family_id,
+        "lead_family": lead_family,
         "transition_strategy": _cue_recipe_transition_strategy(stage, context),
+        "transition_intent": copy.deepcopy(transition_intent),
         "timing_master": timing_master,
-        "families": {
-            "laser": _cue_recipe_family(
-                family="laser",
-                pattern=laser_pattern,
-                stage=stage,
-                timing_master=timing_master,
-                enabled=laser_enabled,
-                zone_policy=zone_policy,
-            ),
-            "mover": _cue_recipe_family(
-                family="mover",
-                pattern=mover_pattern,
-                stage=stage,
-                timing_master=timing_master,
-                enabled=movers_enabled,
-            ),
-            "wash": _cue_recipe_family(
-                family="wash",
-                pattern=wash_pattern,
-                stage=stage,
-                timing_master=timing_master,
-                enabled=washes_enabled,
-            ),
-            "led": _cue_recipe_family(
-                family="led",
-                pattern=led_pattern,
-                stage=stage,
-                timing_master=timing_master,
-                enabled=leds_enabled,
-            ),
-        },
+        "trigger_policy": trigger_policy,
+        "fixture_role_map": copy.deepcopy(fixture_role_map),
+        "fixture_capability_graph": copy.deepcopy(capability_graph),
+        "capability_notes": list(capability_notes),
+        "recipe_lines": copy.deepcopy(recipe_lines),
+        "phaser_bundle": copy.deepcopy(phaser_bundle),
+        "recipe_bundle": recipe_bundle,
+        "families": compiled_families,
     }
 
 
@@ -958,11 +1320,20 @@ def _build_catalog_model_payload(
     show_sections: list[dict[str, Any]],
     selection_mode: str,
     selection_variance: float,
+    venue_mode: str,
     rekordbox_track_id: str = "",
     rekordbox_average_bpm: float | None = None,
     semantic_profile: dict[str, Any] | None = None,
+    metadata_confidence: dict[str, Any] | None = None,
     web_enrichment: dict[str, Any] | None = None,
+    motif_registry: dict[str, Any] | None = None,
+    show_fingerprint: dict[str, Any] | None = None,
+    anti_template_validation: dict[str, Any] | None = None,
+    scorer_bundle: dict[str, Any] | None = None,
+    preview_artifacts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    venue_mode = _normalize_venue_mode(venue_mode)
+    venue_profile = _venue_profile(venue_mode)
     markers = (
         sorted([dict(marker) for marker in structure_markers], key=lambda item: float(item.get("start_seconds", 0.0)))
         if structure_markers
@@ -1018,6 +1389,13 @@ def _build_catalog_model_payload(
                 "label": str(marker.get("name") or section.get("label") or f"Section {index + 1}"),
                 "kind": kind,
                 "stage": _pattern_stage(kind),
+                "section_role": str(section.get("section_role") or ""),
+                "venue_mode": str(section.get("venue_mode") or venue_mode),
+                "cue_family_id": str(section.get("cue_family_id") or ""),
+                "lead_family": str(section.get("lead_family") or ""),
+                "capability_notes": list(section.get("capability_notes") or []),
+                "motif_ids": list(section.get("motif_ids") or []),
+                "motif_primary": str(section.get("motif_primary") or ""),
                 "start_seconds": round(float(marker.get("start_seconds") or section.get("start_seconds") or 0.0), 3),
                 "end_seconds": round(float(section.get("end_seconds") or duration_seconds), 3),
                 "length_seconds": round(
@@ -1035,6 +1413,12 @@ def _build_catalog_model_payload(
                 "previous_kind": previous_kind,
                 "next_kind": next_kind,
                 "transition_context": context,
+                "transition_intent": copy.deepcopy(section.get("transition_intent", {})),
+                "trigger_policy": copy.deepcopy(section.get("cue_recipe", {}).get("trigger_policy", {})),
+                "fixture_role_map": copy.deepcopy(section.get("fixture_role_map", {})),
+                "fixture_capability_graph": copy.deepcopy(section.get("fixture_capability_graph", {})),
+                "recipe_bundle": copy.deepcopy(section.get("cue_recipe", {}).get("recipe_bundle", {})),
+                "phaser_bundle": copy.deepcopy(section.get("cue_recipe", {}).get("phaser_bundle", [])),
                 "current_selection": selected,
                 "previous_selection": copy.deepcopy(previous_selected) if previous_selected else {},
                 "candidates": candidates,
@@ -1053,11 +1437,19 @@ def _build_catalog_model_payload(
             "rekordbox_track_id": rekordbox_track_id,
             "selection_mode": selection_mode,
             "selection_variance": selection_variance,
+            "venue_mode": venue_mode,
         },
         "planner": {
             "creative_profile": profile_name,
             "energy_profile": str(profile.get("energy_profile") or ""),
             "semantic_profile": copy.deepcopy(semantic_profile or {}),
+            "metadata_confidence": copy.deepcopy(metadata_confidence or {}),
+            "venue_profile": venue_profile,
+            "motif_registry": copy.deepcopy(motif_registry or {}),
+            "show_fingerprint": copy.deepcopy(show_fingerprint or {}),
+            "anti_template_validation": copy.deepcopy(anti_template_validation or {}),
+            "scorer_bundle": copy.deepcopy(scorer_bundle or {}),
+            "preview_artifacts": copy.deepcopy(preview_artifacts or {}),
             "style_bias": copy.deepcopy(web_summary.get("style_bias", {})),
             "genre_primary": str(web_summary.get("genre_primary") or ""),
             "genre_secondary": list(web_summary.get("genre_secondary") or []),
@@ -1069,6 +1461,438 @@ def _build_catalog_model_payload(
     }
 
 
+def _section_motif_ids(section: dict[str, Any]) -> list[str]:
+    section_role = str(section.get("section_role") or section.get("kind") or "section")
+    lead_family = str(section.get("lead_family") or "none")
+    motifs = [f"role:{section_role}", f"lead:{section_role}:{lead_family}"]
+    for family in ("laser", "mover", "wash", "led"):
+        enabled_flag = bool(section.get(f"{family if family != 'led' else 'led'}s_enabled", False))
+        if family == "laser":
+            enabled_flag = bool(section.get("laser_enabled", False))
+        elif family == "mover":
+            enabled_flag = bool(section.get("movers_enabled", False))
+        elif family == "wash":
+            enabled_flag = bool(section.get("washes_enabled", False))
+        elif family == "led":
+            enabled_flag = bool(section.get("leds_enabled", False))
+        if not enabled_flag:
+            continue
+        pattern = str(section.get(f"{family}_pattern") or "")
+        if pattern:
+            motifs.append(f"{family}:{pattern}")
+    geometry = str(section.get("laser_expression", {}).get("geometry_family") or "")
+    if geometry:
+        motifs.append(f"laser_geometry:{geometry}")
+    transition_type = str(section.get("transition_intent", {}).get("type") or "")
+    if transition_type:
+        motifs.append(f"transition:{transition_type}")
+    return motifs
+
+
+def _decorate_show_sections_with_motifs(show_sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    motif_counts: dict[str, int] = {}
+    for section in show_sections:
+        motif_ids = _section_motif_ids(section)
+        for motif_id in motif_ids:
+            motif_counts[motif_id] = motif_counts.get(motif_id, 0) + 1
+        section["motif_ids"] = motif_ids
+        section["motif_primary"] = motif_ids[0] if motif_ids else ""
+    for section in show_sections:
+        cue_recipe = section.get("cue_recipe")
+        if isinstance(cue_recipe, dict):
+            cue_recipe["motif_ids"] = list(section.get("motif_ids") or [])
+            cue_recipe["motif_primary"] = str(section.get("motif_primary") or "")
+            cue_recipe["motif_reuse_count"] = max(
+                (motif_counts.get(motif_id, 0) for motif_id in cue_recipe["motif_ids"]),
+                default=0,
+            )
+    return show_sections
+
+
+def _show_fingerprint(show_sections: list[dict[str, Any]]) -> dict[str, Any]:
+    section_roles = [str(section.get("section_role") or "") for section in show_sections]
+    lead_families = [str(section.get("lead_family") or "") for section in show_sections]
+    transition_types = [
+        str(section.get("transition_intent", {}).get("type") or "")
+        for section in show_sections
+    ]
+    motif_ids = [
+        motif_id
+        for section in show_sections
+        for motif_id in list(section.get("motif_ids") or [])
+    ]
+    palette_trajectory = [
+        str(section.get("laser_expression", {}).get("color_mode") or section.get("wash_pattern") or "")
+        for section in show_sections
+    ]
+    laser_families = [
+        str(section.get("laser_expression", {}).get("geometry_family") or "")
+        for section in show_sections
+        if section.get("laser_enabled")
+    ]
+    strobe_total = round(sum(float(section.get("strobe_level") or 0.0) for section in show_sections), 3)
+    density_curve = [
+        round(
+            _clamp(
+                (
+                    float(section.get("intensity_multiplier") or 0.0)
+                    + float(section.get("motion_multiplier") or 0.0)
+                    + float(section.get("strobe_level") or 0.0)
+                )
+                / 3.0,
+                0.0,
+                1.5,
+            ),
+            3,
+        )
+        for section in show_sections
+    ]
+    motif_counts: dict[str, int] = {}
+    for motif_id in motif_ids:
+        motif_counts[motif_id] = motif_counts.get(motif_id, 0) + 1
+    laser_family_counts: dict[str, int] = {}
+    for family in laser_families:
+        laser_family_counts[family] = laser_family_counts.get(family, 0) + 1
+    payload = {
+        "version": 1,
+        "section_roles": section_roles,
+        "lead_families": lead_families,
+        "transition_types": transition_types,
+        "motif_ids": motif_ids,
+        "motif_counts": motif_counts,
+        "palette_trajectory": palette_trajectory,
+        "laser_families": laser_families,
+        "laser_family_counts": laser_family_counts,
+        "strobe_total": strobe_total,
+        "density_curve": density_curve,
+    }
+    payload["hash"] = sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
+    return payload
+
+
+def _sequence_similarity(left: list[str], right: list[str]) -> float:
+    if not left and not right:
+        return 0.0
+    if not left or not right:
+        return 1.0 if left == right else 0.0
+    length = max(len(left), len(right), 1)
+    matches = sum(
+        1
+        for index in range(length)
+        if (left[index] if index < len(left) else "") == (right[index] if index < len(right) else "")
+    )
+    return round(matches / length, 3)
+
+
+def _set_similarity(current: dict[str, Any], previous: dict[str, Any]) -> float:
+    section_role_similarity = _sequence_similarity(
+        list(current.get("section_roles") or []),
+        list(previous.get("section_roles") or []),
+    )
+    lead_similarity = _sequence_similarity(
+        list(current.get("lead_families") or []),
+        list(previous.get("lead_families") or []),
+    )
+    transition_similarity = _sequence_similarity(
+        list(current.get("transition_types") or []),
+        list(previous.get("transition_types") or []),
+    )
+    current_motif_sequence = list(current.get("motif_ids") or [])
+    previous_motif_sequence = list(previous.get("motif_ids") or [])
+    motif_sequence_similarity = _sequence_similarity(current_motif_sequence, previous_motif_sequence)
+    current_motif_counts = {str(key): int(value) for key, value in dict(current.get("motif_counts") or {}).items()}
+    previous_motif_counts = {str(key): int(value) for key, value in dict(previous.get("motif_counts") or {}).items()}
+    motif_keys = set(current_motif_counts) | set(previous_motif_counts)
+    motif_similarity = (
+        sum(min(current_motif_counts.get(key, 0), previous_motif_counts.get(key, 0)) for key in motif_keys)
+        / max(1, sum(max(current_motif_counts.get(key, 0), previous_motif_counts.get(key, 0)) for key in motif_keys))
+        if motif_keys
+        else 0.0
+    )
+    current_laser_sequence = list(current.get("laser_families") or [])
+    previous_laser_sequence = list(previous.get("laser_families") or [])
+    laser_sequence_similarity = _sequence_similarity(current_laser_sequence, previous_laser_sequence)
+    current_laser_counts = {str(key): int(value) for key, value in dict(current.get("laser_family_counts") or {}).items()}
+    previous_laser_counts = {str(key): int(value) for key, value in dict(previous.get("laser_family_counts") or {}).items()}
+    laser_keys = set(current_laser_counts) | set(previous_laser_counts)
+    laser_similarity = (
+        sum(min(current_laser_counts.get(key, 0), previous_laser_counts.get(key, 0)) for key in laser_keys)
+        / max(1, sum(max(current_laser_counts.get(key, 0), previous_laser_counts.get(key, 0)) for key in laser_keys))
+        if laser_keys
+        else 0.0
+    )
+    current_density = list(current.get("density_curve") or [])
+    previous_density = list(previous.get("density_curve") or [])
+    density_similarity = 1.0 - min(
+        1.0,
+        abs(sum(current_density) - sum(previous_density)) / max(0.001, sum(current_density) + sum(previous_density) + 0.001),
+    )
+    strobe_similarity = 1.0 - min(
+        1.0,
+        abs(float(current.get("strobe_total") or 0.0) - float(previous.get("strobe_total") or 0.0)),
+    )
+    return round(
+        (
+            section_role_similarity * 0.2
+            + lead_similarity * 0.22
+            + transition_similarity * 0.16
+            + motif_similarity * 0.12
+            + motif_sequence_similarity * 0.08
+            + laser_similarity * 0.08
+            + laser_sequence_similarity * 0.04
+            + density_similarity * 0.05
+            + strobe_similarity * 0.05
+        ),
+        3,
+    )
+
+
+def _recent_catalog_entries(current_track_key: str, limit: int = 4) -> list[dict[str, Any]]:
+    from photonic_synesthesia.integrations import list_show_catalog_paths
+
+    entries: list[tuple[float, dict[str, Any]]] = []
+    for path in list_show_catalog_paths():
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str(payload.get("track_key") or "") == current_track_key:
+            continue
+        try:
+            modified = path.stat().st_mtime
+        except OSError:
+            modified = 0.0
+        entries.append((modified, payload))
+    entries.sort(key=lambda item: item[0], reverse=True)
+    return [payload for _, payload in entries[: max(0, limit)]]
+
+
+def _anti_template_validation(
+    *,
+    track_key: str,
+    show_sections: list[dict[str, Any]],
+    semantic_profile: dict[str, Any] | None,
+    recent_catalog_entries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    current_fingerprint = _show_fingerprint(show_sections)
+    recent_entries = list(recent_catalog_entries or _recent_catalog_entries(track_key))
+    nearest_tracks: list[dict[str, Any]] = []
+    reused_motifs: set[str] = set()
+    for payload in recent_entries:
+        fingerprint = payload.get("show_fingerprint")
+        if not isinstance(fingerprint, dict):
+            fingerprint = _show_fingerprint([dict(section) for section in payload.get("show_sections", [])])
+        similarity = _set_similarity(current_fingerprint, fingerprint)
+        reused_motifs.update(set(current_fingerprint.get("motif_ids") or []) & set(fingerprint.get("motif_ids") or []))
+        nearest_tracks.append(
+            {
+                "track_key": str(payload.get("track_key") or ""),
+                "similarity": similarity,
+                "fingerprint_hash": str(fingerprint.get("hash") or ""),
+            }
+        )
+    nearest_tracks.sort(key=lambda item: float(item["similarity"]), reverse=True)
+    mean_similarity = round(
+        sum(float(item["similarity"]) for item in nearest_tracks) / len(nearest_tracks),
+        3,
+    ) if nearest_tracks else 0.0
+    max_similarity = round(max((float(item["similarity"]) for item in nearest_tracks), default=0.0), 3)
+    status = "pass"
+    if max_similarity > 0.75 or mean_similarity > 0.7:
+        status = "fail"
+    elif max_similarity > 0.6 or mean_similarity > 0.55:
+        status = "warn"
+    genre_hints = list((semantic_profile or {}).get("genre_hints") or [])
+    return {
+        "version": 1,
+        "status": status,
+        "window": len(nearest_tracks),
+        "mean_similarity": mean_similarity,
+        "max_similarity": max_similarity,
+        "nearest_tracks": nearest_tracks[:4],
+        "reused_motifs": sorted(reused_motifs),
+        "genre_hints": genre_hints,
+        "show_fingerprint_hash": str(current_fingerprint.get("hash") or ""),
+    }
+
+
+def _motif_registry(
+    *,
+    track_key: str,
+    show_sections: list[dict[str, Any]],
+    recent_catalog_entries: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    recent_entries = list(recent_catalog_entries or _recent_catalog_entries(track_key))
+    recent_track_keys = [str(payload.get("track_key") or "") for payload in recent_entries[:4]]
+    current_motifs = sorted({motif for section in show_sections for motif in list(section.get("motif_ids") or [])})
+    recent_motifs = sorted(
+        {
+            motif
+            for payload in recent_entries[:4]
+            for motif in list((payload.get("show_fingerprint") or {}).get("motif_ids") or [])
+        }
+    )
+    return {
+        "version": 1,
+        "window": 4,
+        "recent_track_keys": recent_track_keys,
+        "current_motifs": current_motifs,
+        "recent_motifs": recent_motifs,
+        "reused_motifs": sorted(set(current_motifs) & set(recent_motifs)),
+    }
+
+
+def _scorer_bundle(
+    *,
+    show_sections: list[dict[str, Any]],
+    semantic_profile: dict[str, Any] | None,
+    anti_template_validation: dict[str, Any],
+    venue_mode: str,
+) -> dict[str, Any]:
+    structural_score = 1.0 if all(
+        section.get("section_role") and section.get("cue_recipe") and section.get("transition_intent")
+        for section in show_sections
+    ) else 0.45
+    hero_lock_ok = all(
+        len([family for family, payload in dict(section.get("fixture_role_map") or {}).items() if str(payload.get("role") or "") == "hero"]) == 1
+        for section in show_sections
+    )
+    fixture_hierarchy = 1.0 if hero_lock_ok else 0.5
+    intensity_values = [float(section.get("intensity_multiplier") or 0.0) for section in show_sections]
+    motion_values = [float(section.get("motion_multiplier") or 0.0) for section in show_sections]
+    strobe_values = [float(section.get("strobe_level") or 0.0) for section in show_sections]
+    visual_contrast = round(
+        _clamp((max(intensity_values, default=0.0) - min(intensity_values, default=0.0)) * 0.45
+               + (max(motion_values, default=0.0) - min(motion_values, default=0.0)) * 0.35
+               + (max(strobe_values, default=0.0) - min(strobe_values, default=0.0)) * 0.2, 0.0, 1.0),
+        3,
+    )
+    genre_hints = [str(item).lower() for item in list((semantic_profile or {}).get("genre_hints") or [])]
+    strobe_total = sum(strobe_values)
+    genre_fit = 0.92
+    if any("afro" in hint for hint in genre_hints) and strobe_total > 0.7:
+        genre_fit = 0.62
+    elif any("progressive" in hint or "melodic" in hint for hint in genre_hints) and strobe_total > 1.0:
+        genre_fit = 0.74
+    repetition_control = round(1.0 - float(anti_template_validation.get("mean_similarity") or 0.0), 3)
+    climax_quality = 0.78
+    drop_sections = [section for section in show_sections if str(section.get("section_role") or "").startswith("drop")]
+    if drop_sections:
+        final_drop = drop_sections[-1]
+        end_seconds = max(float(section.get("end_seconds") or 0.0) for section in show_sections) or 1.0
+        if float(final_drop.get("start_seconds") or 0.0) / end_seconds >= 0.55:
+            climax_quality = 0.92
+    emotional_coherence = round(
+        _clamp(
+            0.58
+            + (0.12 if genre_hints else 0.0)
+            + (0.1 if venue_mode == "small_room_50_100" else 0.14)
+            + (0.08 if any(str(section.get("transition_intent", {}).get("type") or "") == "suckout" for section in show_sections) else 0.0),
+            0.0,
+            1.0,
+        ),
+        3,
+    )
+    laser_mover_coordination = round(
+        _clamp(
+            sum(
+                1.0
+                for section in show_sections
+                if not section.get("laser_enabled")
+                or not section.get("movers_enabled")
+                or str(section.get("lead_family") or "") != "laser"
+                or str(section.get("cue_recipe", {}).get("families", {}).get("mover", {}).get("role") or "") != "hero"
+            ) / max(1, len(show_sections)),
+            0.0,
+            1.0,
+        ),
+        3,
+    )
+    scores = {
+        "structural_correctness": round(structural_score, 3),
+        "fixture_hierarchy": round(fixture_hierarchy, 3),
+        "visual_contrast": visual_contrast,
+        "emotional_coherence": emotional_coherence,
+        "laser_mover_coordination": laser_mover_coordination,
+        "genre_fit": round(genre_fit, 3),
+        "repetition_control": repetition_control,
+        "climax_quality": round(climax_quality, 3),
+    }
+    aggregate = round(
+        scores["structural_correctness"] * 0.16
+        + scores["fixture_hierarchy"] * 0.14
+        + scores["visual_contrast"] * 0.13
+        + scores["emotional_coherence"] * 0.13
+        + scores["laser_mover_coordination"] * 0.12
+        + scores["genre_fit"] * 0.1
+        + scores["repetition_control"] * 0.12
+        + scores["climax_quality"] * 0.1,
+        3,
+    )
+    warnings: list[str] = []
+    if anti_template_validation.get("status") == "fail":
+        warnings.append("cross_track_similarity")
+    if scores["fixture_hierarchy"] < 0.8:
+        warnings.append("hero_lock")
+    if scores["genre_fit"] < 0.75:
+        warnings.append("genre_fit")
+    if scores["climax_quality"] < 0.8:
+        warnings.append("climax_curve")
+    return {
+        "version": 1,
+        "scores": scores,
+        "aggregate": aggregate,
+        "warnings": warnings,
+        "auto_accept": aggregate >= 0.82 and not warnings,
+    }
+
+
+def _preview_artifacts(track_key: str, show_sections: list[dict[str, Any]]) -> dict[str, Any]:
+    slug = sha1(track_key.encode("utf-8")).hexdigest()[:10]
+    artifacts: list[dict[str, Any]] = []
+    for section in show_sections:
+        section_id = str(section.get("id") or "section")
+        label = str(section.get("label") or section_id)
+        artifacts.append(
+            {
+                "type": "section_still",
+                "section_id": section_id,
+                "label": label,
+                "path_hint": f"previz/{slug}/{section_id}_still.png",
+            }
+        )
+        artifacts.append(
+            {
+                "type": "section_clip",
+                "section_id": section_id,
+                "label": label,
+                "path_hint": f"previz/{slug}/{section_id}_clip.mp4",
+            }
+        )
+    for section in show_sections:
+        section_role = str(section.get("section_role") or "")
+        if section_role in {"build_2", "drop_1", "drop_variation", "breakdown"}:
+            section_id = str(section.get("id") or "section")
+            artifacts.append(
+                {
+                    "type": "long_exposure",
+                    "section_id": section_id,
+                    "label": str(section.get("label") or section_id),
+                    "path_hint": f"previz/{slug}/{section_id}_long_exposure.png",
+                }
+            )
+    return {
+        "version": 1,
+        "status": "planned",
+        "summary": {
+            "section_stills": sum(1 for artifact in artifacts if artifact["type"] == "section_still"),
+            "section_clips": sum(1 for artifact in artifacts if artifact["type"] == "section_clip"),
+            "long_exposures": sum(1 for artifact in artifacts if artifact["type"] == "long_exposure"),
+        },
+        "artifacts": artifacts,
+    }
+
+
 def _build_track_metadata_binding_callback(
     *,
     rekordbox_xml: Path | None,
@@ -1076,6 +1900,7 @@ def _build_track_metadata_binding_callback(
     fallback_title: str,
     fallback_artist: str = "",
     fallback_duration_seconds: float = 0.0,
+    fallback_venue_mode: str = "small_room_50_100",
 ) -> Any:
     from photonic_synesthesia.integrations import load_rekordbox_track_by_metadata
 
@@ -1137,7 +1962,24 @@ def _build_track_metadata_binding_callback(
             if metadata.get("selection_variance") is not None
             else (persisted_show_plan or {}).get("selection_variance")
         )
+        venue_mode = _normalize_venue_mode(
+            metadata.get("venue_mode")
+            if metadata.get("venue_mode") is not None
+            else (persisted_show_plan or {}).get("venue_mode", fallback_venue_mode)
+        )
         semantic_profile = copy.deepcopy((persisted_show_plan or {}).get("semantic_profile", {}))
+        metadata_confidence = copy.deepcopy(metadata.get("metadata_confidence", {}))
+        if not metadata_confidence:
+            metadata_confidence = copy.deepcopy((persisted_show_plan or {}).get("metadata_confidence", {}))
+        if not metadata_confidence:
+            metadata_confidence = _metadata_confidence(
+                structure_markers=structure_markers,
+                metadata_source=metadata_source,
+                rekordbox_track_id=matched_rekordbox_track.track_id if matched_rekordbox_track else "",
+                rekordbox_average_bpm=matched_rekordbox_track.average_bpm if matched_rekordbox_track else None,
+                web_enrichment=None,
+                matched_rekordbox_track=matched_rekordbox_track is not None,
+            )
         show_sections = _resolve_show_sections(
             persisted_show_plan,
             structure_markers,
@@ -1146,6 +1988,8 @@ def _build_track_metadata_binding_callback(
             semantic_profile=semantic_profile,
             selection_mode=selection_mode,
             selection_variance=selection_variance,
+            venue_mode=venue_mode,
+            metadata_confidence=metadata_confidence,
         )
         return {
             "track_title": track_title,
@@ -1154,6 +1998,9 @@ def _build_track_metadata_binding_callback(
             "file_name": f"{track_artist} - {track_title}".strip(" -") if track_title else fallback_title,
             "duration_seconds": duration_seconds,
             "semantic_profile": semantic_profile,
+            "metadata_confidence": metadata_confidence,
+            "operator_intents": copy.deepcopy((persisted_show_plan or {}).get("operator_intents", [])),
+            "venue_mode": venue_mode,
             "structure_markers": structure_markers,
             "show_sections": show_sections,
             "selection_mode": selection_mode,
@@ -1253,6 +2100,48 @@ def _normalize_selection_variance(value: Any | None) -> float:
     return round(_clamp(normalized, 0.0, 1.0), 3)
 
 
+def _normalize_venue_mode(value: str | None) -> str:
+    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
+    return normalized if normalized in _VENUE_MODES else "small_room_50_100"
+
+
+def _venue_profile(venue_mode: str | None) -> dict[str, Any]:
+    normalized = _normalize_venue_mode(venue_mode)
+    if normalized == "medium_room_150_400":
+        return {
+            "mode": normalized,
+            "indoor": True,
+            "capacity_range": [150, 400],
+            "ceiling_height_class": "medium",
+            "throw_distance_class": "medium",
+            "audience_depth_class": "medium",
+            "laser_policy": "overhead_bias",
+            "readability_bias": "balanced",
+            "intensity_scale": 1.0,
+            "motion_scale": 1.0,
+            "strobe_scale": 0.82,
+            "density_cap": 0.86,
+            "whiteout_budget": 0.8,
+            "max_dense_layers": 2,
+        }
+    return {
+        "mode": "small_room_50_100",
+        "indoor": True,
+        "capacity_range": [50, 100],
+        "ceiling_height_class": "low_medium",
+        "throw_distance_class": "short",
+        "audience_depth_class": "shallow",
+        "laser_policy": "overhead_only",
+        "readability_bias": "intimate",
+        "intensity_scale": 0.93,
+        "motion_scale": 0.9,
+        "strobe_scale": 0.62,
+        "density_cap": 0.72,
+        "whiteout_budget": 0.66,
+        "max_dense_layers": 2,
+    }
+
+
 def _transition_context(
     *,
     previous_kind: str | None,
@@ -1277,6 +2166,423 @@ def _transition_context(
     if stage == "outro":
         return "outro_release"
     return "intro_set"
+
+
+def _normalize_section_role(
+    *,
+    kind: str,
+    marker_name: str,
+    context: str,
+    ordinal: int,
+    total_of_kind: int,
+) -> str:
+    marker_text = marker_name.strip().lower()
+    if kind == "vocal" or "vocal" in marker_text:
+        return "vocal"
+    if kind in {"verse", "groove", "chorus"} or any(token in marker_text for token in ("verse", "groove", "chorus")):
+        return "groove"
+    if kind == "bridge" or "bridge" in marker_text:
+        return "bridge"
+    if kind == "build":
+        if ordinal > 0 or context == "build_cycle":
+            return "build_2"
+        return "build_1"
+    if kind == "drop":
+        return "drop_variation" if ordinal > 0 or context == "drop_variation" else "drop_1"
+    if kind == "breakdown":
+        return "breakdown"
+    if kind == "outro":
+        return "outro"
+    return "intro"
+
+
+def _transition_intent(
+    *,
+    section_role: str,
+    context: str,
+    previous_role: str | None,
+    next_role: str | None,
+) -> dict[str, Any]:
+    if section_role in {"drop_1", "drop_variation"}:
+        return {
+            "type": "bloom" if context == "drop_launch" else "inversion",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash", "led"],
+            "blackout_policy": "pre_drop_snap" if previous_role in {"build_1", "build_2"} else "none",
+            "palette_carry": section_role == "drop_variation",
+            "geometry_carry": section_role == "drop_variation",
+        }
+    if section_role in {"build_1", "build_2"}:
+        return {
+            "type": "handoff" if next_role in {"drop_1", "drop_variation"} else "develop",
+            "duration_domain": "phrase",
+            "carry_over_families": ["mover", "wash"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": section_role == "build_2",
+        }
+    if section_role == "breakdown":
+        return {
+            "type": "suckout",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash"],
+            "blackout_policy": "drop_residue_off",
+            "palette_carry": False,
+            "geometry_carry": False,
+        }
+    if section_role == "bridge":
+        return {
+            "type": "handoff",
+            "duration_domain": "bar",
+            "carry_over_families": ["led", "wash"],
+            "blackout_policy": "none",
+            "palette_carry": False,
+            "geometry_carry": False,
+        }
+    if section_role == "vocal":
+        return {
+            "type": "dissolve",
+            "duration_domain": "bar",
+            "carry_over_families": ["wash"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": False,
+        }
+    if section_role == "outro":
+        return {
+            "type": "dissolve",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash", "led"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": False,
+        }
+    return {
+        "type": "set" if previous_role is None else "handoff",
+        "duration_domain": "phrase",
+        "carry_over_families": ["wash"],
+        "blackout_policy": "none",
+        "palette_carry": previous_role == "intro",
+        "geometry_carry": False,
+    }
+
+
+def _lead_family_for_section_role(
+    *,
+    section_role: str,
+    venue_mode: str,
+    laser_enabled: bool,
+    leds_enabled: bool,
+) -> str:
+    venue = _normalize_venue_mode(venue_mode)
+    if section_role in {"intro", "vocal", "breakdown", "outro"}:
+        return "wash"
+    if section_role == "bridge":
+        return "led" if leds_enabled else "wash"
+    if section_role in {"build_1", "build_2", "groove"}:
+        return "mover"
+    if section_role == "drop_variation":
+        if venue == "medium_room_150_400" and laser_enabled:
+            return "laser"
+        return "led" if leds_enabled else "mover"
+    if section_role == "drop_1":
+        if venue == "medium_room_150_400" and laser_enabled:
+            return "laser"
+        return "mover"
+    return "wash"
+
+
+def _fixture_role_map(
+    *,
+    section_role: str,
+    venue_mode: str,
+    laser_enabled: bool,
+    movers_enabled: bool,
+    washes_enabled: bool,
+    leds_enabled: bool,
+    preferred_lead_family: str | None = None,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    lead_family = _lead_family_for_section_role(
+        section_role=section_role,
+        venue_mode=venue_mode,
+        laser_enabled=laser_enabled,
+        leds_enabled=leds_enabled,
+    )
+    family_enabled = {
+        "laser": laser_enabled,
+        "mover": movers_enabled,
+        "wash": washes_enabled,
+        "led": leds_enabled,
+    }
+    if preferred_lead_family in family_enabled and family_enabled[str(preferred_lead_family)]:
+        lead_family = str(preferred_lead_family)
+    base_roles: dict[str, str] = {
+        "laser": "support",
+        "mover": "support",
+        "wash": "architectural",
+        "led": "texture",
+    }
+    if section_role in {"intro", "outro"}:
+        base_roles.update({"wash": "hero", "mover": "architectural", "laser": "off", "led": "texture"})
+    elif section_role == "vocal":
+        base_roles.update({"wash": "hero", "mover": "support", "laser": "off", "led": "texture"})
+    elif section_role == "bridge":
+        base_roles.update({"led": "hero", "wash": "support", "mover": "architectural", "laser": "off"})
+    elif section_role in {"build_1", "build_2"}:
+        base_roles.update({"mover": "hero", "wash": "support", "led": "accent", "laser": "support"})
+    elif section_role == "breakdown":
+        base_roles.update({"wash": "hero", "mover": "architectural", "led": "texture", "laser": "off"})
+    elif section_role == "drop_1":
+        base_roles.update({"wash": "support", "mover": "hero", "led": "accent", "laser": "support"})
+    elif section_role == "drop_variation":
+        base_roles.update({"wash": "support", "mover": "support", "led": "hero", "laser": "support"})
+    else:
+        base_roles.update({"mover": "hero", "wash": "architectural", "led": "texture", "laser": "support"})
+
+    base_roles[lead_family] = "hero"
+    for family, role in list(base_roles.items()):
+        if family != lead_family and role == "hero":
+            base_roles[family] = "support"
+    role_map: dict[str, dict[str, Any]] = {}
+    for family in ("laser", "mover", "wash", "led"):
+        enabled = family_enabled[family]
+        role = base_roles[family] if enabled else "off"
+        if family == "laser":
+            coupling_mode = "widen" if lead_family == "mover" else "mirror"
+        elif family == "mover":
+            coupling_mode = "mirror" if lead_family == "laser" else "independent"
+        elif family == "wash":
+            coupling_mode = "widen"
+        else:
+            coupling_mode = "offset"
+        role_map[family] = {
+            "role": role,
+            "coupling_mode": coupling_mode,
+            "intensity_ceiling": 1.0 if role == "hero" else (0.72 if role == "support" else 0.5),
+        }
+    return lead_family, role_map
+
+
+def _fixture_capability_graph(venue_mode: str) -> dict[str, dict[str, Any]]:
+    venue = _normalize_venue_mode(venue_mode)
+    if venue == "medium_room_150_400":
+        laser_geometries = {
+            "intro": ["fan", "scan", "sky", "cone", "trace", "helix", "sheet"],
+            "build": ["fan", "scan", "cone", "rake", "helix", "trace", "sheet", "tunnel", "grouped"],
+            "drop": ["fan", "scan", "sheet", "tunnel", "helix", "trace", "cone", "grouped", "lattice", "burst", "array"],
+            "outro": ["fan", "scan", "sky", "cone", "trace", "helix", "sheet"],
+        }
+        return {
+            "laser": {
+                "supports_hero": True,
+                "allowed_geometries": laser_geometries,
+                "max_density_cap": 0.86,
+                "max_motion_scale": 1.05,
+            },
+            "mover": {"supports_hero": True, "max_motion_scale": 1.0},
+            "wash": {"supports_hero": True, "max_motion_scale": 0.8},
+            "led": {"supports_hero": True, "max_motion_scale": 0.9},
+        }
+    laser_geometries = {
+        "intro": ["fan", "scan", "sky", "cone", "trace", "helix"],
+        "build": ["fan", "scan", "cone", "rake", "helix", "trace"],
+        "drop": ["fan", "scan", "sheet", "tunnel", "helix", "trace", "cone"],
+        "outro": ["fan", "scan", "sky", "cone", "trace", "helix"],
+    }
+    return {
+        "laser": {
+            "supports_hero": False,
+            "allowed_geometries": laser_geometries,
+            "max_density_cap": 0.72,
+            "max_motion_scale": 0.85,
+        },
+        "mover": {"supports_hero": True, "max_motion_scale": 0.9},
+        "wash": {"supports_hero": True, "max_motion_scale": 0.7},
+        "led": {"supports_hero": True, "max_motion_scale": 0.8},
+    }
+
+
+def _capability_stage_for_role(section_role: str) -> str:
+    if section_role in {"build_1", "build_2"}:
+        return "build"
+    if section_role in {"drop_1", "drop_variation"}:
+        return "drop"
+    if section_role == "outro":
+        return "outro"
+    return "intro"
+
+
+def _compatible_laser_pattern(
+    *,
+    base_pattern: str,
+    kind: str,
+    context: str,
+    profile: dict[str, Any],
+    section_role: str,
+    venue_mode: str,
+) -> tuple[str, list[str]]:
+    capability_graph = _fixture_capability_graph(venue_mode)
+    allowed_geometries = set(
+        capability_graph["laser"]["allowed_geometries"].get(
+            _capability_stage_for_role(section_role),
+            capability_graph["laser"]["allowed_geometries"]["intro"],
+        )
+    )
+    geometry = _LASER_PATTERN_GEOMETRY.get(base_pattern, "fan")
+    if geometry in allowed_geometries:
+        return base_pattern, []
+
+    candidates = _pattern_candidates(
+        family="laser",
+        kind=kind,
+        context=context,
+        profile=profile,
+    )
+    for candidate in candidates:
+        candidate_geometry = _LASER_PATTERN_GEOMETRY.get(candidate, "fan")
+        if candidate_geometry in allowed_geometries:
+            return candidate, [
+                f"laser_pattern_degraded:{base_pattern}->{candidate}",
+                f"unsupported_geometry:{geometry}",
+            ]
+    return base_pattern, [f"laser_pattern_unverified:{base_pattern}"]
+
+
+def _sync_section_role_state(
+    *,
+    section: dict[str, Any],
+    lead_family: str,
+    fixture_role_map: dict[str, dict[str, Any]],
+) -> None:
+    section["lead_family"] = lead_family
+    section["fixture_role_map"] = copy.deepcopy(fixture_role_map)
+    cue_recipe = section.get("cue_recipe")
+    if isinstance(cue_recipe, dict):
+        cue_recipe["lead_family"] = lead_family
+        cue_recipe["fixture_role_map"] = copy.deepcopy(fixture_role_map)
+        families = cue_recipe.get("families")
+        if isinstance(families, dict):
+            for family, role_meta in fixture_role_map.items():
+                family_payload = families.get(family)
+                if not isinstance(family_payload, dict):
+                    continue
+                family_payload["role"] = str(role_meta.get("role") or "off")
+                family_payload["coupling_mode"] = str(role_meta.get("coupling_mode") or "independent")
+                family_payload["intensity_ceiling"] = float(role_meta.get("intensity_ceiling") or 0.0)
+                enabled_key = {
+                    "laser": "laser_enabled",
+                    "mover": "movers_enabled",
+                    "wash": "washes_enabled",
+                    "led": "leds_enabled",
+                }[family]
+                family_payload["enabled"] = bool(section.get(enabled_key, family_payload.get("enabled")))
+
+
+def _strobe_level_cap(*, section_role: str, venue_mode: str) -> float:
+    venue = _normalize_venue_mode(venue_mode)
+    if section_role in {"intro", "vocal", "breakdown", "outro"}:
+        return 0.0
+    if section_role == "bridge":
+        return 0.08
+    if venue == "small_room_50_100":
+        if section_role == "drop_variation":
+            return 0.28
+        if section_role == "drop_1":
+            return 0.32
+        if section_role in {"build_1", "build_2"}:
+            return 0.18
+        return 0.14
+    if section_role == "drop_variation":
+        return 0.42
+    if section_role == "drop_1":
+        return 0.46
+    if section_role in {"build_1", "build_2"}:
+        return 0.24
+    return 0.16
+
+
+def _apply_strobe_policy(section: dict[str, Any], venue_mode: str) -> None:
+    section_role = str(section.get("section_role") or "")
+    cap = _strobe_level_cap(section_role=section_role, venue_mode=venue_mode)
+    current_level = float(section.get("strobe_level") or 0.0)
+    level = round(_clamp(min(current_level, cap), 0.0, 1.0), 3)
+    section["strobe_level"] = level
+    profile = section.get("strobe_profile")
+    if isinstance(profile, dict):
+        profile["floor"] = round(min(float(profile.get("floor") or 0.0), level), 3)
+        profile["ceiling"] = round(min(float(profile.get("ceiling") or 0.0), level), 3)
+        if level <= 0:
+            profile["mode"] = "restraint"
+            profile["label"] = "restrained accents"
+
+
+def _apply_laser_policy(section: dict[str, Any], venue_mode: str) -> None:
+    section_role = str(section.get("section_role") or "")
+    allowed = bool(section.get("laser_enabled", False))
+    if section_role in {"vocal", "breakdown"}:
+        allowed = False
+    section["laser_enabled"] = allowed
+    cue_recipe = section.get("cue_recipe")
+    zone_policy = _apply_venue_laser_zone_policy(
+        venue_mode,
+        str(section.get("laser_program", {}).get("zone_policy") or _laser_zone_policy(str(section.get("kind") or ""), str(cue_recipe.get("intent") if isinstance(cue_recipe, dict) else ""))),
+    )
+    laser_program = section.get("laser_program")
+    if isinstance(laser_program, dict):
+        laser_program["zone_policy"] = zone_policy
+    if isinstance(cue_recipe, dict):
+        families = cue_recipe.get("families")
+        if isinstance(families, dict) and isinstance(families.get("laser"), dict):
+            families["laser"]["enabled"] = allowed
+            families["laser"]["zone_policy"] = zone_policy
+
+
+def _drop_variation_lead_family(section: dict[str, Any], previous_drop: dict[str, Any], venue_mode: str) -> str:
+    current = str(section.get("lead_family") or "")
+    previous = str(previous_drop.get("lead_family") or "")
+    if current != previous and current:
+        return current
+    enabled = {
+        "laser": bool(section.get("laser_enabled")),
+        "mover": bool(section.get("movers_enabled")),
+        "wash": bool(section.get("washes_enabled")),
+        "led": bool(section.get("leds_enabled")),
+    }
+    venue = _normalize_venue_mode(venue_mode)
+    preference = ["led", "mover", "wash", "laser"] if venue == "small_room_50_100" else ["laser", "led", "mover", "wash"]
+    for family in preference:
+        if enabled[family] and family != previous:
+            return family
+    return current or previous or "wash"
+
+
+def _apply_show_section_validators(
+    sections: list[dict[str, Any]],
+    *,
+    venue_mode: str,
+) -> list[dict[str, Any]]:
+    validated = [copy.deepcopy(section) for section in sections]
+    previous_drop: dict[str, Any] | None = None
+    for section in validated:
+        section_role = str(section.get("section_role") or "")
+        current_lead = str(section.get("lead_family") or "")
+        if section_role == "drop_variation" and previous_drop is not None:
+            current_lead = _drop_variation_lead_family(section, previous_drop, venue_mode)
+        lead_family, fixture_role_map = _fixture_role_map(
+            section_role=section_role,
+            venue_mode=venue_mode,
+            laser_enabled=bool(section.get("laser_enabled")),
+            movers_enabled=bool(section.get("movers_enabled")),
+            washes_enabled=bool(section.get("washes_enabled")),
+            leds_enabled=bool(section.get("leds_enabled")),
+            preferred_lead_family=current_lead,
+        )
+        _sync_section_role_state(section=section, lead_family=lead_family, fixture_role_map=fixture_role_map)
+        _apply_strobe_policy(section, venue_mode)
+        _apply_laser_policy(section, venue_mode)
+        if section_role in {"drop_1", "drop_variation"}:
+            previous_drop = section
+    return validated
 
 
 def _pattern_candidates(
@@ -2239,6 +3545,7 @@ def _laser_program(
     context: str,
     ordinal: int,
     profile: dict[str, Any],
+    venue_mode: str,
 ) -> dict[str, Any]:
     def _rotate_patterns(patterns: list[str], token: str) -> list[str]:
         if len(patterns) <= 1:
@@ -2366,7 +3673,7 @@ def _laser_program(
     return {
         "version": _LASER_PROGRAM_VERSION,
         "phrase_role": context,
-        "zone_policy": _laser_zone_policy(kind, context),
+        "zone_policy": _apply_venue_laser_zone_policy(venue_mode, _laser_zone_policy(kind, context)),
         "fill_trigger_every_bars": fill_cadence,
         "launch": launch_look,
         "sustain": sustain_looks,
@@ -2515,6 +3822,8 @@ def _default_show_sections(
     semantic_profile: dict[str, Any] | None = None,
     selection_mode: str = "procedural",
     selection_variance: float = 0.0,
+    venue_mode: str = "small_room_50_100",
+    metadata_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     if not markers:
         markers = _auto_markers_for_duration(duration_seconds)
@@ -2522,6 +3831,9 @@ def _default_show_sections(
     seed = track_seed or "unknown-track"
     selection_mode = _normalize_selection_mode(selection_mode)
     selection_variance = _normalize_selection_variance(selection_variance)
+    venue_mode = _normalize_venue_mode(venue_mode)
+    venue_profile = _venue_profile(venue_mode)
+    capability_graph = _fixture_capability_graph(venue_mode)
     _, profile = _creative_profile(seed, markers)
     total_counts: dict[str, int] = {}
     for marker in markers:
@@ -2533,6 +3845,7 @@ def _default_show_sections(
     pattern_history: dict[str, list[str]] = {"laser": [], "mover": [], "wash": [], "led": []}
     usage_count_by_family: dict[str, dict[str, int]] = {"laser": {}, "mover": {}, "wash": {}, "led": {}}
     kind_counts: dict[str, int] = {}
+    previous_section_role: str | None = None
     ordered = sorted(markers, key=lambda item: float(item["start_seconds"]))
     for index, marker in enumerate(ordered):
         next_start = (
@@ -2561,12 +3874,31 @@ def _default_show_sections(
             profile=profile,
             ordinal=ordinal,
         )
+        intensity_multiplier = round(
+            _clamp(float(intensity_multiplier) * float(venue_profile["intensity_scale"]), 0.15, 1.35),
+            3,
+        )
+        motion_multiplier = round(
+            _clamp(float(motion_multiplier) * float(venue_profile["motion_scale"]), 0.2, 1.4),
+            3,
+        )
+        strobe_level = round(
+            _clamp(float(strobe_level) * float(venue_profile["strobe_scale"]), 0.0, 1.0),
+            3,
+        )
         strobe_profile = _strobe_profile(
             kind=kind,
             context=context,
             track_seed=seed,
             ordinal=ordinal,
             base_level=strobe_level,
+        )
+        section_role = _normalize_section_role(
+            kind=kind,
+            marker_name=str(marker["name"]),
+            context=context,
+            ordinal=ordinal,
+            total_of_kind=total_counts.get(kind, 1),
         )
         section_patterns = _select_section_patterns(
             kind=kind,
@@ -2587,6 +3919,16 @@ def _default_show_sections(
         mover_pattern = section_patterns["mover"]
         wash_pattern = section_patterns["wash"]
         led_pattern = section_patterns["led"]
+        capability_notes: list[str] = []
+        laser_pattern, laser_capability_notes = _compatible_laser_pattern(
+            base_pattern=laser_pattern,
+            kind=kind,
+            context=context,
+            profile=profile,
+            section_role=section_role,
+            venue_mode=venue_mode,
+        )
+        capability_notes.extend(laser_capability_notes)
         previous_patterns.update({
             "laser": laser_pattern,
             "mover": mover_pattern,
@@ -2603,6 +3945,41 @@ def _default_show_sections(
             track_seed=seed,
             ordinal=ordinal,
         )
+        lead_family, fixture_role_map = _fixture_role_map(
+            section_role=section_role,
+            venue_mode=venue_mode,
+            laser_enabled=laser_enabled,
+            movers_enabled=movers_enabled,
+            washes_enabled=washes_enabled,
+            leds_enabled=leds_enabled,
+        )
+        next_section_role = None
+        if index + 1 < len(ordered):
+            next_marker = ordered[index + 1]
+            next_kind_value = str(next_marker["kind"])
+            next_total_of_kind = total_counts.get(next_kind_value, 1)
+            next_ordinal = kind_counts.get(next_kind_value, 0)
+            next_context = _transition_context(
+                previous_kind=kind,
+                kind=next_kind_value,
+                next_kind=str(ordered[index + 2]["kind"]) if index + 2 < len(ordered) else None,
+                ordinal=next_ordinal,
+                total_of_kind=next_total_of_kind,
+            )
+            next_section_role = _normalize_section_role(
+                kind=next_kind_value,
+                marker_name=str(next_marker["name"]),
+                context=next_context,
+                ordinal=next_ordinal,
+                total_of_kind=next_total_of_kind,
+            )
+        transition_intent = _transition_intent(
+            section_role=section_role,
+            context=context,
+            previous_role=previous_section_role,
+            next_role=next_section_role,
+        )
+        cue_family_id = _cue_family_id(section_role, lead_family, venue_mode)
         laser_variant = _laser_variant(
             track_seed=seed,
             base_pattern=laser_pattern,
@@ -2649,6 +4026,16 @@ def _default_show_sections(
             movers_enabled=movers_enabled,
             washes_enabled=washes_enabled,
             leds_enabled=leds_enabled,
+            section_role=section_role,
+            venue_mode=venue_mode,
+            venue_profile=venue_profile,
+            transition_intent=transition_intent,
+            cue_family_id=cue_family_id,
+            lead_family=lead_family,
+            fixture_role_map=fixture_role_map,
+            capability_graph=capability_graph,
+            capability_notes=capability_notes,
+            metadata_confidence=metadata_confidence,
         )
         sections.append(
             {
@@ -2656,6 +4043,15 @@ def _default_show_sections(
                 "id": f"section_{index:03d}",
                 "label": str(marker["name"]),
                 "kind": kind,
+                "section_role": section_role,
+                "venue_mode": venue_mode,
+                "venue_profile": copy.deepcopy(venue_profile),
+                "cue_family_id": cue_family_id,
+                "lead_family": lead_family,
+                "fixture_role_map": copy.deepcopy(fixture_role_map),
+                "transition_intent": copy.deepcopy(transition_intent),
+                "fixture_capability_graph": copy.deepcopy(capability_graph),
+                "capability_notes": list(capability_notes),
                 "start_seconds": round(float(marker["start_seconds"]), 3),
                 "end_seconds": round(max(float(marker["start_seconds"]), next_start), 3),
                 "scene_id": _scene_for_marker_kind(kind),
@@ -2674,6 +4070,7 @@ def _default_show_sections(
                     context=context,
                     ordinal=ordinal,
                     profile=profile,
+                    venue_mode=venue_mode,
                 ),
                 "cue_recipe": cue_recipe,
                 "mover_pattern": mover_pattern,
@@ -2688,7 +4085,9 @@ def _default_show_sections(
                 "leds_enabled": leds_enabled,
             }
         )
-    return sections
+        previous_section_role = section_role
+    validated_sections = _apply_show_section_validators(sections, venue_mode=venue_mode)
+    return _decorate_show_sections_with_motifs(validated_sections)
 
 
 def _resolve_show_sections(
@@ -2700,6 +4099,8 @@ def _resolve_show_sections(
     semantic_profile: dict[str, Any] | None = None,
     selection_mode: str | None = None,
     selection_variance: float | None = None,
+    venue_mode: str | None = None,
+    metadata_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Load persisted sections when sane, otherwise rebuild a dynamic default plan."""
     resolved_selection_mode = _normalize_selection_mode(
@@ -2712,8 +4113,22 @@ def _resolve_show_sections(
         if selection_variance is not None
         else (persisted_show_plan or {}).get("selection_variance")
     )
+    resolved_venue_mode = _normalize_venue_mode(
+        venue_mode
+        if venue_mode is not None
+        else (persisted_show_plan or {}).get("venue_mode")
+    )
     generated_field_names = {
         "generator_version",
+        "section_role",
+        "venue_mode",
+        "venue_profile",
+        "cue_family_id",
+        "lead_family",
+        "fixture_role_map",
+        "transition_intent",
+        "fixture_capability_graph",
+        "capability_notes",
         "scene_id",
         "fixture_mode",
         "intensity_multiplier",
@@ -2770,6 +4185,8 @@ def _resolve_show_sections(
             return True
         if int(cue_recipe.get("version", 0) or 0) != _CUE_RECIPE_VERSION:
             return True
+        if not isinstance(cue_recipe.get("trigger_policy"), dict):
+            return True
         return _laser_program_is_stale(section.get("laser_program"))
 
     fallback_sections_cache: list[dict[str, Any]] | None = None
@@ -2784,6 +4201,8 @@ def _resolve_show_sections(
                 semantic_profile=semantic_profile,
                 selection_mode=resolved_selection_mode,
                 selection_variance=resolved_selection_variance,
+                venue_mode=resolved_venue_mode,
+                metadata_confidence=metadata_confidence,
             )
         return fallback_sections_cache
 
@@ -2809,6 +4228,9 @@ def _resolve_show_sections(
     selection_variance_mismatch = _normalize_selection_variance(
         persisted_show_plan.get("selection_variance")
     ) != resolved_selection_variance
+    venue_mode_mismatch = _normalize_venue_mode(
+        persisted_show_plan.get("venue_mode")
+    ) != resolved_venue_mode
 
     normalized: list[dict[str, Any]] = []
     duration = max(0.001, float(duration_seconds))
@@ -2841,6 +4263,7 @@ def _resolve_show_sections(
         if (
             selection_mode_mismatch
             or selection_variance_mismatch
+            or venue_mode_mismatch
             or _generated_section_is_stale(normalized_section)
         ) and index < len(_fallback_sections()):
             fallback_section = _fallback_sections()[index]
@@ -2981,6 +4404,13 @@ def catalog_cli() -> None:
     help="Exploration value used for the primary cataloged show plan",
 )
 @click.option(
+    "--venue-mode",
+    type=click.Choice(sorted(_VENUE_MODES), case_sensitive=False),
+    default="small_room_50_100",
+    show_default=True,
+    help="Supported venue profile used while compiling show sections",
+)
+@click.option(
     "--ollama-model",
     help="Optional Ollama model override used when --selection-mode=local_ollama_cpu",
 )
@@ -3006,6 +4436,7 @@ def catalog_build(
     rekordbox_xml: Path | None,
     selection_mode: str,
     selection_variance: float,
+    venue_mode: str,
     ollama_model: str | None,
     ollama_host: str | None,
     ollama_use_gpu: bool,
@@ -3018,6 +4449,7 @@ def catalog_build(
 
     selection_mode = _normalize_selection_mode(selection_mode)
     selection_variance = _normalize_selection_variance(selection_variance)
+    venue_mode = _normalize_venue_mode(venue_mode)
     rekordbox_source = rekordbox_xml or _discover_rekordbox_xml()
     audio_files = _discover_audio_files(music_path)
     if limit is not None and limit >= 0:
@@ -3039,6 +4471,7 @@ def catalog_build(
         click.echo(
             f"Cataloging {len(audio_files)} track(s) with {selection_mode} at exploration {selection_variance:.2f}"
         )
+        click.echo(f"Venue mode: {venue_mode}")
         if selection_mode == "local_ollama_cpu":
             click.echo(f"Ollama model: {_ollama_model_name()}")
             click.echo(f"Ollama host: {_ollama_host()}")
@@ -3093,6 +4526,7 @@ def catalog_build(
                     track_artist=track_artist,
                     selection_mode=selection_mode,
                     selection_variance=selection_variance,
+                    venue_mode=venue_mode,
                     rekordbox_source=rekordbox_source,
                     rekordbox_track_id=matched_rekordbox_track.track_id if matched_rekordbox_track else "",
                     rekordbox_average_bpm=matched_rekordbox_track.average_bpm if matched_rekordbox_track else None,
@@ -3235,6 +4669,7 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
             fallback_track_key="live-pro-dj-link",
             fallback_title="Live Track",
             fallback_duration_seconds=0.0,
+            fallback_venue_mode="small_room_50_100",
         )
         if web_mode:
             def _regenerate_live_show_sections(mode: str, variance: float) -> list[dict[str, Any]]:
@@ -3248,6 +4683,8 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
                         "selection_mode": mode,
                         "selection_variance": variance,
                         "metadata_source": playback_context.metadata_source,
+                        "venue_mode": "small_room_50_100",
+                        "metadata_confidence": copy.deepcopy(playback_context.metadata_confidence),
                     }
                 )
                 return list(binding.get("show_sections", []))
@@ -3260,7 +4697,9 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
                     track_title="Live Track",
                     track_artist="",
                     track_key="live-pro-dj-link",
+                    venue_mode="small_room_50_100",
                     metadata_source="pro_dj_link",
+                    operator_intents=[],
                     _save_callback=_show_plan_payload_saver("live-pro-dj-link"),
                     _regenerate_callback=_regenerate_live_show_sections,
                     _metadata_bind_callback=metadata_binding,
@@ -3330,6 +4769,13 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
 @click.option("--web", "web_mode", is_flag=True, help="Serve the control-plane website in the same process")
 @click.option("--web-host", default="127.0.0.1", help="Embedded web server host")
 @click.option("--web-port", default=8000, type=int, help="Embedded web server port")
+@click.option(
+    "--venue-mode",
+    type=click.Choice(sorted(_VENUE_MODES), case_sensitive=False),
+    default="small_room_50_100",
+    show_default=True,
+    help="Supported venue profile used while generating or refreshing show sections",
+)
 @click.pass_context
 def run_file(
     ctx: click.Context,
@@ -3345,6 +4791,7 @@ def run_file(
     web_mode: bool,
     web_host: str,
     web_port: int,
+    venue_mode: str,
 ) -> None:
     """Run the graph against an audio file such as MP3 or WAV."""
     from photonic_synesthesia.core.config import Settings
@@ -3374,6 +4821,7 @@ def run_file(
     if not 1 <= web_port <= 65535:
         click.echo("Error: --web-port must be between 1 and 65535", err=True)
         sys.exit(1)
+    venue_mode = _normalize_venue_mode(venue_mode)
 
     click.echo(f"Photonic Synesthesia v{__version__}")
     click.echo("=" * 50)
@@ -3411,7 +4859,10 @@ def run_file(
     if not enabled_ilda_fixture_ids:
         explicit_ilda_request = (
             settings.ilda.transport_type == "ether_dream"
-            or transport_source != ParameterSource.DEFAULT
+            or (
+                settings.ilda.transport_type == "ild"
+                and transport_source != ParameterSource.DEFAULT
+            )
             or export_path_source != ParameterSource.DEFAULT
         )
         if explicit_ilda_request:
@@ -3436,6 +4887,7 @@ def run_file(
     )
     click.echo(f"Mode: File Playback ({'realtime' if realtime else 'offline'})")
     click.echo(f"Audio File: {audio_file}")
+    click.echo(f"Venue Mode: {venue_mode}")
     click.echo(f"Target FPS: {fps}")
     click.echo(f"Chunk Size: {chunk_size} samples")
     click.echo()
@@ -3531,6 +4983,16 @@ def run_file(
             else 0.0
         )
         semantic_profile = copy.deepcopy((persisted_show_plan or {}).get("semantic_profile", {}))
+        metadata_confidence = copy.deepcopy((persisted_show_plan or {}).get("metadata_confidence", {}))
+        if not metadata_confidence:
+            metadata_confidence = _metadata_confidence(
+                structure_markers=structure_markers,
+                metadata_source="file_playback",
+                rekordbox_track_id=matched_rekordbox_track.track_id if matched_rekordbox_track else "",
+                rekordbox_average_bpm=matched_rekordbox_track.average_bpm if matched_rekordbox_track else None,
+                web_enrichment=None,
+                matched_rekordbox_track=matched_rekordbox_track is not None,
+            )
         active_show_sections = _resolve_show_sections(
             persisted_show_plan,
             structure_markers,
@@ -3539,6 +5001,17 @@ def run_file(
             semantic_profile=semantic_profile,
             selection_mode=selection_mode,
             selection_variance=selection_variance,
+            venue_mode=(
+                persisted_show_plan.get("venue_mode")
+                if persisted_show_plan and persisted_show_plan.get("venue_mode") is not None
+                else venue_mode
+            ),
+            metadata_confidence=metadata_confidence,
+        )
+        venue_mode = _normalize_venue_mode(
+            persisted_show_plan.get("venue_mode")
+            if persisted_show_plan and persisted_show_plan.get("venue_mode") is not None
+            else venue_mode
         )
         if (
             settings.ilda.transport_type == "ild"
@@ -3554,6 +5027,8 @@ def run_file(
                 semantic_profile=semantic_profile,
                 selection_mode=mode,
                 selection_variance=variance,
+                venue_mode=venue_mode,
+                metadata_confidence=metadata_confidence,
             )
 
         if web_mode:
@@ -3565,6 +5040,9 @@ def run_file(
                     track_title=matched_rekordbox_track.title if matched_rekordbox_track else audio_file.stem,
                     track_artist=matched_rekordbox_track.artist if matched_rekordbox_track else "",
                     track_key=track_key,
+                    venue_mode=venue_mode,
+                    metadata_confidence=copy.deepcopy(metadata_confidence),
+                    operator_intents=copy.deepcopy((persisted_show_plan or {}).get("operator_intents", [])),
                     waveform=audio_node.waveform_preview(),
                     structure_markers=structure_markers,
                     show_sections=active_show_sections,
@@ -3587,6 +5065,7 @@ def run_file(
                         fallback_title=matched_rekordbox_track.title if matched_rekordbox_track else audio_file.stem,
                         fallback_artist=matched_rekordbox_track.artist if matched_rekordbox_track else "",
                         fallback_duration_seconds=audio_node.duration_seconds,
+                        fallback_venue_mode=venue_mode,
                     ),
                     _regenerate_callback=_regenerate_show_sections,
                 )

@@ -102,6 +102,16 @@ class LaserSafetyConfig(BaseModel):
     speed_channel_offset: int = 4
     max_intensity_no_movement: int = 50
     enable_delay_ms: int = 500
+    ilda_x_min: int = -32767
+    ilda_x_max: int = 32767
+    ilda_y_min: int = -32767
+    ilda_y_max: int = 32767
+    ilda_max_point_count: int = 512
+    ilda_min_point_velocity: int = 250
+    ilda_max_point_velocity: int = 40000
+    ilda_max_color_value: int = 255
+    ilda_max_blink_hz: float = 12.0
+    ilda_blackout_hold_s: float = 0.5
 
 
 class StrobeSafetyConfig(BaseModel):

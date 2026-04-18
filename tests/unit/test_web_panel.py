@@ -32,6 +32,7 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/playback/pro-dj-link/track" in routes
     assert "/api/mock/playback/selection-mode" in routes
     assert "/api/mock/playback/selection-variance" in routes
+    assert "/api/mock/playback/operator-intents" in routes
     assert "/api/mock/playback/seek" in routes
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
@@ -686,6 +687,74 @@ def test_playback_selection_variance_endpoint_regenerates_sections_and_persists(
     assert body["show_sections"][0]["laser_pattern"] == "wave"
     assert body["show_sections"][0]["variance"] == 0.65
     assert saved_payloads[-1]["selection_variance"] == 0.65
+
+    clear_shared_playback_context()
+
+
+def test_playback_operator_intent_endpoint_applies_track_override_and_persists(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+    saved_payloads: list[dict[str, object]] = []
+
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=20.0,
+            track_key="artist|track",
+            playhead_seconds=1.0,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "section_role": "intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 8.0,
+                    "lead_family": "mover",
+                    "cue_family_id": "small_room_50_100::intro::mover",
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 0.6,
+                    "strobe_level": 0.3,
+                    "washes_enabled": True,
+                    "fixture_role_map": {
+                        "wash": {"role": "support"},
+                        "mover": {"role": "hero"},
+                    },
+                    "cue_recipe": {
+                        "cue_family_id": "small_room_50_100::intro::mover",
+                        "lead_family": "mover",
+                        "fixture_role_map": {
+                            "wash": {"role": "support"},
+                            "mover": {"role": "hero"},
+                        },
+                    },
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.post(
+        "/api/mock/playback/operator-intents",
+        json={
+            "intent": "promote_washes",
+            "scope": "track",
+            "target": "washes",
+            "amount": 0.5,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operator_intents"][-1]["intent"] == "promote_washes"
+    assert body["show_sections"][0]["lead_family"] == "wash"
+    assert body["show_sections"][0]["cue_recipe"]["lead_family"] == "wash"
+    assert body["show_sections"][0]["operator_overrides"]["wash_promoted"] is True
+    assert saved_payloads[-1]["operator_intents"][-1]["intent"] == "promote_washes"
 
     clear_shared_playback_context()
 

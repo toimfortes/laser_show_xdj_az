@@ -28,6 +28,10 @@ _NODE_IMPORTS = {
         "DirectorIntentNode",
     ),
     "ILDAOutputNode": ("photonic_synesthesia.graph.nodes.ilda_output", "ILDAOutputNode"),
+    "LaserVectorInterlockNode": (
+        "photonic_synesthesia.graph.nodes.laser_vector_interlock",
+        "LaserVectorInterlockNode",
+    ),
     "SceneSelectNode": ("photonic_synesthesia.graph.nodes.scene_select", "SceneSelectNode"),
     "LaserControlNode": ("photonic_synesthesia.graph.nodes.fixture_control", "LaserControlNode"),
     "MovingHeadControlNode": (

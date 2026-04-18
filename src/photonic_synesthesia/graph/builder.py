@@ -31,6 +31,7 @@ from photonic_synesthesia.graph.nodes import (
     SafetyInterlockNode,
     SceneSelectNode,
     StructureDetectNode,
+    LaserVectorInterlockNode,
 )
 from photonic_synesthesia.platform import CommandType, OperatorCommand
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
@@ -306,7 +307,9 @@ def build_photonic_graph(
         settings.safety,
         settings.fixtures,
         dmx_output=nodes["dmx_output"],
+        ilda_output=nodes["ilda_output"],
     )
+    nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
 
     if node_overrides:
         nodes.update(node_overrides)
@@ -349,8 +352,11 @@ def build_photonic_graph(
     # ILDA frame generation shares the same semantic state but not the DMX universe.
     graph.add_edge("safety_interlock", "ilda_output")
 
+    # ILDA safety gate for point vectors before transport.
+    graph.add_edge("ilda_output", "laser_vector_interlock")
+
     # DMX output after safety has validated/clamped commands
-    graph.add_edge("ilda_output", "dmx_output")
+    graph.add_edge("laser_vector_interlock", "dmx_output")
 
     # Loop back for continuous operation
     # Note: In practice, we use run_loop() which handles the iteration

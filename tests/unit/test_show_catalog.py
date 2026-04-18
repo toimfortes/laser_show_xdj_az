@@ -99,14 +99,47 @@ def test_catalog_build_command_writes_catalog_entries(tmp_path, monkeypatch) -> 
     assert catalog["track_key"] == "Artist - Song"
     assert catalog["duration_seconds"] == 123.4
     assert isinstance(catalog["show_sections"], list)
-    assert catalog["catalog_version"] == 4
+    assert catalog["catalog_version"] == 7
+    assert catalog["venue_mode"] == "small_room_50_100"
+    assert catalog["metadata_confidence"]["confidence_tier"] == "degraded"
+    assert catalog["metadata_confidence"]["source_precedence"] == [
+        "rekordbox_edited_markers",
+        "rekordbox_track_match",
+        "beatgrid_transport",
+        "audio_fallback",
+        "web_enrichment",
+    ]
     assert catalog["semantic_profile"]["version"] == 1
     assert catalog["semantic_profile"]["genre_hints"] == ["Progressive House"]
-    assert catalog["show_sections"][0]["cue_recipe"]["version"] == 1
+    assert catalog["show_sections"][0]["cue_recipe"]["version"] == 6
+    assert catalog["show_sections"][0]["section_role"] == "intro"
+    assert catalog["show_sections"][0]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["show_sections"][0]["fixture_capability_graph"]["laser"]["allowed_geometries"]["intro"]
+    assert catalog["show_sections"][0]["motif_ids"]
+    assert catalog["show_sections"][0]["cue_recipe"]["trigger_policy"]["confidence_tier"] == "degraded"
     assert catalog["web_enrichment"]["summary"]["genre_primary"] == "Progressive House"
+    assert catalog["motif_registry"]["current_motifs"]
+    assert catalog["show_fingerprint"]["hash"]
+    assert catalog["anti_template_validation"]["status"] in {"pass", "warn", "fail"}
+    assert "aggregate" in catalog["scorer_bundle"]
+    assert catalog["preview_artifacts"]["summary"]["section_stills"] >= 1
     assert catalog["model_payload"]["planner"]["genre_primary"] == "Progressive House"
     assert catalog["model_payload"]["planner"]["semantic_profile"]["genre_hints"] == ["Progressive House"]
+    assert catalog["model_payload"]["planner"]["venue_profile"]["mode"] == "small_room_50_100"
+    assert catalog["model_payload"]["planner"]["metadata_confidence"]["confidence_tier"] == "degraded"
+    assert catalog["model_payload"]["planner"]["motif_registry"]["current_motifs"]
+    assert catalog["model_payload"]["planner"]["show_fingerprint"]["hash"]
+    assert catalog["model_payload"]["planner"]["anti_template_validation"]["status"] in {"pass", "warn", "fail"}
+    assert "aggregate" in catalog["model_payload"]["planner"]["scorer_bundle"]
+    assert catalog["model_payload"]["planner"]["preview_artifacts"]["summary"]["section_stills"] >= 1
     assert isinstance(catalog["model_payload"]["sections"], list)
+    assert catalog["model_payload"]["sections"][0]["venue_mode"] == "small_room_50_100"
+    assert catalog["model_payload"]["sections"][0]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["model_payload"]["sections"][0]["fixture_capability_graph"]["laser"]["allowed_geometries"]["intro"]
+    assert catalog["model_payload"]["sections"][0]["recipe_bundle"]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["model_payload"]["sections"][0]["phaser_bundle"]
+    assert catalog["model_payload"]["sections"][0]["trigger_policy"]["confidence_tier"] == "degraded"
+    assert catalog["model_payload"]["sections"][0]["motif_ids"]
     assert catalog["model_payload"]["sections"][0]["candidates"]["laser"]
     assert catalog["model_payload"]["sections"][0]["current_selection"]["laser"]
 
@@ -238,6 +271,7 @@ def test_catalog_model_payload_includes_selected_patterns_in_candidates() -> Non
         track_seed="artist|song",
         selection_mode="procedural",
         selection_variance=0.2,
+        venue_mode="medium_room_150_400",
     )
 
     payload = cli_module._build_catalog_model_payload(
@@ -249,10 +283,16 @@ def test_catalog_model_payload_includes_selected_patterns_in_candidates() -> Non
         show_sections=show_sections,
         selection_mode="procedural",
         selection_variance=0.2,
+        venue_mode="medium_room_150_400",
         web_enrichment={"summary": {}},
     )
 
+    assert payload["track"]["venue_mode"] == "medium_room_150_400"
+    assert payload["planner"]["venue_profile"]["mode"] == "medium_room_150_400"
     for section in payload["sections"]:
+        assert section["venue_mode"] == "medium_room_150_400"
+        assert section["section_role"]
+        assert section["transition_intent"]["type"]
         for family in ("laser", "mover", "wash", "led"):
             current = section["current_selection"][family]
             if current:

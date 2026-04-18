@@ -31,6 +31,13 @@ class SupportsBlackout(Protocol):
         """Immediately zero output."""
 
 
+class SupportsEmergencyBlackout(Protocol):
+    """Optional immediate emergency shutdown API."""
+
+    def emergency_blackout(self) -> None:
+        """Immediately force zero output."""
+
+
 class SupportsBlackoutRequest(SupportsBlackout, Protocol):
     """Optional non-blocking blackout latch API for watchdog callbacks."""
 
@@ -113,6 +120,7 @@ class SafetyInterlockNode:
         config: SafetyConfig,
         fixtures: list[FixtureConfig],
         dmx_output: SupportsBlackout | None = None,
+        ilda_output: SupportsBlackout | SupportsEmergencyBlackout | None = None,
     ) -> None:
         self.config = config
         self.fixtures = fixtures
@@ -134,15 +142,50 @@ class SafetyInterlockNode:
         # Emergency stop state
         self._emergency_stop = False
         self._heartbeat_watchdog: HeartbeatWatchdog | None = None
-        if dmx_output is not None:
-            timeout_callback = dmx_output.blackout
-            maybe_request = getattr(dmx_output, "request_blackout", None)
-            if callable(maybe_request):
-                timeout_callback = maybe_request
+        watchdog_callbacks = self._build_heartbeat_callbacks(dmx_output, ilda_output)
+        if watchdog_callbacks:
+            timeout_callback = self._make_heartbeat_callback(watchdog_callbacks)
             self._heartbeat_watchdog = HeartbeatWatchdog(
                 on_timeout=timeout_callback,
                 timeout_s=self.config.heartbeat_timeout_s,
             )
+
+    @staticmethod
+    def _build_heartbeat_callbacks(
+        *outputs: SupportsBlackout | SupportsEmergencyBlackout | None,
+    ) -> list[Callable[[], None]]:
+        """Resolve a stable callback list for emergency handling."""
+        callbacks: list[Callable[[], None]] = []
+        for output in outputs:
+            if output is None:
+                continue
+
+            emergency_handler = getattr(output, "emergency_blackout", None)
+            if callable(emergency_handler):
+                callbacks.append(emergency_handler)
+                continue
+
+            request_handler = getattr(output, "request_blackout", None)
+            if callable(request_handler):
+                callbacks.append(request_handler)
+                continue
+
+            blackout_handler = getattr(output, "blackout", None)
+            if callable(blackout_handler):
+                callbacks.append(blackout_handler)
+
+        return callbacks
+
+    @staticmethod
+    def _make_heartbeat_callback(callbacks: list[Callable[[], None]]) -> Callable[[], None]:
+        def _on_timeout() -> None:
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("Emergency safety callback failed")
+
+        return _on_timeout
 
     def start(self) -> None:
         """Start independent watchdog thread when available."""
