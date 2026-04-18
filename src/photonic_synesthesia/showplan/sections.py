@@ -18,6 +18,12 @@ from photonic_synesthesia.showplan.types import (
 from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
 )
+from photonic_synesthesia.showplan.types import (
+    normalize_venue_mode as _normalize_venue_mode_fn,
+)
+from photonic_synesthesia.showplan.types import (
+    pattern_stage as _pattern_stage,
+)
 
 
 def _identity_selection_mode(selection_mode: str | None) -> str:
@@ -268,3 +274,224 @@ def resolve_show_sections(
         normalized[-1]["end_seconds"] = round(duration, 3)
 
     return normalized
+
+
+def transition_context(
+    *,
+    previous_kind: str | None,
+    kind: str,
+    next_kind: str | None,
+    ordinal: int,
+    total_of_kind: int,
+) -> str:
+    stage = _pattern_stage(kind)
+    if stage == "drop":
+        if previous_kind in {"build", "breakdown", "bridge", "verse", "vocal"}:
+            return "drop_launch" if ordinal == 0 else "drop_variation"
+        if ordinal > 0 or total_of_kind > 1:
+            return "drop_variation"
+        return "drop_launch"
+    if stage == "build":
+        if next_kind == "drop":
+            return "build_riser"
+        return "build_cycle"
+    if stage == "breakdown":
+        return "breakdown_release"
+    if stage == "outro":
+        return "outro_release"
+    return "intro_set"
+
+
+def normalize_section_role(
+    *,
+    kind: str,
+    marker_name: str,
+    context: str,
+    ordinal: int,
+    total_of_kind: int,
+) -> str:
+    marker_text = marker_name.strip().lower()
+    if kind == "vocal" or "vocal" in marker_text:
+        return "vocal"
+    if kind in {"verse", "groove", "chorus"} or any(token in marker_text for token in ("verse", "groove", "chorus")):
+        return "groove"
+    if kind == "bridge" or "bridge" in marker_text:
+        return "bridge"
+    if kind == "build":
+        if ordinal > 0 or context == "build_cycle":
+            return "build_2"
+        return "build_1"
+    if kind == "drop":
+        return "drop_variation" if ordinal > 0 or context == "drop_variation" else "drop_1"
+    if kind == "breakdown":
+        return "breakdown"
+    if kind == "outro":
+        return "outro"
+    return "intro"
+
+
+def transition_intent(
+    *,
+    section_role: str,
+    context: str,
+    previous_role: str | None,
+    next_role: str | None,
+) -> dict[str, Any]:
+    if section_role in {"drop_1", "drop_variation"}:
+        return {
+            "type": "bloom" if context == "drop_launch" else "inversion",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash", "led"],
+            "blackout_policy": "pre_drop_snap" if previous_role in {"build_1", "build_2"} else "none",
+            "palette_carry": section_role == "drop_variation",
+            "geometry_carry": section_role == "drop_variation",
+        }
+    if section_role in {"build_1", "build_2"}:
+        return {
+            "type": "handoff" if next_role in {"drop_1", "drop_variation"} else "develop",
+            "duration_domain": "phrase",
+            "carry_over_families": ["mover", "wash"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": section_role == "build_2",
+        }
+    if section_role == "breakdown":
+        return {
+            "type": "suckout",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash"],
+            "blackout_policy": "drop_residue_off",
+            "palette_carry": False,
+            "geometry_carry": False,
+        }
+    if section_role == "bridge":
+        return {
+            "type": "handoff",
+            "duration_domain": "bar",
+            "carry_over_families": ["led", "wash"],
+            "blackout_policy": "none",
+            "palette_carry": False,
+            "geometry_carry": False,
+        }
+    if section_role == "vocal":
+        return {
+            "type": "dissolve",
+            "duration_domain": "bar",
+            "carry_over_families": ["wash"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": False,
+        }
+    if section_role == "outro":
+        return {
+            "type": "dissolve",
+            "duration_domain": "phrase",
+            "carry_over_families": ["wash", "led"],
+            "blackout_policy": "none",
+            "palette_carry": True,
+            "geometry_carry": False,
+        }
+    return {
+        "type": "set" if previous_role is None else "handoff",
+        "duration_domain": "phrase",
+        "carry_over_families": ["wash"],
+        "blackout_policy": "none",
+        "palette_carry": previous_role == "intro",
+        "geometry_carry": False,
+    }
+
+
+def _lead_family_for_section_role(
+    *,
+    section_role: str,
+    venue_mode: str,
+    laser_enabled: bool,
+    leds_enabled: bool,
+) -> str:
+    venue = _normalize_venue_mode_fn(venue_mode)
+    if section_role in {"intro", "vocal", "breakdown", "outro"}:
+        return "wash"
+    if section_role == "bridge":
+        return "led" if leds_enabled else "wash"
+    if section_role in {"build_1", "build_2", "groove"}:
+        return "mover"
+    if section_role == "drop_variation":
+        if venue == "medium_room_150_400" and laser_enabled:
+            return "laser"
+        return "led" if leds_enabled else "mover"
+    if section_role == "drop_1":
+        if venue == "medium_room_150_400" and laser_enabled:
+            return "laser"
+        return "mover"
+    return "wash"
+
+
+def fixture_role_map(
+    *,
+    section_role: str,
+    venue_mode: str,
+    laser_enabled: bool,
+    movers_enabled: bool,
+    washes_enabled: bool,
+    leds_enabled: bool,
+    preferred_lead_family: str | None = None,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    lead_family = _lead_family_for_section_role(
+        section_role=section_role,
+        venue_mode=venue_mode,
+        laser_enabled=laser_enabled,
+        leds_enabled=leds_enabled,
+    )
+    family_enabled = {
+        "laser": laser_enabled,
+        "mover": movers_enabled,
+        "wash": washes_enabled,
+        "led": leds_enabled,
+    }
+    if preferred_lead_family in family_enabled and family_enabled[str(preferred_lead_family)]:
+        lead_family = str(preferred_lead_family)
+    base_roles: dict[str, str] = {
+        "laser": "support",
+        "mover": "support",
+        "wash": "architectural",
+        "led": "texture",
+    }
+    if section_role in {"intro", "outro"}:
+        base_roles.update({"wash": "hero", "mover": "architectural", "laser": "off", "led": "texture"})
+    elif section_role == "vocal":
+        base_roles.update({"wash": "hero", "mover": "support", "laser": "off", "led": "texture"})
+    elif section_role == "bridge":
+        base_roles.update({"led": "hero", "wash": "support", "mover": "architectural", "laser": "off"})
+    elif section_role in {"build_1", "build_2"}:
+        base_roles.update({"mover": "hero", "wash": "support", "led": "accent", "laser": "support"})
+    elif section_role == "breakdown":
+        base_roles.update({"wash": "hero", "mover": "architectural", "led": "texture", "laser": "off"})
+    elif section_role == "drop_1":
+        base_roles.update({"wash": "support", "mover": "hero", "led": "accent", "laser": "support"})
+    elif section_role == "drop_variation":
+        base_roles.update({"wash": "support", "mover": "support", "led": "hero", "laser": "support"})
+    else:
+        base_roles.update({"mover": "hero", "wash": "architectural", "led": "texture", "laser": "support"})
+
+    base_roles[lead_family] = "hero"
+    for family, role in list(base_roles.items()):
+        if family != lead_family and role == "hero":
+            base_roles[family] = "support"
+    role_map: dict[str, dict[str, Any]] = {}
+    for family in ("laser", "mover", "wash", "led"):
+        enabled = family_enabled[family]
+        role = base_roles[family] if enabled else "off"
+        if family == "laser":
+            coupling_mode = "widen" if lead_family == "mover" else "mirror"
+        elif family == "mover":
+            coupling_mode = "mirror" if lead_family == "laser" else "independent"
+        elif family == "wash":
+            coupling_mode = "widen"
+        else:
+            coupling_mode = "offset"
+        role_map[family] = {
+            "role": role,
+            "coupling_mode": coupling_mode,
+            "intensity_ceiling": 1.0 if role == "hero" else (0.72 if role == "support" else 0.5),
+        }
+    return lead_family, role_map
