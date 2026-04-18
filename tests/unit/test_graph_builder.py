@@ -31,7 +31,7 @@ class _FakeSafetyMonitor:
         self.stop_calls += 1
 
 
-def test_minimal_graph_keeps_safety_monitor_outside_langgraph() -> None:
+def test_minimal_graph_keeps_safety_monitor_outside_orchestration_pipeline() -> None:
     safety_monitor = _FakeSafetyMonitor()
 
     with patch("photonic_synesthesia.graph.nodes.mocks.MockAudioSenseNode", return_value=_NoopNode()), patch(
@@ -118,3 +118,108 @@ def test_photonic_graph_builds_without_safety_monitor_node_in_graph() -> None:
 
     assert "safety_monitor" not in graph.nodes
     assert graph.safety_monitor is safety_monitor
+
+
+def test_minimal_graph_pipeline_order_is_linear() -> None:
+    safety_monitor = _FakeSafetyMonitor()
+
+    with patch("photonic_synesthesia.graph.nodes.mocks.MockAudioSenseNode", return_value=_NoopNode()), patch(
+        "photonic_synesthesia.graph.builder.DMXOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyMonitor",
+        return_value=safety_monitor,
+    ):
+        graph = build_minimal_graph(settings=Settings())
+
+    assert graph.graph._node_names == ["audio_sense", "safety_interlock", "dmx_output"]  # type: ignore[attr-defined]
+
+
+def test_full_graph_pipeline_order_is_linear() -> None:
+    safety_monitor = _FakeSafetyMonitor()
+
+    with patch("photonic_synesthesia.graph.nodes.mocks.MockAudioSenseNode", return_value=_NoopNode()), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockMidiSenseNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockCVSenseNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockDMXOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.FeatureExtractNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.BeatTrackNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.StructureDetectNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.FusionNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.DirectorIntentNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SceneSelectNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.LaserControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.MovingHeadControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.PanelControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.InterpreterNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.ILDAOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.ILDADACOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.LaserVectorInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyMonitor",
+        return_value=safety_monitor,
+    ):
+        graph = build_photonic_graph(settings=Settings(), mock_sensors=True)
+
+    node_names = graph.graph._node_names  # type: ignore[attr-defined]
+
+    expected_prefix = [
+        "audio_sense",
+        "feature_extract",
+        "beat_track",
+        "structure_detect",
+        "midi_sense",
+        "cv_sense",
+        "fusion",
+        "director_intent",
+        "scene_select",
+        "laser_control",
+        "moving_head_control",
+        "panel_control",
+        "interpreter",
+    ]
+    expected_suffix = [
+        "safety_interlock",
+        "ilda_output",
+        "laser_vector_interlock",
+        "ilda_transport",
+        "dmx_output",
+    ]
+    assert node_names == expected_prefix + expected_suffix  # type: ignore[comparison-overlap]

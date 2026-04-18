@@ -1,15 +1,14 @@
 """
-LangGraph Builder for Photonic Synesthesia.
+Sequential Builder for Photonic Synesthesia.
 
-Constructs the main state machine graph that orchestrates all
+Constructs the main processing pipeline that orchestrates all
 sensor acquisition, analysis, and fixture control nodes.
 """
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
-
-from langgraph.graph import END, StateGraph
 
 from photonic_synesthesia.core.config import Settings
 from photonic_synesthesia.core.logging import get_logger
@@ -41,9 +40,25 @@ from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 logger = get_logger(__name__)
 
 
+class _SequentialPipeline:
+    """Simple deterministic node pipeline with single-pass execution."""
+
+    def __init__(self, node_names: list[str], nodes: dict[str, Any]):
+        self._node_names = node_names
+        self._nodes = nodes
+
+    def invoke(self, state: PhotonicState) -> PhotonicState:
+        current_state = state
+        for name in self._node_names:
+            node = self._nodes[name]
+            current_state = node(current_state)
+        return current_state
+
+
 class PhotonicGraph:
     """
-    Wrapper around the compiled LangGraph for the photonic synesthesia system.
+    Wrapper around the deterministic node pipeline for the photonic
+    synesthesia system.
 
     Provides methods for running the graph continuously and managing
     the sensor/output lifecycle.
@@ -64,6 +79,7 @@ class PhotonicGraph:
         self.control_plane_service = control_plane_service
         self._running = False
         self._state = create_initial_state()
+        self._state_lock = Lock()
         self.hybrid_pacing = settings.runtime_flags.hybrid_pacing
         self.dual_loop = settings.runtime_flags.dual_loop
 
@@ -115,17 +131,21 @@ class PhotonicGraph:
 
     def step(self) -> PhotonicState:
         """Execute one iteration of the graph."""
-        self._sync_control_state()
-        self._drain_control_commands()
-        self._state = self.graph.invoke(self._state)
-        if self.control_plane_service is not None:
-            node_stats = {
-                name: node.get_stats()
-                for name, node in self.nodes.items()
-                if hasattr(node, "get_stats")
-            }
-            self.control_plane_service.update_from_photonic_state(self._state, node_stats=node_stats)
-        return self._state
+        with self._state_lock:
+            self._sync_control_state()
+            self._drain_control_commands()
+            self._state = self.graph.invoke(self._state)
+            if self.control_plane_service is not None:
+                node_stats = {
+                    name: node.get_stats()
+                    for name, node in self.nodes.items()
+                    if hasattr(node, "get_stats")
+                }
+                self.control_plane_service.update_from_photonic_state(
+                    self._state,
+                    node_stats=node_stats,
+                )
+            return self._state
 
     def _drain_control_commands(self) -> None:
         if self.control_plane_service is None:
@@ -232,7 +252,8 @@ class PhotonicGraph:
     @property
     def state(self) -> PhotonicState:
         """Get current state."""
-        return self._state
+        with self._state_lock:
+            return self._state
 
 
 def build_photonic_graph(
@@ -335,62 +356,32 @@ def build_photonic_graph(
     if node_overrides:
         nodes.update(node_overrides)
 
-    # Build graph
-    graph = StateGraph(PhotonicState)
-
-    # Add all nodes
-    for name, node in nodes.items():
-        graph.add_node(name, node)
-
-    # Define edges
-    # Entry point: audio capture
-    graph.set_entry_point("audio_sense")
-
-    # Deterministic single-writer flow:
-    # LangGraph merge semantics reject concurrent writes to scalar keys
-    # (e.g. `timestamp`) unless reducers are explicitly configured.
-    # Keep one path per step so each key has a single writer.
-    graph.add_edge("audio_sense", "feature_extract")
-    graph.add_edge("feature_extract", "beat_track")
-    graph.add_edge("beat_track", "structure_detect")
-    graph.add_edge("structure_detect", "midi_sense")
-    graph.add_edge("midi_sense", "cv_sense")
-    graph.add_edge("cv_sense", "fusion")
-
-    # Scene selection after fusion
-    graph.add_edge("fusion", "director_intent")
-    graph.add_edge("director_intent", "scene_select")
-
-    # Fixture control (sequential for the same reason as above)
-    graph.add_edge("scene_select", "laser_control")
-    graph.add_edge("laser_control", "moving_head_control")
-    graph.add_edge("moving_head_control", "panel_control")
-    graph.add_edge("panel_control", "interpreter")
-
-    # Safety check BEFORE committing to DMX universe
-    graph.add_edge("interpreter", "safety_interlock")
-
-    # ILDA frame generation shares the same semantic state but not the DMX universe.
-    graph.add_edge("safety_interlock", "ilda_output")
-
-    # ILDA safety gate for point vectors before transport.
-    graph.add_edge("ilda_output", "laser_vector_interlock")
-
-    # ILDA transport after vector interlock.
-    graph.add_edge("laser_vector_interlock", "ilda_transport")
-
-    # DMX output after safety has validated/clamped commands
-    graph.add_edge("ilda_transport", "dmx_output")
-
-    # Loop back for continuous operation
-    # Note: In practice, we use run_loop() which handles the iteration
-    graph.add_edge("dmx_output", END)
-
-    # Compile
-    compiled = graph.compile()
+    pipeline = _SequentialPipeline(
+        node_names=[
+            "audio_sense",
+            "feature_extract",
+            "beat_track",
+            "structure_detect",
+            "midi_sense",
+            "cv_sense",
+            "fusion",
+            "director_intent",
+            "scene_select",
+            "laser_control",
+            "moving_head_control",
+            "panel_control",
+            "interpreter",
+            "safety_interlock",
+            "ilda_output",
+            "laser_vector_interlock",
+            "ilda_transport",
+            "dmx_output",
+        ],
+        nodes=nodes,
+    )
 
     return PhotonicGraph(
-        compiled,
+        pipeline,
         settings,
         nodes,
         control_plane_service=control_plane_service,
@@ -432,19 +423,16 @@ def build_minimal_graph(
         max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
     )
 
-    graph = StateGraph(PhotonicState)
-
-    for name, node in nodes.items():
-        graph.add_node(name, node)
-
-    graph.set_entry_point("audio_sense")
-    graph.add_edge("audio_sense", "safety_interlock")
-    graph.add_edge("safety_interlock", "dmx_output")
-    graph.add_edge("dmx_output", END)
-
-    compiled = graph.compile()
+    pipeline = _SequentialPipeline(
+        node_names=[
+            "audio_sense",
+            "safety_interlock",
+            "dmx_output",
+        ],
+        nodes=nodes,
+    )
     return PhotonicGraph(
-        compiled,
+        pipeline,
         settings,
         nodes,
         control_plane_service=control_plane_service,
