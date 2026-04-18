@@ -76,25 +76,7 @@ from photonic_synesthesia.showplan._variants import (
     wash_variant as _wash_variant,
 )
 from photonic_synesthesia.showplan.sections import (
-    apply_show_section_validators as _apply_show_section_validators,
-)
-from photonic_synesthesia.showplan.sections import (
-    compatible_laser_pattern as _compatible_laser_pattern,
-)
-from photonic_synesthesia.showplan.sections import (
-    fixture_capability_graph as _fixture_capability_graph,
-)
-from photonic_synesthesia.showplan.sections import (
-    fixture_role_map as _fixture_role_map,
-)
-from photonic_synesthesia.showplan.sections import (
-    normalize_section_role as _normalize_section_role,
-)
-from photonic_synesthesia.showplan.sections import (
-    transition_context as _transition_context,
-)
-from photonic_synesthesia.showplan.sections import (
-    transition_intent as _transition_intent,
+    default_show_sections as _showplan_default_show_sections,
 )
 from photonic_synesthesia.showplan.selection import (
     select_section_patterns as _showplan_select_section_patterns,
@@ -1125,28 +1107,6 @@ def _build_track_metadata_binding_callback(
     return _bind
 
 
-def _scene_for_marker_kind(kind: str) -> str:
-    if kind == "drop":
-        return "drop_intense"
-    if kind == "build":
-        return "break_sweep"
-    if kind in {"breakdown", "bridge", "verse", "vocal"}:
-        return "intro_ambient"
-    if kind == "outro":
-        return "intro_ambient"
-    return "intro_ambient"
-
-
-def _fixture_mode_for_marker_kind(kind: str) -> str:
-    if kind == "drop":
-        return "peak_return"
-    if kind == "build":
-        return "rebuild"
-    if kind in {"breakdown", "bridge", "verse", "vocal"}:
-        return "breakdown"
-    if kind == "outro":
-        return "outro"
-    return "intro"
 
 
 def _stable_digest(label: str) -> bytes:
@@ -1194,42 +1154,6 @@ def _normalize_selection_variance(value: Any | None) -> float:
     return round(_clamp(normalized, 0.0, 1.0), 3)
 
 
-def _venue_profile(venue_mode: str | None) -> dict[str, Any]:
-    normalized = _normalize_venue_mode(venue_mode)
-    if normalized == "medium_room_150_400":
-        return {
-            "mode": normalized,
-            "indoor": True,
-            "capacity_range": [150, 400],
-            "ceiling_height_class": "medium",
-            "throw_distance_class": "medium",
-            "audience_depth_class": "medium",
-            "laser_policy": "overhead_bias",
-            "readability_bias": "balanced",
-            "intensity_scale": 1.0,
-            "motion_scale": 1.0,
-            "strobe_scale": 0.82,
-            "density_cap": 0.86,
-            "whiteout_budget": 0.8,
-            "max_dense_layers": 2,
-        }
-    return {
-        "mode": "small_room_50_100",
-        "indoor": True,
-        "capacity_range": [50, 100],
-        "ceiling_height_class": "low_medium",
-        "throw_distance_class": "short",
-        "audience_depth_class": "shallow",
-        "laser_policy": "overhead_only",
-        "readability_bias": "intimate",
-        "intensity_scale": 0.93,
-        "motion_scale": 0.9,
-        "strobe_scale": 0.62,
-        "density_cap": 0.72,
-        "whiteout_budget": 0.66,
-        "max_dense_layers": 2,
-    }
-
 
 
 
@@ -1271,7 +1195,6 @@ def _select_section_patterns(
     )
 
 
-
 def _default_show_sections(
     markers: list[dict[str, Any]],
     duration_seconds: float,
@@ -1283,269 +1206,34 @@ def _default_show_sections(
     venue_mode: str = "small_room_50_100",
     metadata_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    if not markers:
-        markers = _auto_markers_for_duration(duration_seconds)
-
-    seed = track_seed or "unknown-track"
-    selection_mode = _normalize_selection_mode(selection_mode)
-    selection_variance = _normalize_selection_variance(selection_variance)
-    venue_mode = _normalize_venue_mode(venue_mode)
-    venue_profile = _venue_profile(venue_mode)
-    capability_graph = _fixture_capability_graph(venue_mode)
-    _, profile = _creative_profile(seed, markers)
-    total_counts: dict[str, int] = {}
-    for marker in markers:
-        marker_kind = str(marker["kind"])
-        total_counts[marker_kind] = total_counts.get(marker_kind, 0) + 1
-
-    sections: list[dict[str, Any]] = []
-    previous_patterns: dict[str, str | None] = {"laser": None, "mover": None, "wash": None, "led": None}
-    pattern_history: dict[str, list[str]] = {"laser": [], "mover": [], "wash": [], "led": []}
-    usage_count_by_family: dict[str, dict[str, int]] = {"laser": {}, "mover": {}, "wash": {}, "led": {}}
-    kind_counts: dict[str, int] = {}
-    previous_section_role: str | None = None
-    ordered = sorted(markers, key=lambda item: float(item["start_seconds"]))
-    for index, marker in enumerate(ordered):
-        next_start = (
-            float(ordered[index + 1]["start_seconds"])
-            if index + 1 < len(ordered)
-            else float(duration_seconds)
-        )
-        kind = str(marker["kind"])
-        ordinal = kind_counts.get(kind, 0)
-        kind_counts[kind] = ordinal + 1
-        previous_kind = str(ordered[index - 1]["kind"]) if index > 0 else None
-        next_kind = str(ordered[index + 1]["kind"]) if index + 1 < len(ordered) else None
-        context = _transition_context(
-            previous_kind=previous_kind,
-            kind=kind,
-            next_kind=next_kind,
-            ordinal=ordinal,
-            total_of_kind=total_counts.get(kind, 1),
-        )
-        energy_hint = marker.get("energy_hint")
-        energy_scale = max(0.25, min(1.0, float(energy_hint or 6) / 8.0))
-        intensity_multiplier, motion_multiplier, strobe_level = _section_levels(
-            kind=kind,
-            context=context,
-            energy_scale=energy_scale,
-            profile=profile,
-            ordinal=ordinal,
-        )
-        intensity_multiplier = round(
-            _clamp(float(intensity_multiplier) * float(venue_profile["intensity_scale"]), 0.15, 1.35),
-            3,
-        )
-        motion_multiplier = round(
-            _clamp(float(motion_multiplier) * float(venue_profile["motion_scale"]), 0.2, 1.4),
-            3,
-        )
-        strobe_level = round(
-            _clamp(float(strobe_level) * float(venue_profile["strobe_scale"]), 0.0, 1.0),
-            3,
-        )
-        strobe_profile = _strobe_profile(
-            kind=kind,
-            context=context,
-            track_seed=seed,
-            ordinal=ordinal,
-            base_level=strobe_level,
-        )
-        section_role = _normalize_section_role(
-            kind=kind,
-            marker_name=str(marker["name"]),
-            context=context,
-            ordinal=ordinal,
-            total_of_kind=total_counts.get(kind, 1),
-        )
-        section_patterns = _select_section_patterns(
-            kind=kind,
-            context=context,
-            profile=profile,
-            track_seed=seed,
-            marker_name=str(marker["name"]),
-            ordinal=ordinal,
-            previous_patterns=previous_patterns,
-            pattern_history=pattern_history,
-            usage_count_by_family=usage_count_by_family,
-            semantic_profile=semantic_profile,
-            selection_mode=selection_mode,
-            energy_scale=energy_scale,
-            selection_variance=selection_variance,
-        )
-        laser_pattern = section_patterns["laser"]
-        mover_pattern = section_patterns["mover"]
-        wash_pattern = section_patterns["wash"]
-        led_pattern = section_patterns["led"]
-        capability_notes: list[str] = []
-        laser_pattern, laser_capability_notes = _compatible_laser_pattern(
-            base_pattern=laser_pattern,
-            kind=kind,
-            context=context,
-            profile=profile,
-            section_role=section_role,
-            venue_mode=venue_mode,
-        )
-        capability_notes.extend(laser_capability_notes)
-        previous_patterns.update({
-            "laser": laser_pattern,
-            "mover": mover_pattern,
-            "wash": wash_pattern,
-            "led": led_pattern,
-        })
-        for family, pattern in section_patterns.items():
-            pattern_history[family].append(pattern)
-            usage_count_by_family[family][pattern] = usage_count_by_family[family].get(pattern, 0) + 1
-        laser_enabled, movers_enabled, washes_enabled, leds_enabled = _fixture_enablement(
-            kind=kind,
-            context=context,
-            profile=profile,
-            track_seed=seed,
-            ordinal=ordinal,
-        )
-        lead_family, fixture_role_map = _fixture_role_map(
-            section_role=section_role,
-            venue_mode=venue_mode,
-            laser_enabled=laser_enabled,
-            movers_enabled=movers_enabled,
-            washes_enabled=washes_enabled,
-            leds_enabled=leds_enabled,
-        )
-        next_section_role = None
-        if index + 1 < len(ordered):
-            next_marker = ordered[index + 1]
-            next_kind_value = str(next_marker["kind"])
-            next_total_of_kind = total_counts.get(next_kind_value, 1)
-            next_ordinal = kind_counts.get(next_kind_value, 0)
-            next_context = _transition_context(
-                previous_kind=kind,
-                kind=next_kind_value,
-                next_kind=str(ordered[index + 2]["kind"]) if index + 2 < len(ordered) else None,
-                ordinal=next_ordinal,
-                total_of_kind=next_total_of_kind,
-            )
-            next_section_role = _normalize_section_role(
-                kind=next_kind_value,
-                marker_name=str(next_marker["name"]),
-                context=next_context,
-                ordinal=next_ordinal,
-                total_of_kind=next_total_of_kind,
-            )
-        transition_intent = _transition_intent(
-            section_role=section_role,
-            context=context,
-            previous_role=previous_section_role,
-            next_role=next_section_role,
-        )
-        cue_family_id = _cue_family_id(section_role, lead_family, venue_mode)
-        laser_variant = _laser_variant(
-            track_seed=seed,
-            base_pattern=laser_pattern,
-            kind=kind,
-            context=context,
-            ordinal=ordinal,
-        )
-        laser_expression = _laser_expression(
-            track_seed=seed,
-            base_pattern=laser_pattern,
-            kind=kind,
-            context=context,
-            ordinal=ordinal,
-        )
-        mover_variant = _mover_variant(
-            track_seed=seed,
-            base_pattern=mover_pattern,
-            kind=kind,
-            context=context,
-            ordinal=ordinal,
-        )
-        wash_variant = _wash_variant(
-            track_seed=seed,
-            base_pattern=wash_pattern,
-            kind=kind,
-            context=context,
-            ordinal=ordinal,
-        )
-        led_variant = _led_variant(
-            track_seed=seed,
-            base_pattern=led_pattern,
-            kind=kind,
-            context=context,
-            ordinal=ordinal,
-        )
-        cue_recipe = _cue_recipe(
-            kind=kind,
-            context=context,
-            laser_pattern=laser_pattern,
-            mover_pattern=mover_pattern,
-            wash_pattern=wash_pattern,
-            led_pattern=led_pattern,
-            laser_enabled=laser_enabled,
-            movers_enabled=movers_enabled,
-            washes_enabled=washes_enabled,
-            leds_enabled=leds_enabled,
-            section_role=section_role,
-            venue_mode=venue_mode,
-            venue_profile=venue_profile,
-            transition_intent=transition_intent,
-            cue_family_id=cue_family_id,
-            lead_family=lead_family,
-            fixture_role_map=fixture_role_map,
-            capability_graph=capability_graph,
-            capability_notes=capability_notes,
-            metadata_confidence=metadata_confidence,
-        )
-        sections.append(
-            {
-                "generator_version": _SHOW_SECTION_GENERATOR_VERSION,
-                "id": f"section_{index:03d}",
-                "label": str(marker["name"]),
-                "kind": kind,
-                "section_role": section_role,
-                "venue_mode": venue_mode,
-                "venue_profile": copy.deepcopy(venue_profile),
-                "cue_family_id": cue_family_id,
-                "lead_family": lead_family,
-                "fixture_role_map": copy.deepcopy(fixture_role_map),
-                "transition_intent": copy.deepcopy(transition_intent),
-                "fixture_capability_graph": copy.deepcopy(capability_graph),
-                "capability_notes": list(capability_notes),
-                "start_seconds": round(float(marker["start_seconds"]), 3),
-                "end_seconds": round(max(float(marker["start_seconds"]), next_start), 3),
-                "scene_id": _scene_for_marker_kind(kind),
-                "fixture_mode": _fixture_mode_for_marker_kind(kind),
-                "intensity_multiplier": intensity_multiplier,
-                "motion_multiplier": motion_multiplier,
-                "strobe_level": strobe_level,
-                "strobe_profile": strobe_profile,
-                "laser_pattern": laser_pattern,
-                "laser_variant": laser_variant,
-                "laser_expression": laser_expression,
-                "laser_program": _laser_program(
-                    track_seed=seed,
-                    base_pattern=laser_pattern,
-                    kind=kind,
-                    context=context,
-                    ordinal=ordinal,
-                    profile=profile,
-                    venue_mode=venue_mode,
-                ),
-                "cue_recipe": cue_recipe,
-                "mover_pattern": mover_pattern,
-                "mover_variant": mover_variant,
-                "wash_pattern": wash_pattern,
-                "wash_variant": wash_variant,
-                "led_pattern": led_pattern,
-                "led_variant": led_variant,
-                "laser_enabled": laser_enabled,
-                "movers_enabled": movers_enabled,
-                "washes_enabled": washes_enabled,
-                "leds_enabled": leds_enabled,
-            }
-        )
-        previous_section_role = section_role
-    validated_sections = _apply_show_section_validators(sections, venue_mode=venue_mode)
-    return _decorate_show_sections_with_motifs(validated_sections)
+    return _showplan_default_show_sections(
+        markers,
+        duration_seconds,
+        track_seed=track_seed,
+        semantic_profile=semantic_profile,
+        selection_mode=selection_mode,
+        selection_variance=selection_variance,
+        venue_mode=venue_mode,
+        metadata_confidence=metadata_confidence,
+        normalize_selection_mode_fn=_normalize_selection_mode,
+        normalize_selection_variance_fn=_normalize_selection_variance,
+        normalize_venue_mode_fn=_normalize_venue_mode,
+        creative_profile_fn=_creative_profile,
+        decorate_show_sections_with_motifs_fn=_decorate_show_sections_with_motifs,
+        select_section_patterns_fn=_select_section_patterns,
+        cue_recipe_fn=_cue_recipe,
+        laser_program_fn=_laser_program,
+        auto_markers_fn=_auto_markers_for_duration,
+        section_levels_fn=_section_levels,
+        strobe_profile_fn=_strobe_profile,
+        fixture_enablement_fn=_fixture_enablement,
+        laser_variant_fn=_laser_variant,
+        laser_expression_fn=_laser_expression,
+        mover_variant_fn=_mover_variant,
+        wash_variant_fn=_wash_variant,
+        led_variant_fn=_led_variant,
+        cue_family_id_fn=_cue_family_id,
+    )
 
 
 def _validate_startup_config(settings: object, mock: bool = False) -> None:
