@@ -8,6 +8,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from photonic_synesthesia.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 _STRUCTURE_ALIASES = {
     "intro": "intro",
     "build": "build",
@@ -128,11 +132,17 @@ def load_rekordbox_track(
     xml_file = Path(xml_path)
     audio_path = Path(audio_file)
     if not xml_file.is_file():
+        logger.debug("rekordbox xml missing", path=str(xml_file))
         return None
 
-    tree = ET.parse(xml_file)
+    try:
+        tree = ET.parse(xml_file)
+    except ET.ParseError as exc:
+        logger.warning("rekordbox xml parse failed", path=str(xml_file), error=str(exc))
+        return None
     collection = tree.getroot().find("COLLECTION")
     if collection is None:
+        logger.warning("rekordbox xml missing COLLECTION element", path=str(xml_file))
         return None
 
     normalized_file = _normalize_text(audio_path.name)
@@ -223,9 +233,14 @@ def load_rekordbox_track_by_metadata(
     if not normalized_title:
         return None
 
-    tree = ET.parse(xml_file)
+    try:
+        tree = ET.parse(xml_file)
+    except ET.ParseError as exc:
+        logger.warning("rekordbox xml parse failed", path=str(xml_file), error=str(exc))
+        return None
     collection = tree.getroot().find("COLLECTION")
     if collection is None:
+        logger.warning("rekordbox xml missing COLLECTION element", path=str(xml_file))
         return None
 
     ranked_matches: list[tuple[int, RekordboxTrack]] = []

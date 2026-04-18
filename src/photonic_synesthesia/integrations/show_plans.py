@@ -6,7 +6,14 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
+
+from photonic_synesthesia.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+SCHEMA_VERSION = 1
+_SCHEMA_KEY = "_schema_version"
 
 
 def show_plan_root() -> Path:
@@ -52,18 +59,45 @@ def _legacy_show_plan_path(track_key: str) -> Path:
 
 
 def load_show_plan(track_key: str) -> dict[str, Any] | None:
-    """Load a persisted show plan for the given track key."""
+    """Load a persisted show plan for the given track key.
+
+    Tolerates the legacy filename scheme (`_legacy_show_plan_path`) and the
+    current collision-resistant scheme. Returns None on missing, malformed,
+    or non-object JSON payloads (logged at warning level).
+    """
     path = show_plan_path(track_key)
     if not path.is_file():
         path = _legacy_show_plan_path(track_key)
     if not path.is_file():
         return None
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    try:
+        raw = path.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("show_plan load failed", path=str(path), error=str(exc))
+        return None
+    if not isinstance(payload, dict):
+        logger.warning(
+            "show_plan payload is not a JSON object",
+            path=str(path),
+            type=type(payload).__name__,
+        )
+        return None
+    stored_version = payload.get(_SCHEMA_KEY)
+    if isinstance(stored_version, int) and stored_version > SCHEMA_VERSION:
+        logger.warning(
+            "show_plan schema is newer than this build",
+            path=str(path),
+            stored=stored_version,
+            local=SCHEMA_VERSION,
+        )
+    return payload
 
 
 def save_show_plan(track_key: str, payload: dict[str, Any]) -> Path:
     """Persist a show plan JSON payload for the given track key."""
     path = show_plan_path(track_key)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    stamped = {_SCHEMA_KEY: SCHEMA_VERSION, **payload}
+    path.write_text(json.dumps(stamped, indent=2, sort_keys=True), encoding="utf-8")
     return path
