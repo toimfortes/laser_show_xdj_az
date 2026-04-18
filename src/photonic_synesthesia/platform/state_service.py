@@ -231,7 +231,14 @@ class ControlPlaneStateService:
             self._safety_summary = safety_summary
             self._blackout_active = self._blackout_active or safety_summary.emergency_stop
             runtime_frames_seen = int(self._diagnostics.get("runtime_frames_seen", 0)) + 1
-            ilda_stats = dict((node_stats or {}).get("ilda_output", {}))
+            node_stats = node_stats or {}
+            ilda_stats = dict(node_stats.get("ilda_output", {}))
+            if (
+                "ether_dream_host" not in ilda_stats
+                and "ilda_transport" in node_stats
+                and isinstance(node_stats["ilda_transport"], dict)
+            ):
+                ilda_stats = {**ilda_stats, **dict(node_stats["ilda_transport"])}
             self._diagnostics = {
                 "runtime_source": source,
                 "runtime_frames_seen": runtime_frames_seen,

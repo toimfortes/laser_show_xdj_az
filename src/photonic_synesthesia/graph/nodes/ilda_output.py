@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import math
-import time
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,12 +85,8 @@ class ILDAOutputNode:
         ]
         self._running = False
         self._export_path = config.export_path
-        self._ether_dream: EtherDreamClient | None = None
-        self._ether_dream_faulted = False
         self._ild_timeline: list[ILDAFrame] = []
         self._blackout_requested = False
-        self._emergency_blackout_thread: threading.Thread | None = None
-        self._emergency_blackout_lock = threading.Lock()
 
     def start(self) -> None:
         self._running = True
@@ -100,62 +96,40 @@ class ILDAOutputNode:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
         if self.config.transport_type == "ild" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.config.transport_type == "ether_dream":
-            self._ensure_ether_dream_client()
 
     def stop(self) -> None:
-        if self._ether_dream is not None:
-            self._ether_dream.close()
-            self._ether_dream = None
-        self._ether_dream_faulted = False
         self._ild_timeline = []
         self._blackout_requested = False
         self._running = False
 
     def request_blackout(self) -> None:
         self._blackout_requested = True
-        if self.config.transport_type == "ether_dream" and self.fixtures:
-            try:
-                blank_frame = self._build_blank_dac_frame()
-                self._stream_to_ether_dream_once(blank_frame)
-            except OSError as exc:
-                self._handle_ether_dream_error(exc)
 
     def emergency_blackout(self) -> None:
         self._blackout_requested = True
 
-        if self.config.transport_type != "ether_dream" or not self.fixtures:
-            return
-
-        def _emergency_loop() -> None:
-            # Keep laser output dark for a short deterministic interval in case
-            # the graph loop stalls and the last frame is replayed by the DAC.
-            interval_s = max(0.01, 1.0 / max(1.0, self.config.target_fps))
-            deadline = time.monotonic() + max(0.05, self.config_target_blackout_window())
-            blank_frame = self._build_blank_dac_frame()
-            while time.monotonic() < deadline:
-                try:
-                    self._stream_to_ether_dream_once(blank_frame)
-                except OSError as exc:
-                    self._handle_ether_dream_error(exc)
-                    break
-                time.sleep(interval_s)
-
-        with self._emergency_blackout_lock:
-            if self._emergency_blackout_thread is not None and self._emergency_blackout_thread.is_alive():
-                return
-            self._emergency_blackout_thread = threading.Thread(
-                target=_emergency_loop,
-                name="ILDA-Emergency-Blackout",
-                daemon=True,
-            )
-            self._emergency_blackout_thread.start()
-
     def clear_blackout_request(self) -> None:
         self._blackout_requested = False
 
-    def config_target_blackout_window(self) -> float:
-        return float(self.safety.ilda_blackout_hold_s)
+    @property
+    def fixture_count(self) -> int:
+        return len(self.fixtures)
+
+    @staticmethod
+    def _blank_point_frame() -> ILDAFrame:
+        return ILDAFrame(
+            fixture_id="ilda-blank-fallback",
+            profile_name="ilda-blank",
+            geometry_family="blank",
+            color_mode="off",
+            target_bias="mixed",
+            point_count=2,
+            repeat=True,
+            points=[
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+            ],
+        )
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()
@@ -180,39 +154,7 @@ class ILDAOutputNode:
             "points_per_frame": self.config.points_per_frame,
             "transport_type": self.config.transport_type,
             "export_path": str(self._export_path) if self._export_path else None,
-            "ether_dream_host": self.config.ether_dream_host if self.config.transport_type == "ether_dream" else None,
-            "ether_dream_faulted": self._ether_dream_faulted if self.config.transport_type == "ether_dream" else None,
         }
-
-    def _ensure_ether_dream_client(self) -> EtherDreamClient:
-        if self._ether_dream is None:
-            client = EtherDreamClient(self.config)
-            client.connect()
-            self._ether_dream = client
-            if self._ether_dream_faulted:
-                logger.info(
-                    "Ether Dream transport recovered",
-                    host=self.config.ether_dream_host,
-                    port=self.config.ether_dream_port,
-                )
-            self._ether_dream_faulted = False
-        return self._ether_dream
-
-    def _handle_ether_dream_error(self, exc: OSError) -> None:
-        if self._ether_dream is not None:
-            try:
-                self._ether_dream.close()
-            except OSError:
-                pass
-            self._ether_dream = None
-        if not self._ether_dream_faulted:
-            logger.warning(
-                "Ether Dream transport faulted; will retry on next frame",
-                host=self.config.ether_dream_host,
-                port=self.config.ether_dream_port,
-                error=str(exc),
-            )
-        self._ether_dream_faulted = True
 
     def _should_blackout(self, state: PhotonicState) -> bool:
         control_state = state["control_state"]
@@ -594,6 +536,8 @@ class ILDAOutputNode:
         return points
 
     def _export_frames(self, frames: list[ILDAFrame]) -> None:
+        if self.config.transport_type == "memory":
+            return
         if self.config.transport_type == "json":
             if self._export_path is None:
                 return
@@ -609,12 +553,145 @@ class ILDAOutputNode:
             self._ild_timeline.extend(frames)
             self._export_path.write_bytes(encode_ild(self._ild_timeline))
             return
-        if self.config.transport_type == "ether_dream" and frames:
+
+
+class ILDADACOutputNode:
+    """Transmit ILDA frames to Ether Dream hardware outputs."""
+
+    def __init__(
+        self,
+        config: ILDAConfig,
+        safety: LaserSafetyConfig,
+        fixtures: list[FixtureConfig],
+    ) -> None:
+        self.config = config
+        self.safety = safety
+        self.ilda_fixtures = [
+            fixture
+            for fixture in fixtures
+            if fixture.type == "laser" and fixture.enabled
+        ]
+        self._running = False
+        self._ether_dream: EtherDreamClient | None = None
+        self._ether_dream_faulted = False
+        self._blackout_requested = False
+        self._emergency_until = 0.0
+        self._transport_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._thread_stop = threading.Event()
+        self._state_frames_sent = 0
+
+    def start(self) -> None:
+        self._running = True
+        self._ether_dream_faulted = False
+        self._blackout_requested = False
+        self._thread_stop.clear()
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(
+                target=self._emergency_loop,
+                name="ILDA-Emergency-Output",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self._thread_stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            self._thread = None
+
+        client = self._ether_dream
+        if client is not None:
             try:
-                dac_frame = self._merge_frames_for_dac(frames)
-                self._stream_to_ether_dream_once(dac_frame)
-            except OSError as exc:
-                self._handle_ether_dream_error(exc)
+                client.stop()
+                client.close()
+            except OSError:
+                logger.warning("Failed to close Ether Dream connection cleanly")
+            finally:
+                self._ether_dream = None
+
+        self._blackout_requested = False
+        self._emergency_until = 0.0
+
+    def request_blackout(self) -> None:
+        self._blackout_requested = True
+
+    def emergency_blackout(self) -> None:
+        self._blackout_requested = True
+        self._emergency_until = time.monotonic() + self.safety.ilda_blackout_hold_s
+
+    def clear_blackout_request(self) -> None:
+        self._blackout_requested = False
+
+    def get_stats(self) -> dict[str, int | float | bool | str | None]:
+        return {
+            "running": self._running,
+            "transport_type": self.config.transport_type,
+            "ether_dream_host": self.config.ether_dream_host,
+            "ether_dream_port": self.config.ether_dream_port,
+            "ether_dream_faulted": self._ether_dream_faulted,
+            "fixture_count": len(self.ilda_fixtures),
+            "frames_sent": self._state_frames_sent,
+        }
+
+    @property
+    def fixture_count(self) -> int:
+        return len(self.ilda_fixtures)
+
+    def __call__(self, state: PhotonicState) -> PhotonicState:
+        start_time = time.time()
+        if (
+            self.config.transport_type != "ether_dream"
+            or not self.config.enabled
+            or not self.ilda_fixtures
+            or not state["ilda_frames"]
+        ):
+            state["processing_times"]["ilda_output"] = time.time() - start_time
+            return state
+
+        if self._blackout_requested:
+            frames = [self._blank_frame_for_fixture(fixture) for fixture in self.ilda_fixtures]
+            self._stream_frames(self._merge_frames_for_dac(frames))
+        else:
+            self._stream_frames(self._merge_frames_for_dac(state["ilda_frames"]))
+
+        state["processing_times"]["ilda_output"] = time.time() - start_time
+        return state
+
+    def _emergency_loop(self) -> None:
+        while self._running and not self._thread_stop.is_set():
+            if self._emergency_until > 0 and time.monotonic() < self._emergency_until:
+                try:
+                    blank_frame = self._build_blank_dac_frame()
+                    self._stream_frames(blank_frame)
+                except OSError:
+                    pass
+                sleep_seconds = 1.0 / max(1.0, self.config.target_fps)
+            else:
+                sleep_seconds = 0.05
+            self._thread_stop.wait(timeout=sleep_seconds)
+
+    @staticmethod
+    def _blank_frame_for_fixture(fixture: FixtureConfig) -> ILDAFrame:
+        return ILDAFrame(
+            fixture_id=fixture.id,
+            profile_name="ilda-blank",
+            geometry_family="blank",
+            color_mode="off",
+            target_bias="mixed",
+            point_count=2,
+            repeat=True,
+            points=[
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+                ILDAPoint(x=0, y=0, r=0, g=0, b=0, blanked=True),
+            ],
+        )
+
+    def _build_blank_dac_frame(self) -> ILDAFrame:
+        return self._merge_frames_for_dac(
+            [self._blank_frame_for_fixture(fixture) for fixture in self.ilda_fixtures]
+        )
 
     @staticmethod
     def _merge_frames_for_dac(frames: list[ILDAFrame]) -> ILDAFrame:
@@ -643,11 +720,44 @@ class ILDAOutputNode:
             points=merged_points,
         )
 
-    def _build_blank_dac_frame(self) -> ILDAFrame:
-        return self._merge_frames_for_dac(
-            [self._blank_frame_for_fixture(fixture) for fixture in self.fixtures]
-        )
-
-    def _stream_to_ether_dream_once(self, frame: ILDAFrame) -> None:
+    def _stream_frames(self, frame: ILDAFrame) -> None:
+        if not frame["points"]:
+            return
         point_rate = max(1, int(self.config.target_fps * frame["point_count"]))
-        self._ensure_ether_dream_client().ensure_streaming(frame, point_rate=point_rate)
+        with self._transport_lock:
+            try:
+                self._ensure_ether_dream_client().ensure_streaming(frame, point_rate=point_rate)
+                self._state_frames_sent += 1
+            except OSError as exc:
+                self._handle_ether_dream_error(exc)
+
+    def _ensure_ether_dream_client(self) -> EtherDreamClient:
+        if self._ether_dream is None:
+            client = EtherDreamClient(self.config)
+            client.connect()
+            self._ether_dream = client
+            if self._ether_dream_faulted:
+                logger.info(
+                    "Ether Dream transport recovered",
+                    host=self.config.ether_dream_host,
+                    port=self.config.ether_dream_port,
+                )
+            self._ether_dream_faulted = False
+        return self._ether_dream
+
+    def _handle_ether_dream_error(self, exc: OSError) -> None:
+        client = self._ether_dream
+        if client is not None:
+            try:
+                client.close()
+            except OSError:
+                pass
+            self._ether_dream = None
+        if not self._ether_dream_faulted:
+            logger.warning(
+                "Ether Dream transport faulted; will retry on next frame",
+                host=self.config.ether_dream_host,
+                port=self.config.ether_dream_port,
+                error=str(exc),
+            )
+        self._ether_dream_faulted = True

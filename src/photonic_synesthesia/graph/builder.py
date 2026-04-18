@@ -23,6 +23,7 @@ from photonic_synesthesia.graph.nodes import (
     FeatureExtractNode,
     FusionNode,
     ILDAOutputNode,
+    ILDADACOutputNode,
     InterpreterNode,
     LaserControlNode,
     MidiSenseNode,
@@ -79,6 +80,8 @@ class PhotonicGraph:
             self.nodes["dmx_output"].start()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "start"):
             self.nodes["ilda_output"].start()
+        if "ilda_transport" in self.nodes and hasattr(self.nodes["ilda_transport"], "start"):
+            self.nodes["ilda_transport"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
             self.nodes["safety_interlock"].start()
 
@@ -94,6 +97,8 @@ class PhotonicGraph:
             self.nodes["midi_sense"].stop()
         if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "stop"):
             self.nodes["cv_sense"].stop()
+        if "ilda_transport" in self.nodes and hasattr(self.nodes["ilda_transport"], "stop"):
+            self.nodes["ilda_transport"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
@@ -154,17 +159,23 @@ class PhotonicGraph:
         dmx_output = self.nodes.get("dmx_output")
         if dmx_output is not None and hasattr(dmx_output, "request_blackout"):
             dmx_output.request_blackout()
-        ilda_output = self.nodes.get("ilda_output")
-        if ilda_output is not None and hasattr(ilda_output, "request_blackout"):
-            ilda_output.request_blackout()
+        for ilda_output in (
+            self.nodes.get("ilda_output"),
+            self.nodes.get("ilda_transport"),
+        ):
+            if ilda_output is not None and hasattr(ilda_output, "request_blackout"):
+                ilda_output.request_blackout()
 
     def _clear_blackout(self) -> None:
         dmx_output = self.nodes.get("dmx_output")
         if dmx_output is not None and hasattr(dmx_output, "clear_blackout_request"):
             dmx_output.clear_blackout_request()
-        ilda_output = self.nodes.get("ilda_output")
-        if ilda_output is not None and hasattr(ilda_output, "clear_blackout_request"):
-            ilda_output.clear_blackout_request()
+        for ilda_output in (
+            self.nodes.get("ilda_output"),
+            self.nodes.get("ilda_transport"),
+        ):
+            if ilda_output is not None and hasattr(ilda_output, "clear_blackout_request"):
+                ilda_output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""
@@ -301,13 +312,18 @@ def build_photonic_graph(
         settings.safety.laser,
         fixtures_dir=settings.fixtures_dir,
     )
+    nodes["ilda_transport"] = ILDADACOutputNode(
+        settings.ilda,
+        settings.safety.laser,
+        settings.fixtures,
+    )
 
     # Safety node
     nodes["safety_interlock"] = SafetyInterlockNode(
         settings.safety,
         settings.fixtures,
         dmx_output=nodes["dmx_output"],
-        ilda_output=nodes["ilda_output"],
+        ilda_output=nodes["ilda_transport"],
     )
     nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
 
@@ -355,8 +371,11 @@ def build_photonic_graph(
     # ILDA safety gate for point vectors before transport.
     graph.add_edge("ilda_output", "laser_vector_interlock")
 
+    # ILDA transport after vector interlock.
+    graph.add_edge("laser_vector_interlock", "ilda_transport")
+
     # DMX output after safety has validated/clamped commands
-    graph.add_edge("laser_vector_interlock", "dmx_output")
+    graph.add_edge("ilda_transport", "dmx_output")
 
     # Loop back for continuous operation
     # Note: In practice, we use run_loop() which handles the iteration

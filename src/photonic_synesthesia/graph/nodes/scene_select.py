@@ -1,5 +1,4 @@
-"""
-Scene Selection Node: AI-driven scene selection based on fused state.
+"""Scene Selection Node: AI-driven scene selection based on fused state.
 
 Maps musical structure, energy levels, and DJ intent to lighting scenes.
 """
@@ -21,11 +20,8 @@ class SceneSelectNode:
     """
     Selects appropriate lighting scene based on current state.
 
-    Uses a priority-based system:
-    1. MIDI pad triggers (manual override - highest priority)
-    2. Drop detection (immediate high-energy response)
-    3. Structure-based selection (buildup, breakdown, etc.)
-    4. Energy-based fallback
+    The director provides a proposed scene; this node applies operator and
+    structural precedence and enforces transition constraints.
     """
 
     def __init__(self, config: SceneConfig):
@@ -44,7 +40,7 @@ class SceneSelectNode:
             MusicStructure.DROP: "drop_intense",
             MusicStructure.BREAKDOWN: "breakdown_ambient",
             MusicStructure.OUTRO: "outro_fade",
-            MusicStructure.UNKNOWN: "idle",
+            MusicStructure.UNKNOWN: self.config.default_scene,
         }
 
     def _load_scenes(self) -> None:
@@ -103,31 +99,45 @@ class SceneSelectNode:
                     break
 
         # =================================================================
-        # Priority 2: Drop Detection
+        # Priority 2: Director-directed transition
         # =================================================================
         if pending_scene is None:
             director = state.get("director_state")
             if director:
-                target_scene = director["target_scene"]
-                if director["allow_scene_transition"] or target_scene == current_scene:
-                    pending_scene = target_scene
-                else:
-                    pending_scene = current_scene
-            elif state["current_structure"] == MusicStructure.DROP:
-                pending_scene = "drop_intense"
-            elif state["drop_probability"] > 0.9:
-                # Pre-load drop scene
-                pending_scene = "drop_intense"
+                proposed = str(director["target_scene"])
+                allow_transition = bool(director.get("allow_scene_transition", True))
+                if proposed in self.scenes and (
+                    allow_transition or proposed == current_scene
+                ):
+                    pending_scene = proposed
+                elif not self._is_valid_scene_name(proposed):
+                    logger.debug(
+                        "Director proposed scene not found in catalog",
+                        proposed=proposed,
+                    )
+                    if allow_transition:
+                        pending_scene = self.structure_scenes.get(
+                            state["current_structure"],
+                            self.config.default_scene,
+                        )
+                    else:
+                        pending_scene = current_scene
 
         # =================================================================
-        # Priority 3: Structure-Based Selection
+        # Priority 3: Structure-based fallback
         # =================================================================
         if pending_scene is None:
-            structure = state["current_structure"]
-            pending_scene = self.structure_scenes.get(structure, "idle")
+            pending_scene = self.structure_scenes.get(
+                state["current_structure"],
+                self.config.default_scene,
+            )
+
+        # Validate fallback scenes to avoid invalid transitions into deleted scene files.
+        if not self._is_valid_scene_name(pending_scene):
+            pending_scene = self._resolve_fallback_scene(state["current_structure"])
 
         # =================================================================
-        # Priority 4: Energy-Based Adjustment
+        # Priority 4: Energy-based adjustment
         # =================================================================
         energy = state["audio_features"]["rms_energy"]
         if pending_scene and pending_scene in self.scenes:
@@ -181,6 +191,24 @@ class SceneSelectNode:
         state["processing_times"]["scene_select"] = time.time() - start_time
 
         return state
+
+    def _is_valid_scene_name(self, scene_name: str) -> bool:
+        return scene_name in self.scenes
+
+    def _resolve_fallback_scene(self, structure: MusicStructure) -> str:
+        """Return best-known fallback scene for this structure/current config."""
+        if not self.scenes:
+            return self.config.default_scene
+
+        fallback = self.structure_scenes.get(structure, self.config.default_scene)
+        if fallback in self.scenes:
+            return fallback
+
+        for candidate in (self.config.default_scene, "idle"):
+            if candidate in self.scenes:
+                return candidate
+
+        return sorted(self.scenes)[0]
 
     def get_scene_data(self, scene_name: str) -> dict[str, Any] | None:
         """Get full scene definition by name."""

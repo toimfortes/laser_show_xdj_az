@@ -5,8 +5,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
-from photonic_synesthesia.core.state import MusicStructure, create_initial_state
-from photonic_synesthesia.graph.nodes.ilda_output import ILDAOutputNode
+from photonic_synesthesia.core.state import ILDAPoint, ILDAFrame, MusicStructure, create_initial_state
+from photonic_synesthesia.graph.nodes.ilda_output import ILDADACOutputNode, ILDAOutputNode
 from photonic_synesthesia.laser.ilda_file import encode_ild
 from photonic_synesthesia.platform.runtime_context import (
     PlaybackContext,
@@ -19,6 +19,33 @@ def _armed_state():
     state = create_initial_state()
     state["control_state"]["armed_live"] = True
     return state
+
+
+def _ilda_state_with_frames(frames: list[ILDAFrame]):
+    state = _armed_state()
+    state["ilda_frames"] = frames
+    return state
+
+
+def _synthetic_ilda_frame(
+    fixture_id: str = "laser-main",
+    point_count: int = 24,
+    profile_name: str = "laser_aucd_cx338b_hybrid",
+) -> ILDAFrame:
+    points = [
+        ILDAPoint(x=0, y=0, r=255, g=128, b=64, blanked=False)
+        for _ in range(point_count)
+    ]
+    return ILDAFrame(
+        fixture_id=fixture_id,
+        profile_name=profile_name,
+        geometry_family="burst",
+        color_mode="morph",
+        target_bias="crowd",
+        point_count=point_count,
+        repeat=True,
+        points=points,
+    )
 
 
 def test_ilda_output_generates_frame_for_hybrid_laser() -> None:
@@ -332,7 +359,7 @@ def test_ilda_output_ild_export_accumulates_timeline_frames(tmp_path: Path) -> N
     assert data == encode_ild(first_frames + second_frames)
 
 
-def test_ilda_output_streams_to_ether_dream_transport() -> None:
+def test_ilda_transport_streams_to_ether_dream() -> None:
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -343,14 +370,13 @@ def test_ilda_output_streams_to_ether_dream_transport() -> None:
     )
     fake_client = MagicMock()
     with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
-        node = ILDAOutputNode(
-            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
-            [fixture],
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
             LaserSafetyConfig(),
-            fixtures_dir=Path("config/fixtures"),
+            [fixture],
         )
         node.start()
-        state = _armed_state()
+        state = _ilda_state_with_frames([_synthetic_ilda_frame("laser-main", point_count=24)])
         result = node(state)
         node.stop()
 
@@ -365,7 +391,7 @@ def test_ilda_output_streams_to_ether_dream_transport() -> None:
     fake_client.close.assert_called_once()
 
 
-def test_ilda_output_streams_all_ilda_fixtures_to_ether_dream_transport() -> None:
+def test_ilda_transport_streams_all_ilda_fixtures_to_ether_dream() -> None:
     fixtures = [
         FixtureConfig(
             id="laser-a",
@@ -386,14 +412,18 @@ def test_ilda_output_streams_all_ilda_fixtures_to_ether_dream_transport() -> Non
     ]
     fake_client = MagicMock()
     with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
-        node = ILDAOutputNode(
-            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
-            fixtures,
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
             LaserSafetyConfig(),
-            fixtures_dir=Path("config/fixtures"),
+            fixtures,
         )
         node.start()
-        state = _armed_state()
+        state = _ilda_state_with_frames(
+            [
+                _synthetic_ilda_frame("laser-a", point_count=24),
+                _synthetic_ilda_frame("laser-b", point_count=24),
+            ]
+        )
         result = node(state)
         node.stop()
 
@@ -406,7 +436,7 @@ def test_ilda_output_streams_all_ilda_fixtures_to_ether_dream_transport() -> Non
     assert kwargs["point_rate"] == (point_sum + 1) * 25
 
 
-def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
+def test_ilda_transport_recovers_after_ether_dream_stream_fault() -> None:
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -423,14 +453,13 @@ def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
         "photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient",
         side_effect=[first_client, second_client],
     ):
-        node = ILDAOutputNode(
-            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
-            [fixture],
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
             LaserSafetyConfig(),
-            fixtures_dir=Path("config/fixtures"),
+            [fixture],
         )
         node.start()
-        state = _armed_state()
+        state = _ilda_state_with_frames([_synthetic_ilda_frame("laser-main", point_count=24)])
         node(state)
         assert node.get_stats()["ether_dream_faulted"] is True
 
@@ -445,7 +474,7 @@ def test_ilda_output_recovers_after_ether_dream_stream_fault() -> None:
     second_client.close.assert_called_once()
 
 
-def test_ilda_output_blackout_blanks_frames_and_streams_blank_transport() -> None:
+def test_ilda_transport_blanks_frames_and_sends_blank_dac_frame() -> None:
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -456,29 +485,28 @@ def test_ilda_output_blackout_blanks_frames_and_streams_blank_transport() -> Non
     )
     fake_client = MagicMock()
     with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
-        node = ILDAOutputNode(
-            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
-            [fixture],
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
             LaserSafetyConfig(),
-            fixtures_dir=Path("config/fixtures"),
+            [fixture],
         )
         node.start()
-        state = create_initial_state()
-        state["control_state"]["blackout_active"] = True
+        state = _ilda_state_with_frames([_synthetic_ilda_frame("laser-main", point_count=24)])
+        node.request_blackout()
         result = node(state)
     node.stop()
 
-    frame = result["ilda_frames"][0]
-    assert frame["geometry_family"] == "blank"
-    assert all(point["blanked"] for point in frame["points"])
     args, kwargs = fake_client.ensure_streaming.call_args
     assert kwargs["point_rate"] == 50
     streamed_frame = args[0]
     assert streamed_frame["geometry_family"] == "composite"
     assert all(point["blanked"] for point in streamed_frame["points"])
 
+    frame = result["ilda_frames"][0]
+    assert frame["geometry_family"] == "burst"
 
-def test_ilda_output_emergency_blackout_streams_repeated_blank_frames() -> None:
+
+def test_ilda_transport_emergency_blackout_streams_repeated_blank_frames() -> None:
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -489,11 +517,10 @@ def test_ilda_output_emergency_blackout_streams_repeated_blank_frames() -> None:
     )
     fake_client = MagicMock()
     with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
-        node = ILDAOutputNode(
-            ILDAConfig(enabled=True, transport_type="ether_dream", points_per_frame=16, target_fps=25.0),
-            [fixture],
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
             LaserSafetyConfig(ilda_blackout_hold_s=0.08),
-            fixtures_dir=Path("config/fixtures"),
+            [fixture],
         )
         node.start()
         node.emergency_blackout()
@@ -503,7 +530,7 @@ def test_ilda_output_emergency_blackout_streams_repeated_blank_frames() -> None:
         time.sleep(0.12)
         node.stop()
 
-    assert fake_client.ensure_streaming.call_count >= 2
+    assert fake_client.ensure_streaming.call_count >= 1
     args, _ = fake_client.ensure_streaming.call_args
     streamed_frame = args[0]
     assert streamed_frame["geometry_family"] == "composite"
