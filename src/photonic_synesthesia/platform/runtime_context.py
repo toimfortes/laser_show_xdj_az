@@ -21,56 +21,21 @@ from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_selection_variance as _normalize_selection_variance,
     normalize_venue_mode as _normalize_venue_mode,
 )
+from photonic_synesthesia.platform.runtime_context_playback_scope import (
+    section_ids_for_scope as _section_ids_for_scope,
+)
+from photonic_synesthesia.platform.runtime_context_section_mutations import (
+    apply_nested_change as _apply_nested_change,
+    promote_family_to_hero as _promote_family_to_hero,
+    set_family_intensity as _set_family_intensity,
+    sync_cue_family_family_id as _sync_cue_family_family_id,
+    update_operator_override as _update_operator_override,
+)
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
-
-
-def _section_ids_for_scope(show_sections: list[dict[str, Any]], playhead_seconds: float, scope: str) -> set[str]:
-    if not show_sections:
-        return set()
-    if scope in {"track", "set"}:
-        return {str(section.get("id") or "") for section in show_sections}
-    active_index = len(show_sections) - 1
-    for index, section in enumerate(show_sections):
-        start = float(section.get("start_seconds") or 0.0)
-        end = float(section.get("end_seconds") or start)
-        if start <= playhead_seconds < end:
-            active_index = index
-            break
-    if scope == "current_section":
-        return {str(show_sections[active_index].get("id") or "")}
-    next_index = min(active_index + 1, max(0, len(show_sections) - 1))
-    return {str(show_sections[next_index].get("id") or "")}
-
-
-def _set_family_intensity(section: dict[str, Any], family: str, scale: float) -> None:
-    fixture_role_map = section.get("fixture_role_map")
-    if isinstance(fixture_role_map, dict) and isinstance(fixture_role_map.get(family), dict):
-        role_meta = fixture_role_map[family]
-        role_meta["intensity_ceiling"] = round(
-            _clamp(float(role_meta.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
-            3,
-        )
-    cue_recipe = section.get("cue_recipe")
-    if not isinstance(cue_recipe, dict):
-        return
-    cue_map = cue_recipe.get("fixture_role_map")
-    if isinstance(cue_map, dict) and isinstance(cue_map.get(family), dict):
-        role_meta = cue_map[family]
-        role_meta["intensity_ceiling"] = round(
-            _clamp(float(role_meta.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
-            3,
-        )
-    families = cue_recipe.get("families")
-    if isinstance(families, dict) and isinstance(families.get(family), dict):
-        family_payload = families[family]
-        family_payload["intensity_ceiling"] = round(
-            _clamp(float(family_payload.get("intensity_ceiling") or 0.0) * scale, 0.0, 1.5),
-            3,
-        )
 
 
 def _intent_expired(
@@ -105,63 +70,6 @@ def _intent_expired(
             return False
         return playhead_seconds >= threshold
     return False
-
-
-def _sync_cue_family_family_id(section: dict[str, Any], family: str) -> None:
-    cue_family_id = str(section.get("cue_family_id") or "")
-    if "::" in cue_family_id:
-        prefix = cue_family_id.rsplit("::", 1)[0]
-        cue_family_id = f"{prefix}::{family}"
-        section["cue_family_id"] = cue_family_id
-    cue_recipe = section.get("cue_recipe")
-    if isinstance(cue_recipe, dict):
-        cue_recipe["lead_family"] = family
-        if "::" in str(cue_recipe.get("cue_family_id") or ""):
-            prefix = str(cue_recipe["cue_family_id"]).rsplit("::", 1)[0]
-            cue_recipe["cue_family_id"] = f"{prefix}::{family}"
-        recipe_bundle = cue_recipe.get("recipe_bundle")
-        if isinstance(recipe_bundle, dict):
-            recipe_bundle["lead_family"] = family
-            if "::" in str(recipe_bundle.get("cue_family_id") or ""):
-                prefix = str(recipe_bundle["cue_family_id"]).rsplit("::", 1)[0]
-                recipe_bundle["cue_family_id"] = f"{prefix}::{family}"
-
-
-def _promote_family_to_hero(section: dict[str, Any], family: str) -> None:
-    section["lead_family"] = family
-    fixture_role_map = section.get("fixture_role_map")
-    if isinstance(fixture_role_map, dict):
-        for name, payload in fixture_role_map.items():
-            if not isinstance(payload, dict):
-                continue
-            if name == family:
-                payload["role"] = "hero"
-            elif payload.get("role") == "hero":
-                payload["role"] = "support"
-    cue_recipe = section.get("cue_recipe")
-    if isinstance(cue_recipe, dict):
-        cue_recipe["lead_family"] = family
-        cue_map = cue_recipe.get("fixture_role_map")
-        if isinstance(cue_map, dict):
-            for name, payload in cue_map.items():
-                if not isinstance(payload, dict):
-                    continue
-                if name == family:
-                    payload["role"] = "hero"
-                elif payload.get("role") == "hero":
-                    payload["role"] = "support"
-    _sync_cue_family_family_id(section, family)
-
-
-def _update_operator_override(section: dict[str, Any], key: str, value: Any) -> None:
-    section.setdefault("operator_overrides", {})
-    if isinstance(section["operator_overrides"], dict):
-        section["operator_overrides"][key] = value
-    cue_recipe = section.get("cue_recipe")
-    if isinstance(cue_recipe, dict):
-        cue_recipe.setdefault("operator_overrides", {})
-        if isinstance(cue_recipe["operator_overrides"], dict):
-            cue_recipe["operator_overrides"][key] = value
 
 
 def _apply_operator_intent_to_section(
@@ -464,7 +372,7 @@ class PlaybackContext:
                     elif key == "label":
                         updated[key] = str(value)
                     elif "." in key:
-                        self._apply_nested_change(updated, key, value)
+                        _apply_nested_change(updated, key, value)
                 if index < len(self._base_show_sections):
                     self._base_show_sections[index] = copy.deepcopy(updated)
                 else:
@@ -476,107 +384,6 @@ class PlaybackContext:
         if save_payload is not None and updated_section is not None:
             self._persist_show_plan(save_payload)
         return updated_section
-
-    @staticmethod
-    def _apply_nested_change(section: dict[str, Any], dotted_key: str, value: Any) -> None:
-        parts = dotted_key.split(".")
-        target: Any = section
-        for index, part in enumerate(parts[:-1]):
-            next_part = parts[index + 1]
-            expect_list = next_part.isdigit()
-            if isinstance(target, list):
-                if not part.isdigit():
-                    return
-                item_index = int(part)
-                while len(target) <= item_index:
-                    target.append([] if expect_list else {})
-                current = target[item_index]
-                if expect_list and not isinstance(current, list):
-                    current = []
-                    target[item_index] = current
-                elif not expect_list and not isinstance(current, dict):
-                    current = {}
-                    target[item_index] = current
-                target = current
-                continue
-
-            if not isinstance(target, dict):
-                return
-
-            current = target.get(part)
-            if expect_list:
-                if not isinstance(current, list):
-                    current = []
-                    target[part] = current
-            else:
-                if not isinstance(current, dict):
-                    current = {}
-                    target[part] = current
-            target = current
-        leaf = parts[-1]
-        if leaf in {
-            "content_family",
-            "geometry_family",
-            "color_mode",
-            "target_bias",
-            "target_strategy",
-            "blanking_strategy",
-            "color_strategy",
-            "transition_role",
-            "label",
-            "intensity_curve",
-            "pattern",
-            "zone_policy",
-            "phrase_role",
-            "id",
-        }:
-            if isinstance(target, dict):
-                target[leaf] = str(value)
-        elif leaf in {"mirror"}:
-            if isinstance(target, dict):
-                target[leaf] = bool(value)
-        elif leaf in {
-            "x_amplitude",
-            "y_amplitude",
-            "rotation_rate",
-            "sweep_density",
-            "color_cycle_rate",
-            "white_accent",
-            "crowd_bias",
-            "ceiling_bias",
-            "launch_intensity",
-            "sustain_intensity",
-            "release_intensity",
-            "sustain_motion",
-            "density",
-            "motion",
-            "emphasis",
-        }:
-            try:
-                if isinstance(target, dict):
-                    target[leaf] = float(value)
-            except (TypeError, ValueError):
-                return
-        elif leaf in {
-            "launch_bars",
-            "sustain_bars",
-            "release_bars",
-            "normalize_after_bars",
-            "bars",
-            "fill_trigger_every_bars",
-        }:
-            try:
-                if isinstance(target, dict):
-                    target[leaf] = int(value)
-            except (TypeError, ValueError):
-                return
-        elif leaf == "variation_plan":
-            if not isinstance(target, dict):
-                return
-            if isinstance(value, list):
-                target[leaf] = [str(item) for item in value]
-            else:
-                target[leaf] = [line.strip() for line in str(value).splitlines() if line.strip()]
 
     def _show_plan_payload_locked(self) -> dict[str, Any]:
         return {
