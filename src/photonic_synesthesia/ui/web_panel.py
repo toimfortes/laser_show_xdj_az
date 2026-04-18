@@ -13,6 +13,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+# pydantic is a core dependency, so BaseModel is always importable. Only
+# the fastapi/uvicorn stack is optional, so that import still goes
+# through _import_web_stack() below.
+from pydantic import BaseModel
+
 from photonic_synesthesia import __version__
 from photonic_synesthesia.platform import (
     CommandType,
@@ -481,12 +486,11 @@ class MockRigStore:
         }
 
 
-def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
+def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any]:
     try:
         from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
         from fastapi.responses import FileResponse, HTMLResponse
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
     except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
         raise RuntimeError(
             "The web control plane requires optional dependencies. "
@@ -500,7 +504,6 @@ def _import_web_stack() -> tuple[Any, Any, Any, Any, Any, Any, Any, Any]:
         HTMLResponse,
         FileResponse,
         StaticFiles,
-        BaseModel,
     )
 
 
@@ -682,7 +685,6 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         HTMLResponse,
         FileResponse,
         StaticFiles,
-        BaseModel,
     ) = (
         _import_web_stack()
     )
