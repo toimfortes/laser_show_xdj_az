@@ -1,0 +1,120 @@
+from unittest.mock import patch
+
+from photonic_synesthesia.core.config import Settings
+from photonic_synesthesia.graph.builder import build_minimal_graph, build_photonic_graph
+
+
+class _NoopNode:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def __call__(self, state: object) -> object:
+        return state
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+class _FakeSafetyMonitor:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def test_minimal_graph_keeps_safety_monitor_outside_langgraph() -> None:
+    safety_monitor = _FakeSafetyMonitor()
+
+    with patch("photonic_synesthesia.graph.nodes.mocks.MockAudioSenseNode", return_value=_NoopNode()), patch(
+        "photonic_synesthesia.graph.builder.DMXOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyMonitor",
+        return_value=safety_monitor,
+    ):
+        graph = build_minimal_graph(settings=Settings())
+
+    assert "safety_monitor" not in graph.nodes
+    assert graph.safety_monitor is safety_monitor
+
+    graph.start()
+    graph.stop()
+
+    assert safety_monitor.start_calls == 1
+    assert safety_monitor.stop_calls == 1
+
+
+def test_photonic_graph_builds_without_safety_monitor_node_in_graph() -> None:
+    safety_monitor = _FakeSafetyMonitor()
+
+    with patch("photonic_synesthesia.graph.nodes.mocks.MockAudioSenseNode", return_value=_NoopNode()), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockMidiSenseNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockCVSenseNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.nodes.mocks.MockDMXOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.FeatureExtractNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.BeatTrackNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.StructureDetectNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.FusionNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.DirectorIntentNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SceneSelectNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.LaserControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.MovingHeadControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.PanelControlNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.InterpreterNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.ILDAOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.ILDADACOutputNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.LaserVectorInterlockNode",
+        return_value=_NoopNode(),
+    ), patch(
+        "photonic_synesthesia.graph.builder.SafetyMonitor",
+        return_value=safety_monitor,
+    ):
+        graph = build_photonic_graph(settings=Settings(), mock_sensors=True)
+
+    assert "safety_monitor" not in graph.nodes
+    assert graph.safety_monitor is safety_monitor

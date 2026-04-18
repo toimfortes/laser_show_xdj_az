@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.state import ILDAPoint, ILDAFrame, MusicStructure, create_initial_state
 from photonic_synesthesia.graph.nodes.ilda_output import ILDADACOutputNode, ILDAOutputNode
+from photonic_synesthesia.graph.nodes.laser_vector_interlock import LaserVectorInterlockNode
 from photonic_synesthesia.laser.ilda_file import encode_ild
 from photonic_synesthesia.platform.runtime_context import (
     PlaybackContext,
@@ -582,6 +583,77 @@ def test_ilda_transport_clear_blackout_requests_etherdream_clear_emergency() -> 
         node.stop()
 
     fake_client.clear_emergency_stop.assert_called()
+
+
+def test_ilda_pipeline_enforces_vector_interlock_before_transport() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    vector_interlock = LaserVectorInterlockNode(
+        config=LaserSafetyConfig(
+            ilda_x_min=-1000,
+            ilda_x_max=1000,
+            ilda_y_min=-500,
+            ilda_y_max=500,
+            ilda_max_point_count=2,
+            ilda_min_point_velocity=10,
+            ilda_max_point_velocity=10000,
+            ilda_max_color_value=120,
+            ilda_max_blink_hz=12.0,
+        ),
+    )
+    transport = ILDADACOutputNode(
+        ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
+        LaserSafetyConfig(),
+        [fixture],
+    )
+
+    unsafe_frames = [
+        {
+            "fixture_id": "laser-main",
+            "profile_name": "laser_aucd_cx338b_hybrid",
+            "geometry_family": "fan",
+            "color_mode": "white",
+            "target_bias": "mid_air",
+            "point_count": 3,
+            "repeat": True,
+            "points": [
+                {"x": 20000, "y": 10000, "r": 255, "g": 200, "b": 255, "blanked": False},
+                {"x": 30000, "y": 90000, "r": 150, "g": 140, "b": 130, "blanked": False},
+                {"x": 0, "y": 0, "r": 60, "g": 70, "b": 80, "blanked": False},
+            ],
+        }
+    ]
+
+    state = _ilda_state_with_frames(unsafe_frames)
+    state["beat_info"]["confidence"] = 1.0
+    state["timestamp"] = 1.0
+
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient") as client_ctor:
+        fake_client = MagicMock()
+        client_ctor.return_value = fake_client
+        transport.start()
+        state = vector_interlock(state)
+        result = transport(state)
+
+    assert result["ilda_frames"][0]["point_count"] == 2
+    sent_frame = fake_client.ensure_streaming.call_args.args[0]
+
+    assert sent_frame["fixture_id"] == "ilda-composite"
+    assert sent_frame["point_count"] == 2
+    assert sent_frame["points"][0]["x"] == 1000
+    assert sent_frame["points"][0]["y"] == 500
+    assert sent_frame["points"][0]["r"] == 120
+    assert sent_frame["points"][0]["g"] == 120
+    assert sent_frame["points"][0]["b"] == 120
+    assert sent_frame["points"][1]["blanked"] is True
+
+    transport.stop()
 
 
 def test_ilda_output_blanks_frames_when_disarmed() -> None:

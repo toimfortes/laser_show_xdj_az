@@ -55,10 +55,12 @@ class PhotonicGraph:
         settings: Settings,
         nodes: dict[str, Any],
         control_plane_service: ControlPlaneStateService | None = None,
+        safety_monitor: SafetyMonitor | None = None,
     ):
         self.graph = graph
         self.settings = settings
         self.nodes = nodes
+        self.safety_monitor = safety_monitor
         self.control_plane_service = control_plane_service
         self._running = False
         self._state = create_initial_state()
@@ -85,8 +87,8 @@ class PhotonicGraph:
             self.nodes["ilda_transport"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
             self.nodes["safety_interlock"].start()
-        if "safety_monitor" in self.nodes and hasattr(self.nodes["safety_monitor"], "start"):
-            self.nodes["safety_monitor"].start()
+        if self.safety_monitor is not None:
+            self.safety_monitor.start()
 
     def stop(self) -> None:
         """Stop all processing and clean up resources."""
@@ -104,8 +106,8 @@ class PhotonicGraph:
             self.nodes["ilda_transport"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
-        if "safety_monitor" in self.nodes and hasattr(self.nodes["safety_monitor"], "stop"):
-            self.nodes["safety_monitor"].stop()
+        if self.safety_monitor is not None:
+            self.safety_monitor.stop()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
             self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
@@ -330,7 +332,7 @@ def build_photonic_graph(
         dmx_output=nodes["dmx_output"],
         ilda_output=nodes["ilda_transport"],
     )
-    nodes["safety_monitor"] = SafetyMonitor(
+    safety_monitor = SafetyMonitor(
         dmx_output=nodes["dmx_output"],
         ilda_output=nodes["ilda_transport"],
         check_interval=0.1,
@@ -400,6 +402,7 @@ def build_photonic_graph(
         settings,
         nodes,
         control_plane_service=control_plane_service,
+        safety_monitor=safety_monitor,
     )
 
 
@@ -430,12 +433,12 @@ def build_minimal_graph(
             settings.fixtures,
             dmx_output=dmx_output,
         ),
-        "safety_monitor": SafetyMonitor(
-            dmx_output=dmx_output,
-            check_interval=0.1,
-            max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
-        ),
     }
+    safety_monitor = SafetyMonitor(
+        dmx_output=dmx_output,
+        check_interval=0.1,
+        max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
+    )
 
     graph = StateGraph(PhotonicState)
 
@@ -453,4 +456,5 @@ def build_minimal_graph(
         settings,
         nodes,
         control_plane_service=control_plane_service,
+        safety_monitor=safety_monitor,
     )
