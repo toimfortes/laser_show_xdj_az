@@ -16,7 +16,7 @@ class _IdentityGraph:
         return state
 
 
-def test_graph_consumes_blackout_command_and_requests_fixture_blackout() -> None:
+def test_graph_consumes_blackout_command_as_state_update() -> None:
     service = ControlPlaneStateService()
     dmx_output = mock.MagicMock()
     ilda_output = mock.MagicMock()
@@ -39,8 +39,9 @@ def test_graph_consumes_blackout_command_and_requests_fixture_blackout() -> None
     graph.step()
 
     assert graph.state["control_state"]["blackout_active"] is True
-    dmx_output.request_blackout.assert_called_once()
-    ilda_output.request_blackout.assert_called_once()
+    assert service.commands.backlog() == 0
+    assert dmx_output.request_blackout.call_count == 0
+    assert ilda_output.request_blackout.call_count == 0
 
 
 def test_graph_consumes_scene_launch_and_hold_commands() -> None:
@@ -111,8 +112,9 @@ def test_graph_does_not_clear_blackout_while_disarmed() -> None:
     graph.step()
 
     assert graph.state["control_state"]["blackout_active"] is True
-    dmx_output.clear_blackout_request.assert_not_called()
-    ilda_output.clear_blackout_request.assert_not_called()
+    assert service.commands.backlog() == 0
+    assert dmx_output.clear_blackout_request.call_count == 0
+    assert ilda_output.clear_blackout_request.call_count == 0
 
 
 def test_graph_consumes_launch_scene_once() -> None:

@@ -34,7 +34,6 @@ from photonic_synesthesia.graph.nodes import (
     StructureDetectNode,
     LaserVectorInterlockNode,
 )
-from photonic_synesthesia.platform import CommandType
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
@@ -133,7 +132,6 @@ class PhotonicGraph:
         """Execute one iteration of the graph."""
         with self._state_lock:
             self._sync_control_state()
-            self._drain_control_commands()
             self._state = self.graph.invoke(self._state)
             if self.control_plane_service is not None:
                 node_stats = {
@@ -147,54 +145,12 @@ class PhotonicGraph:
                 )
             return self._state
 
-    def _drain_control_commands(self) -> None:
-        if self.control_plane_service is None:
-            return
-        commands = self.control_plane_service.commands.drain()
-        if not commands:
-            return
-
-        should_blackout = False
-        should_clear_blackout = False
-        for command in commands:
-            if command.command_type in {CommandType.BLACKOUT, CommandType.DISARM}:
-                should_blackout = True
-            if command.command_type == CommandType.CLEAR_BLACKOUT:
-                should_clear_blackout = True
-
-        if should_blackout:
-            self._request_blackout()
-        elif should_clear_blackout and self._state["control_state"]["armed_live"]:
-            self._clear_blackout()
-
     def _sync_control_state(self) -> None:
         if self.control_plane_service is None:
             return
         self._state["control_state"].update(
             self.control_plane_service.consume_control_snapshot_for_graph(),
         )
-
-    def _request_blackout(self) -> None:
-        dmx_output = self.nodes.get("dmx_output")
-        if dmx_output is not None and hasattr(dmx_output, "request_blackout"):
-            dmx_output.request_blackout()
-        for ilda_output in (
-            self.nodes.get("ilda_output"),
-            self.nodes.get("ilda_transport"),
-        ):
-            if ilda_output is not None and hasattr(ilda_output, "request_blackout"):
-                ilda_output.request_blackout()
-
-    def _clear_blackout(self) -> None:
-        dmx_output = self.nodes.get("dmx_output")
-        if dmx_output is not None and hasattr(dmx_output, "clear_blackout_request"):
-            dmx_output.clear_blackout_request()
-        for ilda_output in (
-            self.nodes.get("ilda_output"),
-            self.nodes.get("ilda_transport"),
-        ):
-            if ilda_output is not None and hasattr(ilda_output, "clear_blackout_request"):
-                ilda_output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""
