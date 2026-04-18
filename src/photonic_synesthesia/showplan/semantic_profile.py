@@ -8,6 +8,10 @@ from typing import Any
 SEMANTIC_PROFILE_VERSION = 1
 
 
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
 def auto_markers_for_duration(duration_seconds: float) -> list[dict[str, Any]]:
     """Generate phrase markers when no Rekordbox structure is available."""
     duration = max(1.0, float(duration_seconds))
@@ -156,5 +160,84 @@ def build_semantic_profile(
                 "markers_present": bool(structure_markers),
                 "section_count": len(markers),
             },
+        },
+    }
+
+
+def safe_confidence_value(raw: Any, default: float = 0.0) -> float:
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return round(_clamp(value, 0.0, 1.0), 3)
+
+
+def metadata_confidence(
+    *,
+    structure_markers: list[dict[str, Any]],
+    metadata_source: str,
+    rekordbox_track_id: str = "",
+    rekordbox_average_bpm: float | None = None,
+    web_enrichment: dict[str, Any] | None = None,
+    matched_rekordbox_track: bool = False,
+) -> dict[str, Any]:
+    normalized_source = str(metadata_source or "manual").strip().lower().replace("-", "_") or "manual"
+    markers_present = bool(structure_markers)
+    web_confidence = copy.deepcopy((web_enrichment or {}).get("confidence", {}))
+    web_score = safe_confidence_value(
+        web_confidence.get("overall", web_confidence.get("consensus", 0.45)),
+        default=0.45 if web_enrichment else 0.0,
+    )
+
+    track_match_confidence = 0.35
+    phrase_confidence = 0.25
+    beatgrid_confidence = 0.3
+    transport_confidence = 0.2
+
+    if rekordbox_track_id or matched_rekordbox_track:
+        track_match_confidence = 0.96 if matched_rekordbox_track else 0.88
+        beatgrid_confidence = 0.94
+    elif markers_present:
+        track_match_confidence = 0.72
+        beatgrid_confidence = 0.62
+
+    if markers_present:
+        phrase_confidence = 0.9 if matched_rekordbox_track or rekordbox_track_id else 0.7
+
+    if normalized_source == "pro_dj_link":
+        transport_confidence = 0.93 if matched_rekordbox_track or rekordbox_track_id else 0.74
+    elif normalized_source == "file_playback":
+        transport_confidence = 0.58 if markers_present else 0.42
+    elif normalized_source in {"rekordbox_export", "catalog"}:
+        transport_confidence = 0.65 if markers_present else 0.38
+
+    if rekordbox_average_bpm is not None:
+        beatgrid_confidence = max(beatgrid_confidence, 0.86)
+
+    confidence_tier = "degraded"
+    if transport_confidence >= 0.85 and phrase_confidence >= 0.8:
+        confidence_tier = "strict"
+    elif beatgrid_confidence >= 0.7:
+        confidence_tier = "beat_safe"
+
+    return {
+        "track_match_confidence": round(track_match_confidence, 3),
+        "phrase_confidence": round(phrase_confidence, 3),
+        "beatgrid_confidence": round(beatgrid_confidence, 3),
+        "web_enrichment_confidence": web_score,
+        "transport_confidence": round(transport_confidence, 3),
+        "confidence_tier": confidence_tier,
+        "source_precedence": [
+            "rekordbox_edited_markers",
+            "rekordbox_track_match",
+            "beatgrid_transport",
+            "audio_fallback",
+            "web_enrichment",
+        ],
+        "sources": {
+            "rekordbox_markers": markers_present,
+            "rekordbox_track_match": bool(rekordbox_track_id or matched_rekordbox_track),
+            "live_transport": normalized_source == "pro_dj_link",
+            "web_enrichment": bool(web_enrichment),
         },
     }

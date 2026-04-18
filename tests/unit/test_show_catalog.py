@@ -4,6 +4,7 @@ from click.testing import CliRunner
 
 import photonic_synesthesia.ui.cli as cli_module
 from photonic_synesthesia.showplan import build_semantic_profile
+from photonic_synesthesia.showplan.semantic_profile import metadata_confidence
 from photonic_synesthesia.integrations.show_catalog import (
     list_show_catalog_paths,
     load_show_catalog,
@@ -27,6 +28,21 @@ def test_showplan_build_semantic_profile_returns_expected_shape() -> None:
     assert profile["version"] == 1
     assert profile["track_identity"]["tempo_band"] == "midtempo_club"
     assert profile["genre_hints"] == ["Progressive House"]
+
+
+def test_showplan_metadata_confidence_prefers_rekordbox_match() -> None:
+    confidence = metadata_confidence(
+        structure_markers=[{"name": "Intro", "kind": "intro", "start_seconds": 0.0}],
+        metadata_source="rekordbox_export",
+        rekordbox_track_id="abc123",
+        rekordbox_average_bpm=122.0,
+        web_enrichment={"confidence": {"overall": 0.8}},
+        matched_rekordbox_track=True,
+    )
+
+    assert confidence["track_match_confidence"] == 0.96
+    assert confidence["beatgrid_confidence"] == 0.94
+    assert confidence["confidence_tier"] in {"strict", "beat_safe"}
 
 
 def test_show_catalog_round_trips(tmp_path, monkeypatch) -> None:
