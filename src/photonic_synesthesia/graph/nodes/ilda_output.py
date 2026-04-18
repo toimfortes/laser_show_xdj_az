@@ -600,6 +600,7 @@ class ILDADACOutputNode:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
+        self._clear_emergency()
 
         client = self._ether_dream
         if client is not None:
@@ -620,9 +621,44 @@ class ILDADACOutputNode:
     def emergency_blackout(self) -> None:
         self._blackout_requested = True
         self._emergency_until = time.monotonic() + self.safety.ilda_blackout_hold_s
+        self._send_emergency_stop()
+
+    def blackout(self) -> None:
+        self.emergency_blackout()
 
     def clear_blackout_request(self) -> None:
         self._blackout_requested = False
+        self._emergency_until = 0.0
+        self._clear_emergency()
+
+    def _clear_emergency(self) -> None:
+        client = self._ether_dream
+        if client is None:
+            return
+        try:
+            client.clear_emergency_stop()
+        except OSError:
+            logger.debug("Failed to clear Ether Dream emergency stop", exc_info=True)
+
+    def _send_emergency_stop(self) -> None:
+        client = self._ether_dream
+        if client is None:
+            try:
+                client = self._ensure_ether_dream_client()
+            except OSError:
+                return
+        try:
+            client.emergency_stop()
+        except OSError as exc:
+            self._handle_ether_dream_error(exc)
+
+    def _stream_emergency_blank_frame(self) -> None:
+        try:
+            self._send_emergency_stop()
+            blank_frame = self._build_blank_dac_frame()
+            self._stream_frames(blank_frame)
+        except OSError:
+            logger.debug("Ether Dream emergency transmission failed", exc_info=True)
 
     def get_stats(self) -> dict[str, int | float | bool | str | None]:
         return {
@@ -663,8 +699,7 @@ class ILDADACOutputNode:
         while self._running and not self._thread_stop.is_set():
             if self._emergency_until > 0 and time.monotonic() < self._emergency_until:
                 try:
-                    blank_frame = self._build_blank_dac_frame()
-                    self._stream_frames(blank_frame)
+                    self._stream_emergency_blank_frame()
                 except OSError:
                     pass
                 sleep_seconds = 1.0 / max(1.0, self.config.target_fps)

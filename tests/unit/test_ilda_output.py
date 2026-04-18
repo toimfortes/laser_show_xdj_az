@@ -537,6 +537,53 @@ def test_ilda_transport_emergency_blackout_streams_repeated_blank_frames() -> No
     assert all(point["blanked"] for point in streamed_frame["points"])
 
 
+def test_ilda_transport_emergency_blackout_issues_etherdream_emergency_stop() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
+            LaserSafetyConfig(),
+            [fixture],
+        )
+        node.start()
+        node.emergency_blackout()
+        node.stop()
+
+    fake_client.emergency_stop.assert_called()
+
+
+def test_ilda_transport_clear_blackout_requests_etherdream_clear_emergency() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    fake_client = MagicMock()
+    with patch("photonic_synesthesia.graph.nodes.ilda_output.EtherDreamClient", return_value=fake_client):
+        node = ILDADACOutputNode(
+            ILDAConfig(enabled=True, transport_type="ether_dream", target_fps=25.0),
+            LaserSafetyConfig(),
+            [fixture],
+        )
+        node.start()
+        node.emergency_blackout()
+        node.clear_blackout_request()
+        node.stop()
+
+    fake_client.clear_emergency_stop.assert_called()
+
+
 def test_ilda_output_blanks_frames_when_disarmed() -> None:
     fixture = FixtureConfig(
         id="laser-main",
