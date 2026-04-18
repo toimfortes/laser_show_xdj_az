@@ -30,7 +30,7 @@ The order matters. `runtime_context.py` should land first because it is smaller 
 The file mixes several concerns:
 
 - normalization helpers for operator input
-- section-selection and scope logic
+- live playback scope targeting logic
 - section mutation policy for operator intents
 - `PlaybackContext` lifecycle/state handling
 - shared singleton accessors for playback/control-plane services
@@ -71,6 +71,26 @@ The design is based on a repo scan, not just plan text.
 
 Those constraints make import compatibility and exit-code stability first-class requirements, not optional cleanup.
 
+## Measurement and Verification Conventions
+
+All numeric targets in this design use one explicit counting and comparison method.
+
+- LOC counter: `cloc`
+- Counted metric: `code`
+- Language filter: Python only
+- Exclusions: blank lines and comments are excluded by `cloc` default behavior
+- Baseline and target command for host files:
+  - `cloc --quiet --json --include-lang=Python src/photonic_synesthesia/platform/runtime_context.py src/photonic_synesthesia/ui/cli.py`
+- "LOC removed from `ui/cli.py`" means `baseline code - post-change code` from `cloc`
+- "70% of removed LOC lands in `showplan/`" means:
+  - `cloc --quiet --json --include-lang=Python src/photonic_synesthesia/showplan`
+  - compare new `showplan/` code added during the extraction against code removed from `ui/cli.py`
+- Measurement rule:
+  - all reported LOC numbers in plans, commits, and verification notes must come from these exact `cloc` commands
+  - `wc -l`, editor counters, and GitHub diff counts are not acceptable substitutes for success-criteria accounting
+
+The implementation plans must use these exact commands for baseline and completion checks.
+
 ## Subproject A: `runtime_context.py` Decomposition
 
 ### Target module split
@@ -78,12 +98,13 @@ Those constraints make import compatibility and exit-code stability first-class 
 - `src/photonic_synesthesia/platform/runtime_context.py`
   - keep `PlaybackContext`
   - keep shared singleton accessor functions
-  - keep compatibility re-exports for extracted helper APIs only if tests or internal callers need them during migration
   - keep thin orchestration methods that delegate to extracted helpers
 - `src/photonic_synesthesia/platform/runtime_context_normalization.py`
   - move string/float normalization helpers here
-- `src/photonic_synesthesia/platform/runtime_context_sections.py`
-  - move section-scope resolution and section mutation helpers here
+- `src/photonic_synesthesia/platform/runtime_context_playback_scope.py`
+  - move live playback scope resolution and section-target selection helpers here
+- `src/photonic_synesthesia/platform/runtime_context_section_mutations.py`
+  - move section mutation helpers here
 - `src/photonic_synesthesia/platform/runtime_context_operator_intents.py`
   - move operator-intent application policy here
 
@@ -102,8 +123,10 @@ Phase A is not allowed to break current import sites.
 - Compatibility strategy:
   - keep the public imports above in `runtime_context.py`
   - keep `platform/__init__.py` re-exporting the same symbols
-  - extracted helper modules are internal in Subproject A and are not imported directly outside `platform/` tests unless explicitly planned
-  - test imports should continue to pass without bulk caller rewrites during the first extraction
+  - extracted helper modules are internal in Subproject A
+  - no extracted helper function is part of the stable public API
+  - existing tests that only use the stable API should continue to pass unchanged
+  - if a test needs a moved private helper, that test must be updated to import from the helper's owning internal module as part of the same slice
 
 ### Named dependency that makes Subproject A first
 
@@ -119,12 +142,13 @@ That shared-state seam is the concrete reason Subproject A lands first. This is 
 ### Boundary rules
 
 - Pure transformation helpers should not depend on shared globals
-- Section mutation helpers should operate on explicit section dictionaries/lists
+- Section mutation helpers should operate on explicit copied section dictionaries/lists
 - `PlaybackContext` remains the public coordinator for now, so external callers do not have to change heavily in the first phase
 - Shared singleton accessors remain in `runtime_context.py` to avoid unnecessary churn across the web panel and CLI
 - Shared singleton ownership remains in `runtime_context.py` under the existing module lock
 - Extracted helper modules must not read or mutate `_SHARED_PLAYBACK_CONTEXT`, `_SHARED_CONTROL_PLANE_SERVICE`, or `_LOCK` directly
 - Extracted helper modules must not import `ui/` modules
+- Extracted helper modules are internal only. They are not re-exported from `runtime_context.py` or `platform/__init__.py`.
 
 ### Thread-safety contract
 
@@ -133,19 +157,38 @@ That shared-state seam is the concrete reason Subproject A lands first. This is 
   - `_SHARED_CONTROL_PLANE_SERVICE`
   - `_LOCK`
 - All singleton reads/writes continue to happen through the existing accessor functions in `runtime_context.py`
-- Extracted helper modules are pure or operate only on explicit objects already held by `PlaybackContext` methods while those methods hold their lock
+- Extracted helper modules must be safe to call without the caller holding `_LOCK`
+- `PlaybackContext` methods may hold `_LOCK` only while copying mutable state out and while writing final results back
+- Extracted helper modules must operate on immutable inputs or deep-copied mutable inputs and return new values to apply
+- No helper may rely on "caller already holds the lock" as an implicit precondition
 - No new helper module may introduce its own process-global state
+- Standalone safety rule:
+  - if a helper can only be called correctly while the caller holds `_LOCK`, that helper does not qualify for extraction
+  - extracted helpers must be reusable with ordinary unit tests and pure inputs, without reproducing `PlaybackContext` lock discipline
 
 ### Success criteria
 
 - `runtime_context.py` is reduced from 865 LOC to 450 LOC or less
-- no new `platform/runtime_context_*` module is smaller than 80 LOC unless it contains exactly one cohesive responsibility with at least one dedicated test file
+- no new `platform/runtime_context_*` module is smaller than 40 `cloc` code lines unless it exports exactly one public class or one public function and has at least one dedicated test file
 - all existing imports of the stable public API continue to pass unchanged
 - extracted helpers are covered by focused unit tests
 - playback/operator intent behavior remains unchanged as proven by:
   - existing runtime/playback tests
   - at least one new focused test file for normalization/section mutation behavior
-  - no snapshot diff in `PlaybackContext.snapshot()` structure for equivalent inputs
+  - deep-dict equality for `PlaybackContext.snapshot()` on a canonical fixture after masking non-deterministic fields:
+    - `session_id`
+    - `server_time`
+    - `metadata_bound_at`
+    - `transport_revision` only when the test intentionally updates transport state
+  - import-smoke assertions for:
+    - `photonic_synesthesia.platform.runtime_context`
+    - `photonic_synesthesia.platform`
+    - exact assertion logic:
+      - import succeeds
+      - the seven stable public symbols are present
+      - import does not instantiate `ControlPlaneStateService`
+      - import does not create a `PlaybackContext`
+      - import does not require Click context or hardware/network setup
 
 ## Subproject B: `cli.py` Domain Extraction
 
@@ -158,6 +201,8 @@ That shared-state seam is the concrete reason Subproject A lands first. This is 
 - `src/photonic_synesthesia/showplan/catalog.py`
   - catalog entry construction
   - precomputed show-plan loading/saving adapters
+- `src/photonic_synesthesia/showplan/sections.py`
+  - show-section generation and persisted-section resolution
 - `src/photonic_synesthesia/showplan/semantic_profile.py`
   - semantic profile and metadata confidence logic
 - `src/photonic_synesthesia/showplan/cue_recipe.py`
@@ -170,24 +215,54 @@ That shared-state seam is the concrete reason Subproject A lands first. This is 
   - laser look/program construction and zone policy helpers
 - `src/photonic_synesthesia/showplan/model_payloads.py`
   - model payload and candidate export helpers
+- `src/photonic_synesthesia/showplan/types.py`
+  - shared domain types, protocols, and reusable type aliases that sibling modules may import safely
 
 This split is structural extraction, not dependency inversion by itself. The architectural claim is narrowed accordingly: `cli.py` becomes a thin shell over a domain package with a defined facade.
 
 ### `showplan` public facade
 
-Subproject B must define one stable facade for `ui/cli.py` to call.
+Subproject B must define one stable facade for `ui/cli.py` to call. The facade is the only domain import surface the CLI may use.
 
 - `src/photonic_synesthesia/showplan/__init__.py` must expose only the entrypoints the CLI needs
+- `src/photonic_synesthesia/showplan/types.py` must expose the shared data contracts the facade uses
+- `ui/cli.py` may import only:
+  - facade entrypoints from `photonic_synesthesia.showplan`
+  - shared contract aliases or typed dictionaries from `photonic_synesthesia.showplan.types`
+- `ui/cli.py` must not import leaf `showplan/*` modules directly
 - Initial planned public entrypoints:
-  - `build_show_catalog_entry(...)`
-  - `build_semantic_profile(...)`
-  - `resolve_show_sections(...)`
-  - `build_cue_recipe(...)`
-  - `build_laser_program(...)`
-  - `anti_template_validation(...)`
-  - `select_section_patterns(...)`
-  - `build_model_payload(...)`
+  - `build_show_catalog_entry(*, audio_file: Path, duration_seconds: float, structure_markers: list[dict[str, Any]], track_key: str, track_title: str, track_artist: str, selection_mode: str, selection_variance: float, venue_mode: str, rekordbox_source: Path | None, rekordbox_track_id: str = "", rekordbox_average_bpm: float | None = None, web_enrichment: dict[str, Any] | None = None) -> dict[str, Any]`
+  - `build_semantic_profile(*, track_title: str, track_artist: str, duration_seconds: float, structure_markers: list[dict[str, Any]], rekordbox_average_bpm: float | None = None, web_enrichment: dict[str, Any] | None = None) -> dict[str, Any]`
+  - `resolve_show_sections(persisted_show_plan: dict[str, Any] | None, markers: list[dict[str, Any]], duration_seconds: float, *, track_seed: str, semantic_profile: dict[str, Any] | None = None, selection_mode: str | None = None, selection_variance: float | None = None, venue_mode: str | None = None, metadata_confidence: dict[str, Any] | None = None) -> list[dict[str, Any]]`
+  - `build_cue_recipe(*, kind: str, context: str, laser_pattern: str, mover_pattern: str, wash_pattern: str, led_pattern: str, laser_enabled: bool, movers_enabled: bool, washes_enabled: bool, leds_enabled: bool, section_role: str, venue_mode: str, venue_profile: dict[str, Any], transition_intent: dict[str, Any], cue_family_id: str, lead_family: str, fixture_role_map: dict[str, dict[str, Any]], capability_graph: dict[str, dict[str, Any]], capability_notes: list[str], metadata_confidence: dict[str, Any] | None) -> dict[str, Any]`
+  - `build_laser_program(*, track_seed: str, base_pattern: str, kind: str, context: str, ordinal: int, profile: dict[str, Any], venue_mode: str) -> dict[str, Any]`
+  - `anti_template_validation(*, track_key: str, show_sections: list[dict[str, Any]], semantic_profile: dict[str, Any] | None, recent_catalog_entries: list[dict[str, Any]] | None = None) -> dict[str, Any]`
+  - `select_section_patterns(*, kind: str, context: str, profile: dict[str, Any], track_seed: str, marker_name: str, ordinal: int, previous_patterns: dict[str, str | None], pattern_history: dict[str, list[str]] | None, usage_count_by_family: dict[str, dict[str, int]] | None, semantic_profile: dict[str, Any] | None, selection_mode: str, energy_scale: float, selection_variance: float) -> dict[str, str]`
+  - `build_catalog_model_payload(*, track_key: str, track_title: str, track_artist: str, duration_seconds: float, structure_markers: list[dict[str, Any]], show_sections: list[dict[str, Any]], selection_mode: str, selection_variance: float, venue_mode: str, rekordbox_track_id: str = "", rekordbox_average_bpm: float | None = None, semantic_profile: dict[str, Any] | None = None, metadata_confidence: dict[str, Any] | None = None, web_enrichment: dict[str, Any] | None = None, motif_registry: dict[str, Any] | None = None, show_fingerprint: dict[str, Any] | None = None, anti_template_validation: dict[str, Any] | None = None, scorer_bundle: dict[str, Any] | None = None, preview_artifacts: dict[str, Any] | None = None) -> dict[str, Any]`
+- Owning modules:
+  - `build_show_catalog_entry` -> `showplan/catalog.py`
+  - `build_semantic_profile` -> `showplan/semantic_profile.py`
+  - `resolve_show_sections` -> `showplan/sections.py`
+  - `build_cue_recipe` -> `showplan/cue_recipe.py`
+  - `build_laser_program` -> `showplan/laser_program.py`
+  - `anti_template_validation` -> `showplan/validation.py`
+  - `select_section_patterns` -> `showplan/selection.py`
+  - `build_catalog_model_payload` -> `showplan/model_payloads.py`
 - Helper modules under `showplan/` remain internal unless promoted through `showplan/__init__.py`
+- Ownership rule:
+  - `resolve_show_sections` is domain logic and belongs only to `showplan/sections.py`
+  - `runtime_context_playback_scope.py` owns only live playback/operator scope targeting against already-existing section state
+  - no Platform helper may generate or rebuild show-plan sections for catalog or CLI flows
+
+### Subproject B import-migration contract
+
+- `showplan/` is a new internal domain package with one public facade consumed by `ui/cli.py`
+- There is no compatibility promise for importing private planning helpers from `ui/cli.py`
+- Production cutover rule:
+  - `ui/cli.py` switches to `showplan` facade imports slice by slice
+  - tests that currently reach private helper functions in `ui/cli.py` must migrate in the same slice that moves that helper
+- End-of-project rule:
+  - `ui/cli.py` retains only command-shell helpers and no re-export aliases for extracted domain functions
 
 ### Boundary rules
 
@@ -208,21 +283,57 @@ Subproject B must define one stable facade for `ui/cli.py` to call.
 - Borderline rule:
   - persistence adapters may live outside `ui/cli.py`, but CLI remains responsible for deciding when to print, exit, or raise `click.ClickException`
 - `showplan/` modules must not import `ui/cli.py`
-- `showplan/` sibling modules may only depend on lower-level helpers or the package facade patterns defined in the implementation plan
+- `showplan/` sibling modules may only depend on lower-level helpers or `showplan/types.py`
+- `showplan/sections.py` owns show-plan section resolution and persisted-plan fallback behavior
+- `runtime_context_playback_scope.py` owns live playback section targeting for operator-intent scope only
+- `showplan/` leaf modules must not import `showplan/__init__.py`
+- if two `showplan/` siblings need a shared contract, that contract must move to `showplan/types.py` rather than creating a sibling-to-sibling cycle
 
 ### Circular-import guardrails
 
 - `showplan/__init__.py` may import from leaf modules, but leaf modules must not import from `showplan.__init__`
-- no `showplan/*` module may import another sibling for convenience if the dependency can be inverted into a smaller shared helper
+- shared types and reusable typed contracts must live in `showplan/types.py`
+- leaf `showplan/*` modules may import `showplan/types.py`, but must not import `showplan.__init__`
+- no `showplan/*` module may import another sibling for convenience if the dependency can be inverted into `showplan/types.py` or a smaller leaf helper
 - `runtime_context_*` helpers must not import one another cyclically through `runtime_context.py`
-- each new module introduced in either subproject must be added to a simple import-smoke test that imports the public facade and the main host files
+- each new module introduced in either subproject must be added to an import-smoke test that asserts:
+  - import succeeds
+  - expected public symbols exist
+  - importing does not instantiate shared singleton state
+  - importing does not require Click context or hardware/network access
+- concrete import-smoke assertions required:
+  - `import photonic_synesthesia.platform.runtime_context as rc`
+    - assert `hasattr(rc, "PlaybackContext")`
+    - assert `hasattr(rc, "get_shared_playback_context")`
+    - assert `rc.get_shared_playback_context() is None` before any test setup creates one
+  - `from photonic_synesthesia.platform import PlaybackContext`
+    - assert symbol import succeeds without side effects
+  - `import photonic_synesthesia.showplan as sp`
+    - assert facade symbols listed in this spec exist
+  - `import photonic_synesthesia.showplan.types as spt`
+    - assert shared contract aliases or typed dictionaries exist
+  - none of these imports may open sockets, require Click invocation, or access hardware transport layers
 
 ### Exception and exit-code contract
 
 - `showplan/` functions may raise ordinary Python exceptions internally, but `ui/cli.py` remains the translation boundary
 - user-facing command failures must continue to surface as current CLI failures or `click.ClickException`, not raw tracebacks, unless the current command already intentionally crashes
 - extraction must not change successful command exit code `0` behavior
-- extraction must not change known failure exit-code semantics without an explicit planned test update
+- baseline failure contract to preserve unless an implementation plan changes it explicitly:
+  - `catalog_build` failure path -> exit code `1`
+  - `catalog_export_model_payloads` failure path -> exit code `1`
+  - `run` failure path -> exit code `1`
+  - `run_file` failure path -> exit code `1`
+  - `dmx_test` failure path -> exit code `1`
+  - `list_audio` failure path -> exit code `1`
+  - `list_midi` failure path -> exit code `1`
+  - `analyze` failure path -> exit code `1`
+- implementation plans must begin with an explicit baseline inventory command:
+  - `rg -n "SystemExit\\(|sys\\.exit\\(|ClickException|UsageError|Abort|ctx\\.exit\\(" src/photonic_synesthesia/ui/cli.py src/photonic_synesthesia/ui/web_panel.py`
+- implementation plans must define a domain error family such as `ShowplanError` and map it explicitly at the CLI seam according to the preserved command baseline:
+  - `ShowplanError` -> `click.ClickException` or `SystemExit(1)`
+  - extraction must not introduce new non-zero exit codes without updating the spec and command tests
+  - command-level tests must assert exit code `1` for preserved failure paths and `0` for success
 
 ### Success criteria
 
@@ -252,7 +363,7 @@ Click command -> argument parsing -> domain service/helper calls -> artifact per
 - keep existing runtime control-plane and playback context tests passing
 - add focused unit tests around extracted normalization and operator-intent helpers
 - verify no behavior change in section targeting, intensity mutation, and intent expiry behavior
-- add an import-smoke test for the stable `runtime_context` public API and `platform.__init__` re-exports
+- add an import-smoke test for the stable `runtime_context` public API and `platform.__init__` re-exports using the concrete assertions defined above
 - add a snapshot or structural-equivalence assertion for `PlaybackContext.snapshot()` on a canonical fixture
 
 ### Subproject B
@@ -260,6 +371,7 @@ Click command -> argument parsing -> domain service/helper calls -> artifact per
 - keep existing CLI-facing tests passing
 - add module-level tests for extracted show-planning helpers
 - verify named command flows still work through the CLI entrypoints
+- add an import-smoke test for `photonic_synesthesia.showplan` and `photonic_synesthesia.showplan.types`
 - add golden-output comparisons for at least:
   - one `catalog_build` entry payload
   - one resolved show-section payload
@@ -275,9 +387,28 @@ Click command -> argument parsing -> domain service/helper calls -> artifact per
   - `run_file`
   - `analyze`
 - Golden anchors:
-  - one canonical small-room show plan
-  - one canonical model payload export
-  - one canonical playback metadata binding result
+  - `tests/fixtures/showplan/canonical_small_room_show_plan.json`
+  - `tests/fixtures/showplan/canonical_model_payload.json`
+  - `tests/fixtures/runtime_context/canonical_playback_snapshot.json`
+- Fixture-source anchors for generating or validating those goldens:
+  - `config/pknight_single_laser.yaml`
+  - `config/default.yaml`
+  - `config/scenes/drop_intense.json`
+- Required test-path binding:
+  - the implementation plans must create or update tests that read exactly these fixture paths rather than describing them generically
+  - each golden fixture must be serialized as normalized JSON with sorted keys
+- Existing config anchors that the golden fixtures should be derived from or reference explicitly:
+  - `config/fixtures/laser_aucd_cx338b_hybrid.yaml`
+- Comparator rule:
+  - use deep dictionary equality on normalized JSON payloads
+  - serialize through one normalization helper before comparison
+  - mask non-deterministic fields such as:
+    - `provenance.generated_at`
+    - `provenance.generator_host`
+    - `session_id`
+    - `server_time`
+    - `metadata_bound_at`
+    - `transport_revision` only in tests that intentionally mutate transport state
 
 ## Incremental Delivery
 
@@ -299,10 +430,10 @@ Each slice should leave the CLI runnable and covered by targeted tests.
 
 ### Slice-to-module mapping
 
-- Slice 1: `catalog.py`, `semantic_profile.py`
+- Slice 1: `catalog.py`, `semantic_profile.py`, `sections.py`
 - Slice 2: `cue_recipe.py`
 - Slice 3: `validation.py`, `selection.py`
-- Slice 4: `laser_program.py`, `model_payloads.py`
+- Slice 4: `laser_program.py`, `model_payloads.py`, `types.py`
 - Slice 5: final `ui/cli.py` shell cleanup and facade tightening
 
 ### Rollback policy
@@ -319,6 +450,11 @@ Each slice should leave the CLI runnable and covered by targeted tests.
 - Recovery rule:
   - revert the current slice only
   - keep prior slices intact if their verification remains green
+  - rollback after one failed smoke run may be retried once after an obvious test-fix
+  - rollback is mandatory after:
+    - two failed smoke runs for the same slice
+    - one unexplained golden diff
+    - one import-smoke failure that indicates a cycle or side-effecting import
 
 ## Risks and Controls
 
