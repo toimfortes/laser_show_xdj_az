@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import struct
+import threading
 from dataclasses import dataclass
 
 from photonic_synesthesia.core.config import ILDAConfig
@@ -98,84 +99,100 @@ def parse_response(payload: bytes) -> tuple[int, int, EtherDreamStatus]:
 
 
 class EtherDreamClient:
-    """Small synchronous Ether Dream client suitable for graph-owned output."""
+    """Synchronous Ether Dream client safe for multi-thread owners.
+
+    Public methods serialize on an internal RLock so the graph thread
+    (streaming frames) and the safety watchdog thread (issuing
+    emergency_stop / close) cannot interleave socket writes or corrupt
+    the ``_prepared`` / ``_playing`` / ``_current_point_rate`` state
+    machine. RLock (not Lock) is used because ``close()`` calls
+    ``stop()`` internally while the lock is held.
+    """
 
     def __init__(self, config: ILDAConfig):
         self.host = config.ether_dream_host
         self.port = config.ether_dream_port
         self.timeout_s = config.ether_dream_timeout_s
         self.low_water_mark = config.ether_dream_low_water_mark
+        self._lock = threading.RLock()
         self._socket: socket.socket | None = None
         self._prepared = False
         self._playing = False
         self._current_point_rate: int | None = None
 
     def connect(self) -> None:
-        if self._socket is not None:
-            return
-        sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
-        sock.settimeout(self.timeout_s)
-        self._socket = sock
-        self._recv_response()
+        with self._lock:
+            if self._socket is not None:
+                return
+            sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
+            sock.settimeout(self.timeout_s)
+            self._socket = sock
+            self._recv_response()
 
     def close(self) -> None:
-        if self._socket is None:
-            return
-        try:
-            self.stop()
-        except OSError:
-            pass
-        self._socket.close()
-        self._socket = None
-        self._prepared = False
-        self._playing = False
-        self._current_point_rate = None
+        with self._lock:
+            if self._socket is None:
+                return
+            try:
+                self.stop()
+            except OSError:
+                pass
+            self._socket.close()
+            self._socket = None
+            self._prepared = False
+            self._playing = False
+            self._current_point_rate = None
 
     def ensure_streaming(self, frame: ILDAFrame, *, point_rate: int) -> None:
-        self.connect()
-        if self._playing and self._current_point_rate != point_rate:
-            self.stop()
-        if not self._prepared:
-            self._send(pack_prepare_command(), expected_command=0x70)
-            self._prepared = True
-        self._send(pack_write_data_command(frame["points"]), expected_command=0x64)
-        if not self._playing:
-            self._send(
-                pack_begin_command(low_water_mark=self.low_water_mark, point_rate=point_rate),
-                expected_command=0x62,
-            )
-            self._playing = True
-            self._current_point_rate = point_rate
+        with self._lock:
+            self.connect()
+            if self._playing and self._current_point_rate != point_rate:
+                self.stop()
+            if not self._prepared:
+                self._send(pack_prepare_command(), expected_command=0x70)
+                self._prepared = True
+            self._send(pack_write_data_command(frame["points"]), expected_command=0x64)
+            if not self._playing:
+                self._send(
+                    pack_begin_command(low_water_mark=self.low_water_mark, point_rate=point_rate),
+                    expected_command=0x62,
+                )
+                self._playing = True
+                self._current_point_rate = point_rate
 
     def stop(self) -> None:
-        if self._socket is None or not (self._prepared or self._playing):
-            return
-        self._send(pack_stop_command(), expected_command=0x73)
-        self._prepared = False
-        self._playing = False
-        self._current_point_rate = None
+        with self._lock:
+            if self._socket is None or not (self._prepared or self._playing):
+                return
+            self._send(pack_stop_command(), expected_command=0x73)
+            self._prepared = False
+            self._playing = False
+            self._current_point_rate = None
 
     def emergency_stop(self) -> None:
-        self.connect()
-        # Emergency stop enters E-stop state even if playback/state is inconsistent.
-        self._send(pack_emergency_stop_command(), expected_command=0x00)
-        self._prepared = False
-        self._playing = False
-        self._current_point_rate = None
+        with self._lock:
+            self.connect()
+            # Emergency stop enters E-stop state even if playback/state is inconsistent.
+            self._send(pack_emergency_stop_command(), expected_command=0x00)
+            self._prepared = False
+            self._playing = False
+            self._current_point_rate = None
 
     def clear_emergency_stop(self) -> None:
-        if self._socket is None:
-            return
-        # Clear E-Stop if active; if not active this is a no-op at protocol level.
-        try:
-            self._send(pack_clear_emergency_command(), expected_command=0x63)
-        except OSError:
-            pass
+        with self._lock:
+            if self._socket is None:
+                return
+            # Clear E-Stop if active; if not active this is a no-op at protocol level.
+            try:
+                self._send(pack_clear_emergency_command(), expected_command=0x63)
+            except OSError:
+                pass
 
     def ping(self) -> EtherDreamStatus:
-        self.connect()
-        _, _, status = self._send(pack_ping_command(), expected_command=0x3F)
-        return status
+        with self._lock:
+            self.connect()
+            _, _, status = self._send(pack_ping_command(), expected_command=0x3F)
+            return status
 
     def _send(self, payload: bytes, *, expected_command: int) -> tuple[int, int, EtherDreamStatus]:
         if self._socket is None:

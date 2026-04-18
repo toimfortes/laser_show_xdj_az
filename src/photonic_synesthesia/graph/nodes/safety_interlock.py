@@ -121,7 +121,27 @@ class SafetyInterlockNode:
         fixtures: list[FixtureConfig],
         dmx_output: SupportsBlackout | None = None,
         ilda_output: SupportsBlackout | SupportsEmergencyBlackout | None = None,
+        *,
+        require_watchdog: bool = False,
     ) -> None:
+        """Build a safety interlock node.
+
+        Args:
+            config: safety limits and heartbeat timeout.
+            fixtures: fixtures whose channels need clamping.
+            dmx_output: DMX transmitter exposing ``blackout()`` (or
+                ``request_blackout()``). Needed for the watchdog.
+            ilda_output: ILDA transmitter with the same blackout contract.
+                Needed for the watchdog when ILDA hardware is present.
+            require_watchdog: when ``True`` (the production default wired
+                by :mod:`photonic_synesthesia.graph.builder`), raise
+                :class:`ValueError` if neither ``dmx_output`` nor
+                ``ilda_output`` was supplied. This closes the failure
+                mode where a caller silently loses the dead-man switch
+                by forgetting to wire an output.
+                Tests that exercise the clamp/strobe logic without a
+                watchdog can leave the flag at ``False``.
+        """
         self.config = config
         self.fixtures = fixtures
 
@@ -148,6 +168,13 @@ class SafetyInterlockNode:
             self._heartbeat_watchdog = HeartbeatWatchdog(
                 on_timeout=timeout_callback,
                 timeout_s=self.config.heartbeat_timeout_s,
+            )
+        elif require_watchdog:
+            raise ValueError(
+                "SafetyInterlockNode: require_watchdog=True but no dmx_output "
+                "or ilda_output was provided; cannot install HeartbeatWatchdog. "
+                "Production graphs must wire at least one output so the "
+                "dead-man switch exists."
             )
 
     @staticmethod

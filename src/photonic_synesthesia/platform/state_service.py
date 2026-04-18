@@ -41,13 +41,18 @@ class ControlPlaneStateService:
         self.authority = authority or ControlAuthorityService()
 
         self._lock = Lock()
-        self._armed_live = False
-        self._blackout_active = False
-        self._global_intensity = 1.0
-        self._global_speed = 1.0
+        # Single source of truth for control-plane mutable state.
+        # Graph and web consumers see the same ControlState dict shape
+        # (core.state.ControlState) via snapshot() or consume_control_snapshot_for_graph().
+        self._control_state: ControlState = {
+            "armed_live": False,
+            "blackout_active": False,
+            "global_intensity": 1.0,
+            "global_speed": 1.0,
+            "scene_hold": None,
+            "launched_scene": None,
+        }
         self._active_scene_id: str | None = None
-        self._pending_scene_id: str | None = None
-        self._scene_hold: str | None = None
         self._semantic_frame = SemanticFrame()
         self._director_summary = DirectorSummary()
         self._safety_summary = SafetySummary()
@@ -59,12 +64,12 @@ class ControlPlaneStateService:
     def snapshot(self) -> ExecutionSnapshot:
         with self._lock:
             return ExecutionSnapshot(
-                armed_live=self._armed_live,
-                blackout_active=self._blackout_active,
+                armed_live=self._control_state["armed_live"],
+                blackout_active=self._control_state["blackout_active"],
                 active_scene_id=self._active_scene_id,
-                pending_scene_id=self._pending_scene_id,
-                effective_global_intensity=self._global_intensity,
-                effective_global_speed=self._global_speed,
+                pending_scene_id=self._control_state["launched_scene"],
+                effective_global_intensity=self._control_state["global_intensity"],
+                effective_global_speed=self._control_state["global_speed"],
                 active_control_lease=self.authority.get_active_lease(),
                 semantic_frame=self._semantic_frame.model_copy(deep=True),
                 director_summary=self._director_summary.model_copy(deep=True),
@@ -73,7 +78,7 @@ class ControlPlaneStateService:
                     **self._diagnostics,
                     "monotonic_ms": self.clock.monotonic_ms(),
                     "command_backlog": self.commands.backlog(),
-                    "scene_hold": self._scene_hold,
+                    "scene_hold": self._control_state["scene_hold"],
                 },
                 recent_events=self.events.recent()[-10:],
             )
@@ -219,17 +224,20 @@ class ControlPlaneStateService:
 
         with self._lock:
             self._active_scene_id = cast(str | None, scene_state["current_scene"])
-            self._pending_scene_id = cast(str | None, scene_state["pending_scene"])
             control_state = state["control_state"]
-            self._armed_live = bool(control_state["armed_live"])
-            self._blackout_active = bool(control_state["blackout_active"])
-            self._global_intensity = float(control_state["global_intensity"])
-            self._global_speed = float(control_state["global_speed"])
-            self._scene_hold = cast(str | None, control_state["scene_hold"])
+            self._control_state = {
+                "armed_live": bool(control_state["armed_live"]),
+                "blackout_active": (
+                    bool(control_state["blackout_active"]) or safety_summary.emergency_stop
+                ),
+                "global_intensity": float(control_state["global_intensity"]),
+                "global_speed": float(control_state["global_speed"]),
+                "scene_hold": cast(str | None, control_state["scene_hold"]),
+                "launched_scene": cast(str | None, scene_state["pending_scene"]),
+            }
             self._semantic_frame = semantic_frame
             self._director_summary = director_summary
             self._safety_summary = safety_summary
-            self._blackout_active = self._blackout_active or safety_summary.emergency_stop
             runtime_frames_seen = int(self._diagnostics.get("runtime_frames_seen", 0)) + 1
             node_stats = node_stats or {}
             ilda_stats = dict(node_stats.get("ilda_output", {}))
@@ -270,26 +278,20 @@ class ControlPlaneStateService:
         if commands:
             self._apply_command_batch_effects(commands)
         with self._lock:
-            control_state: ControlState = {
-                "armed_live": self._armed_live,
-                "blackout_active": self._blackout_active,
-                "global_intensity": self._global_intensity,
-                "global_speed": self._global_speed,
-                "scene_hold": self._scene_hold,
-                "launched_scene": self._pending_scene_id,
-            }
-            self._pending_scene_id = None
+            control_state: ControlState = dict(self._control_state)  # type: ignore[assignment]
+            self._control_state["launched_scene"] = None
 
         return control_state
 
     def _apply_command_batch_effects(self, commands: list[OperatorCommand]) -> None:
         with self._lock:
-            armed_live = self._armed_live
-            blackout_active = self._blackout_active
-            global_intensity = self._global_intensity
-            global_speed = self._global_speed
-            scene_hold = self._scene_hold
-            pending_scene_id = self._pending_scene_id
+            armed_live = self._control_state["armed_live"]
+            blackout_active = self._control_state["blackout_active"]
+            global_intensity = self._control_state["global_intensity"]
+            global_speed = self._control_state["global_speed"]
+            scene_hold = self._control_state["scene_hold"]
+            pending_scene_id = self._control_state["launched_scene"]
+            armed_live_before = armed_live
 
             should_blackout = False
             should_disarm = False
@@ -332,17 +334,19 @@ class ControlPlaneStateService:
             else:
                 if should_blackout:
                     blackout_active = True
-                elif should_clear_blackout and self._armed_live and not should_blackout:
+                elif should_clear_blackout and armed_live_before and not should_blackout:
                     # Preserve legacy semantics: clear requests are ignored when system
                     # is disarmed at graph ingestion time.
                     blackout_active = False
 
-            self._armed_live = armed_live
-            self._blackout_active = blackout_active
-            self._global_intensity = global_intensity
-            self._global_speed = global_speed
-            self._pending_scene_id = pending_scene_id
-            self._scene_hold = scene_hold
+            self._control_state = {
+                "armed_live": armed_live,
+                "blackout_active": blackout_active,
+                "global_intensity": global_intensity,
+                "global_speed": global_speed,
+                "scene_hold": scene_hold,
+                "launched_scene": pending_scene_id,
+            }
 
     def _apply_command_effects(self, command: OperatorCommand) -> None:
         self._apply_command_batch_effects([command])

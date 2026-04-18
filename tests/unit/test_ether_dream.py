@@ -94,6 +94,8 @@ def test_ether_dream_response_parser_decodes_ack_status() -> None:
 
 def test_ether_dream_client_streams_with_prepare_write_and_begin() -> None:
     client = EtherDreamClient.__new__(EtherDreamClient)
+    import threading
+    client._lock = threading.RLock()
     client.host = "127.0.0.1"
     client.port = 7765
     client.timeout_s = 1.0
@@ -151,6 +153,8 @@ def test_ether_dream_client_streams_with_prepare_write_and_begin() -> None:
 
 def test_ether_dream_client_restarts_stream_when_point_rate_changes() -> None:
     client = EtherDreamClient.__new__(EtherDreamClient)
+    import threading
+    client._lock = threading.RLock()
     client.host = "127.0.0.1"
     client.port = 7765
     client.timeout_s = 1.0
@@ -210,6 +214,8 @@ def test_ether_dream_client_restarts_stream_when_point_rate_changes() -> None:
 
 def test_ether_dream_client_issues_emergency_and_clear_commands() -> None:
     client = EtherDreamClient.__new__(EtherDreamClient)
+    import threading
+    client._lock = threading.RLock()
     client.host = "127.0.0.1"
     client.port = 7765
     client.timeout_s = 1.0
