@@ -3,6 +3,7 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 import photonic_synesthesia.ui.cli as cli_module
+from photonic_synesthesia.showplan import build_semantic_profile
 from photonic_synesthesia.integrations.show_catalog import (
     list_show_catalog_paths,
     load_show_catalog,
@@ -11,6 +12,21 @@ from photonic_synesthesia.integrations.show_catalog import (
 )
 from photonic_synesthesia.integrations.show_plans import save_show_plan
 from photonic_synesthesia.ui.cli import _load_precomputed_show_plan, cli
+
+
+def test_showplan_build_semantic_profile_returns_expected_shape() -> None:
+    profile = build_semantic_profile(
+        track_title="Song",
+        track_artist="Artist",
+        duration_seconds=120.0,
+        structure_markers=[{"name": "Intro", "kind": "intro", "start_seconds": 0.0, "energy_hint": 5}],
+        rekordbox_average_bpm=122.0,
+        web_enrichment={"summary": {"genre_primary": "Progressive House"}, "confidence": {"overall": 0.9}},
+    )
+
+    assert profile["version"] == 1
+    assert profile["track_identity"]["tempo_band"] == "midtempo_club"
+    assert profile["genre_hints"] == ["Progressive House"]
 
 
 def test_show_catalog_round_trips(tmp_path, monkeypatch) -> None:
