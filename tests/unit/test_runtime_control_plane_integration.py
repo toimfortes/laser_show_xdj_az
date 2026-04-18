@@ -14,6 +14,14 @@ from photonic_synesthesia.platform import (
 from photonic_synesthesia.ui.web_panel import create_app
 
 
+def _normalized_playback_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+    normalized = dict(snapshot)
+    for key in ("session_id", "server_time", "metadata_bound_at"):
+        normalized[key] = "<masked>"
+    normalized["transport_revision"] = "<masked>"
+    return normalized
+
+
 def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> None:
     from photonic_synesthesia.graph.builder import PhotonicGraph
 
@@ -136,6 +144,25 @@ def test_playback_snapshot_deep_copies_nested_show_sections() -> None:
     assert playback.snapshot()["show_sections"][0]["laser_program"]["sustain"][0]["pattern"] == "fan"
 
     clear_shared_playback_context()
+
+
+def test_equivalent_playback_snapshots_match_after_masking_nondeterministic_fields() -> None:
+    first = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=123.4,
+        waveform=[0.1, 0.2, 0.3],
+        show_sections=[{"id": "section_001", "start_seconds": 0.0, "end_seconds": 8.0}],
+    )
+    second = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=123.4,
+        waveform=[0.1, 0.2, 0.3],
+        show_sections=[{"id": "section_001", "start_seconds": 0.0, "end_seconds": 8.0}],
+    )
+
+    assert _normalized_playback_snapshot(first.snapshot()) == _normalized_playback_snapshot(second.snapshot())
 
 
 def test_operator_intent_targets_last_section_when_playhead_is_past_final_end() -> None:
