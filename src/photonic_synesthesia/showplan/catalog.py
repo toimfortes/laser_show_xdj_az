@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import socket
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -229,7 +229,7 @@ def build_show_catalog_entry(
         },
         "web_enrichment": copy.deepcopy(web_enrichment) if isinstance(web_enrichment, dict) else {},
         "provenance": {
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "planner_version": show_section_generator_version,
             "laser_program_version": laser_program_version,
             "selection_mode": selection_mode,

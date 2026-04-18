@@ -37,10 +37,10 @@ class LaserVectorInterlockNode:
         config: LaserSafetyConfig | None = None,
         min_beat_confidence: float = 0.0,
     ) -> None:
-        if safety is None and config is None:
+        resolved = safety or config
+        if resolved is None:
             raise TypeError("LaserVectorInterlockNode requires safety or config")
-        self.config = safety or config
-        assert self.config is not None
+        self.config: LaserSafetyConfig = resolved
         self._min_beat_confidence = max(0.0, min(1.0, min_beat_confidence))
 
         self._last_point: defaultdict[str, tuple[int, int] | None] = defaultdict(
