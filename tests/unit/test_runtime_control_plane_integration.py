@@ -14,6 +14,14 @@ from photonic_synesthesia.platform import (
 from photonic_synesthesia.ui.web_panel import create_app
 
 
+def _normalized_playback_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
+    normalized = dict(snapshot)
+    for key in ("session_id", "server_time", "metadata_bound_at"):
+        normalized[key] = "<masked>"
+    normalized["transport_revision"] = "<masked>"
+    return normalized
+
+
 def test_photonic_graph_step_publishes_snapshot_to_control_plane_service() -> None:
     from photonic_synesthesia.graph.builder import PhotonicGraph
 
@@ -136,3 +144,134 @@ def test_playback_snapshot_deep_copies_nested_show_sections() -> None:
     assert playback.snapshot()["show_sections"][0]["laser_program"]["sustain"][0]["pattern"] == "fan"
 
     clear_shared_playback_context()
+
+
+def test_equivalent_playback_snapshots_match_after_masking_nondeterministic_fields() -> None:
+    first = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=123.4,
+        waveform=[0.1, 0.2, 0.3],
+        show_sections=[{"id": "section_001", "start_seconds": 0.0, "end_seconds": 8.0}],
+    )
+    second = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=123.4,
+        waveform=[0.1, 0.2, 0.3],
+        show_sections=[{"id": "section_001", "start_seconds": 0.0, "end_seconds": 8.0}],
+    )
+
+    assert _normalized_playback_snapshot(first.snapshot()) == _normalized_playback_snapshot(second.snapshot())
+
+
+def test_operator_intent_targets_last_section_when_playhead_is_past_final_end() -> None:
+    playback = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=20.0,
+        playhead_seconds=25.0,
+        show_sections=[
+            {"id": "section_001", "start_seconds": 0.0, "end_seconds": 8.0, "section_role": "intro", "lead_family": "mover"},
+            {"id": "section_002", "start_seconds": 8.0, "end_seconds": 20.0, "section_role": "outro", "lead_family": "mover", "washes_enabled": True, "fixture_role_map": {"wash": {"role": "support"}, "mover": {"role": "hero"}}, "cue_recipe": {"fixture_role_map": {"wash": {"role": "support"}, "mover": {"role": "hero"}}, "cue_family_id": "small_room_50_100::outro::mover", "lead_family": "mover"}},
+        ],
+    )
+
+    snapshot = playback.apply_operator_intent(intent="promote_washes", scope="current_section", target="washes")
+
+    assert snapshot["show_sections"][0]["lead_family"] == "mover"
+    assert snapshot["show_sections"][1]["lead_family"] == "wash"
+
+
+def test_targeted_darken_changes_family_ceiling_without_global_intensity_drop() -> None:
+    playback = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=20.0,
+        playhead_seconds=1.0,
+        show_sections=[
+            {
+                "id": "section_001",
+                "start_seconds": 0.0,
+                "end_seconds": 20.0,
+                "section_role": "drop_1",
+                "lead_family": "laser",
+                "intensity_multiplier": 1.0,
+                "fixture_role_map": {
+                    "laser": {"role": "hero", "intensity_ceiling": 1.0},
+                    "mover": {"role": "support", "intensity_ceiling": 0.72},
+                },
+                "cue_recipe": {
+                    "fixture_role_map": {
+                        "laser": {"role": "hero", "intensity_ceiling": 1.0},
+                        "mover": {"role": "support", "intensity_ceiling": 0.72},
+                    },
+                    "families": {
+                        "laser": {"intensity_ceiling": 1.0},
+                        "mover": {"intensity_ceiling": 0.72},
+                    },
+                },
+            }
+        ],
+    )
+
+    snapshot = playback.apply_operator_intent(intent="darken", scope="track", target="lasers", amount=0.4)
+    section = snapshot["show_sections"][0]
+
+    assert section["intensity_multiplier"] == 1.0
+    assert section["fixture_role_map"]["laser"]["intensity_ceiling"] == 0.6
+    assert section["fixture_role_map"]["mover"]["intensity_ceiling"] == 0.72
+    assert section["cue_recipe"]["families"]["laser"]["intensity_ceiling"] == 0.6
+
+
+def test_next_phrase_operator_intent_expires_and_restores_base_sections() -> None:
+    playback = PlaybackContext(
+        file_path="/tmp/test.mp3",
+        file_name="test.mp3",
+        duration_seconds=20.0,
+        playhead_seconds=2.0,
+        show_sections=[
+            {
+                "id": "section_001",
+                "start_seconds": 0.0,
+                "end_seconds": 8.0,
+                "section_role": "intro",
+                "lead_family": "mover",
+                "intensity_multiplier": 1.0,
+                "washes_enabled": True,
+                "fixture_role_map": {"wash": {"role": "support"}, "mover": {"role": "hero"}},
+                "cue_recipe": {"fixture_role_map": {"wash": {"role": "support"}, "mover": {"role": "hero"}}, "cue_family_id": "small_room_50_100::intro::mover", "lead_family": "mover"},
+            },
+            {
+                "id": "section_002",
+                "start_seconds": 8.0,
+                "end_seconds": 20.0,
+                "section_role": "drop_1",
+                "lead_family": "laser",
+                "intensity_multiplier": 1.0,
+                "fixture_role_map": {"laser": {"role": "hero"}},
+                "cue_recipe": {"fixture_role_map": {"laser": {"role": "hero"}}, "lead_family": "laser"},
+            },
+        ],
+    )
+
+    first_snapshot = playback.apply_operator_intent(
+        intent="promote_washes",
+        scope="current_section",
+        target="washes",
+        expires_at="next_phrase",
+    )
+    assert first_snapshot["show_sections"][0]["lead_family"] == "wash"
+    assert first_snapshot["operator_intents"]
+
+    playback.update_transport(
+        playhead_seconds=8.1,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+    second_snapshot = playback.snapshot()
+
+    assert second_snapshot["operator_intents"] == []
+    assert second_snapshot["show_sections"][0]["lead_family"] == "mover"

@@ -1,8 +1,8 @@
 """
-LangGraph State Definitions for Photonic Synesthesia.
+State definitions for Photonic Synesthesia.
 
-This module defines the central state object that flows through the LangGraph
-state machine, containing all sensor data, analysis results, and control signals.
+This module defines the central state object that flows through the execution
+pipeline, containing all sensor data, analysis results, and control signals.
 """
 
 from __future__ import annotations
@@ -190,11 +190,11 @@ class ControlState(TypedDict):
 
 class PhotonicState(TypedDict):
     """
-    Central state object flowing through LangGraph.
+    Central state object flowing through the execution pipeline.
 
     This TypedDict contains all sensor data, analysis results, and control
     signals used by the photonic synesthesia system. It is passed between
-    nodes in the LangGraph state machine and updated incrementally.
+    processing nodes and updated incrementally.
     """
 
     # Timing & Synchronization

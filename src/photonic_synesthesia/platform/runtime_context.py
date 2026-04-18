@@ -11,32 +11,35 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from photonic_synesthesia.platform.runtime_context_normalization import (
+    clamp as _clamp,
+    normalize_metadata_source as _normalize_metadata_source,
+    normalize_operator_intent as _normalize_operator_intent,
+    normalize_operator_scope as _normalize_operator_scope,
+    normalize_operator_target as _normalize_operator_target,
+    normalize_selection_mode as _normalize_selection_mode,
+    normalize_selection_variance as _normalize_selection_variance,
+    normalize_venue_mode as _normalize_venue_mode,
+)
+from photonic_synesthesia.platform.runtime_context_operator_intents import (
+    apply_operator_intent_to_section as _apply_operator_intent_to_section,
+    intent_expired as _intent_expired,
+)
+from photonic_synesthesia.platform.runtime_context_playback_scope import (
+    section_ids_for_scope as _section_ids_for_scope,
+)
+from photonic_synesthesia.platform.runtime_context_section_mutations import (
+    apply_nested_change as _apply_nested_change,
+    promote_family_to_hero as _promote_family_to_hero,
+    set_family_intensity as _set_family_intensity,
+    sync_cue_family_family_id as _sync_cue_family_family_id,
+    update_operator_override as _update_operator_override,
+)
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
-_PLAYBACK_SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
-
-
-def _normalize_selection_mode(selection_mode: str | None) -> str:
-    value = str(selection_mode or "procedural").strip().lower().replace("-", "_")
-    return value if value in _PLAYBACK_SELECTION_MODES else "procedural"
-
-
-def _normalize_selection_variance(value: Any | None) -> float:
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return round(max(0.0, min(1.0, normalized)), 3)
-
-
-def _normalize_metadata_source(source: str | None) -> str:
-    value = str(source or "manual").strip().lower().replace("-", "_")
-    return value or "manual"
-
-
 @dataclass(slots=True)
 class PlaybackContext:
     """Process-local playback metadata exposed to the web control plane."""
@@ -53,6 +56,9 @@ class PlaybackContext:
     show_sections: list[dict[str, Any]] = field(default_factory=list)
     selection_mode: str = "procedural"
     selection_variance: float = 0.0
+    venue_mode: str = "small_room_50_100"
+    metadata_confidence: dict[str, Any] = field(default_factory=dict)
+    operator_intents: list[dict[str, Any]] = field(default_factory=list)
     metadata_source: str = "file_playback"
     metadata_bound_at: float = 0.0
     show_source: str = "generated"
@@ -71,7 +77,52 @@ class PlaybackContext:
     _save_callback: Callable[[dict[str, Any]], str | None] | None = field(default=None, repr=False)
     _regenerate_callback: Callable[[str, float], list[dict[str, Any]]] | None = field(default=None, repr=False)
     _metadata_bind_callback: Callable[[dict[str, Any]], dict[str, Any]] | None = field(default=None, repr=False)
+    _base_show_sections: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def __post_init__(self) -> None:
+        self.selection_mode = _normalize_selection_mode(self.selection_mode)
+        self.selection_variance = _normalize_selection_variance(self.selection_variance)
+        self.venue_mode = _normalize_venue_mode(self.venue_mode)
+        self.metadata_source = _normalize_metadata_source(self.metadata_source)
+        self._base_show_sections = copy.deepcopy(self.show_sections)
+        with self._lock:
+            self._refresh_operator_intents_locked()
+
+    def _refresh_operator_intents_locked(self) -> None:
+        active_intents = [
+            copy.deepcopy(intent_payload)
+            for intent_payload in self.operator_intents
+            if not _intent_expired(intent_payload, self._base_show_sections, self.playhead_seconds, self.duration_seconds)
+        ]
+        sections = copy.deepcopy(self._base_show_sections)
+        for intent_payload in active_intents:
+            target_ids = set(str(item) for item in list(intent_payload.get("target_ids") or []))
+            if not target_ids:
+                target_ids = _section_ids_for_scope(
+                    sections,
+                    float(intent_payload.get("applied_playhead_seconds") or self.playhead_seconds),
+                    _normalize_operator_scope(intent_payload.get("scope")),
+                )
+                intent_payload["target_ids"] = sorted(target_ids)
+            updated_sections: list[dict[str, Any]] = []
+            for section in sections:
+                section_id = str(section.get("id") or "")
+                if section_id in target_ids:
+                    updated_sections.append(
+                        _apply_operator_intent_to_section(
+                            section,
+                            intent=_normalize_operator_intent(intent_payload.get("intent")),
+                            target=_normalize_operator_target(intent_payload.get("target")),
+                            amount=_clamp(float(intent_payload.get("amount") or 0.0), 0.0, 1.0),
+                            duration_seconds=self.duration_seconds,
+                        )
+                    )
+                else:
+                    updated_sections.append(copy.deepcopy(section))
+            sections = updated_sections
+        self.operator_intents = active_intents
+        self.show_sections = sections
 
     def update_transport(
         self,
@@ -89,12 +140,14 @@ class PlaybackContext:
             self.finished = finished
             self.realtime = realtime
             self.speed = max(0.01, speed)
+            self._refresh_operator_intents_locked()
             self.server_time = time.time()
             self.transport_revision += 1
 
     def snapshot(self) -> dict[str, Any]:
         """Return a thread-safe snapshot for API responses."""
         with self._lock:
+            self._refresh_operator_intents_locked()
             export_available = bool(self.ilda_export_path and Path(self.ilda_export_path).is_file())
             audio_available = bool(self.file_path and Path(self.file_path).is_file())
             seekable = self._seek_callback is not None
@@ -128,6 +181,9 @@ class PlaybackContext:
                 "show_sections": copy.deepcopy(self.show_sections),
                 "selection_mode": _normalize_selection_mode(self.selection_mode),
                 "selection_variance": _normalize_selection_variance(self.selection_variance),
+                "venue_mode": _normalize_venue_mode(self.venue_mode),
+                "metadata_confidence": copy.deepcopy(self.metadata_confidence),
+                "operator_intents": copy.deepcopy(self.operator_intents),
                 "metadata_source": _normalize_metadata_source(self.metadata_source),
                 "metadata_bound_at": self.metadata_bound_at,
                 "show_source": str(self.show_source or "generated"),
@@ -148,7 +204,7 @@ class PlaybackContext:
             for index, section in enumerate(self.show_sections):
                 if str(section.get("id")) != section_id:
                     continue
-                updated = copy.deepcopy(section)
+                updated = copy.deepcopy(self._base_show_sections[index] if index < len(self._base_show_sections) else section)
                 for key, value in changes.items():
                     if key in {
                         "scene_id",
@@ -169,115 +225,18 @@ class PlaybackContext:
                     elif key == "label":
                         updated[key] = str(value)
                     elif "." in key:
-                        self._apply_nested_change(updated, key, value)
-                self.show_sections[index] = updated
+                        _apply_nested_change(updated, key, value)
+                if index < len(self._base_show_sections):
+                    self._base_show_sections[index] = copy.deepcopy(updated)
+                else:
+                    self._base_show_sections.append(copy.deepcopy(updated))
+                self._refresh_operator_intents_locked()
                 save_payload = self._show_plan_payload_locked()
-                updated_section = copy.deepcopy(updated)
+                updated_section = copy.deepcopy(self.show_sections[index])
                 break
         if save_payload is not None and updated_section is not None:
             self._persist_show_plan(save_payload)
         return updated_section
-
-    @staticmethod
-    def _apply_nested_change(section: dict[str, Any], dotted_key: str, value: Any) -> None:
-        parts = dotted_key.split(".")
-        target: Any = section
-        for index, part in enumerate(parts[:-1]):
-            next_part = parts[index + 1]
-            expect_list = next_part.isdigit()
-            if isinstance(target, list):
-                if not part.isdigit():
-                    return
-                item_index = int(part)
-                while len(target) <= item_index:
-                    target.append([] if expect_list else {})
-                current = target[item_index]
-                if expect_list and not isinstance(current, list):
-                    current = []
-                    target[item_index] = current
-                elif not expect_list and not isinstance(current, dict):
-                    current = {}
-                    target[item_index] = current
-                target = current
-                continue
-
-            if not isinstance(target, dict):
-                return
-
-            current = target.get(part)
-            if expect_list:
-                if not isinstance(current, list):
-                    current = []
-                    target[part] = current
-            else:
-                if not isinstance(current, dict):
-                    current = {}
-                    target[part] = current
-            target = current
-        leaf = parts[-1]
-        if leaf in {
-            "content_family",
-            "geometry_family",
-            "color_mode",
-            "target_bias",
-            "target_strategy",
-            "blanking_strategy",
-            "color_strategy",
-            "transition_role",
-            "label",
-            "intensity_curve",
-            "pattern",
-            "zone_policy",
-            "phrase_role",
-            "id",
-        }:
-            if isinstance(target, dict):
-                target[leaf] = str(value)
-        elif leaf in {"mirror"}:
-            if isinstance(target, dict):
-                target[leaf] = bool(value)
-        elif leaf in {
-            "x_amplitude",
-            "y_amplitude",
-            "rotation_rate",
-            "sweep_density",
-            "color_cycle_rate",
-            "white_accent",
-            "crowd_bias",
-            "ceiling_bias",
-            "launch_intensity",
-            "sustain_intensity",
-            "release_intensity",
-            "sustain_motion",
-            "density",
-            "motion",
-            "emphasis",
-        }:
-            try:
-                if isinstance(target, dict):
-                    target[leaf] = float(value)
-            except (TypeError, ValueError):
-                return
-        elif leaf in {
-            "launch_bars",
-            "sustain_bars",
-            "release_bars",
-            "normalize_after_bars",
-            "bars",
-            "fill_trigger_every_bars",
-        }:
-            try:
-                if isinstance(target, dict):
-                    target[leaf] = int(value)
-            except (TypeError, ValueError):
-                return
-        elif leaf == "variation_plan":
-            if not isinstance(target, dict):
-                return
-            if isinstance(value, list):
-                target[leaf] = [str(item) for item in value]
-            else:
-                target[leaf] = [line.strip() for line in str(value).splitlines() if line.strip()]
 
     def _show_plan_payload_locked(self) -> dict[str, Any]:
         return {
@@ -290,6 +249,9 @@ class PlaybackContext:
             "show_sections": copy.deepcopy(self.show_sections),
             "selection_mode": _normalize_selection_mode(self.selection_mode),
             "selection_variance": _normalize_selection_variance(self.selection_variance),
+            "venue_mode": _normalize_venue_mode(self.venue_mode),
+            "metadata_confidence": copy.deepcopy(self.metadata_confidence),
+            "operator_intents": copy.deepcopy(self.operator_intents),
             "metadata_source": _normalize_metadata_source(self.metadata_source),
         }
 
@@ -351,7 +313,8 @@ class PlaybackContext:
         with self._lock:
             self.selection_mode = normalized_mode
             self.selection_variance = normalized_variance
-            self.show_sections = copy.deepcopy(regenerated_sections)
+            self._base_show_sections = copy.deepcopy(regenerated_sections)
+            self._refresh_operator_intents_locked()
             payload = self._show_plan_payload_locked()
         self._persist_show_plan(payload)
         return self.snapshot()
@@ -363,6 +326,41 @@ class PlaybackContext:
     def set_selection_variance(self, selection_variance: float) -> dict[str, Any]:
         """Regenerate the current show plan using a different exploration setting."""
         return self._regenerate_selection(selection_variance=selection_variance)
+
+    def apply_operator_intent(
+        self,
+        *,
+        intent: str,
+        scope: str = "track",
+        target: str = "all",
+        amount: float = 0.25,
+        expires_at: str = "",
+    ) -> dict[str, Any]:
+        """Apply a typed operator steering intent to the current playback plan."""
+        normalized_intent = _normalize_operator_intent(intent)
+        if not normalized_intent:
+            raise RuntimeError("Unsupported operator intent")
+        normalized_scope = _normalize_operator_scope(scope)
+        normalized_target = _normalize_operator_target(target)
+        normalized_amount = round(_clamp(float(amount), 0.0, 1.0), 3)
+
+        with self._lock:
+            target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
+            intent_payload = {
+                "intent": normalized_intent,
+                "scope": normalized_scope,
+                "target": normalized_target,
+                "amount": normalized_amount,
+                "expires_at": str(expires_at or ""),
+                "target_ids": sorted(target_ids),
+                "applied_playhead_seconds": round(self.playhead_seconds, 3),
+                "applied_at": time.time(),
+            }
+            self.operator_intents.append(intent_payload)
+            self._refresh_operator_intents_locked()
+            payload = self._show_plan_payload_locked()
+        self._persist_show_plan(payload)
+        return self.snapshot()
 
     def bind_track_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Resolve live track metadata into playback metadata and a show plan."""
@@ -382,13 +380,20 @@ class PlaybackContext:
             self.structure_markers = [
                 dict(marker) for marker in binding.get("structure_markers", self.structure_markers)
             ]
-            self.show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
+            self._base_show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
             self.selection_mode = _normalize_selection_mode(
                 binding.get("selection_mode", self.selection_mode)
             )
             self.selection_variance = _normalize_selection_variance(
                 binding.get("selection_variance", self.selection_variance)
             )
+            self.venue_mode = _normalize_venue_mode(
+                binding.get("venue_mode", self.venue_mode)
+            )
+            confidence = binding.get("metadata_confidence", self.metadata_confidence)
+            self.metadata_confidence = copy.deepcopy(confidence if isinstance(confidence, dict) else {})
+            intents = binding.get("operator_intents", self.operator_intents)
+            self.operator_intents = copy.deepcopy(intents if isinstance(intents, list) else [])
             self.metadata_source = _normalize_metadata_source(
                 binding.get("metadata_source", metadata.get("metadata_source", self.metadata_source))
             )
@@ -420,6 +425,7 @@ class PlaybackContext:
                 except (TypeError, ValueError):
                     pass
             self.server_time = time.time()
+            self._refresh_operator_intents_locked()
             self.transport_revision += 1
             payload = self._show_plan_payload_locked()
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 import photonic_synesthesia.ui.cli as cli_module
+from photonic_synesthesia.showplan import build_catalog_model_payload, build_semantic_profile
+from photonic_synesthesia.showplan.semantic_profile import metadata_confidence
 from photonic_synesthesia.integrations.show_catalog import (
     list_show_catalog_paths,
     load_show_catalog,
@@ -11,6 +13,51 @@ from photonic_synesthesia.integrations.show_catalog import (
 )
 from photonic_synesthesia.integrations.show_plans import save_show_plan
 from photonic_synesthesia.ui.cli import _load_precomputed_show_plan, cli
+
+
+def test_build_catalog_model_payload_returns_sections() -> None:
+    payload = build_catalog_model_payload(
+        track_key="artist|track",
+        track_title="Track",
+        track_artist="Artist",
+        duration_seconds=120.0,
+        structure_markers=[],
+        show_sections=[],
+        selection_mode="procedural",
+        selection_variance=0.0,
+        venue_mode="small_room_50_100",
+    )
+    assert "sections" in payload
+
+
+def test_showplan_build_semantic_profile_returns_expected_shape() -> None:
+    profile = build_semantic_profile(
+        track_title="Song",
+        track_artist="Artist",
+        duration_seconds=120.0,
+        structure_markers=[{"name": "Intro", "kind": "intro", "start_seconds": 0.0, "energy_hint": 5}],
+        rekordbox_average_bpm=122.0,
+        web_enrichment={"summary": {"genre_primary": "Progressive House"}, "confidence": {"overall": 0.9}},
+    )
+
+    assert profile["version"] == 1
+    assert profile["track_identity"]["tempo_band"] == "midtempo_club"
+    assert profile["genre_hints"] == ["Progressive House"]
+
+
+def test_showplan_metadata_confidence_prefers_rekordbox_match() -> None:
+    confidence = metadata_confidence(
+        structure_markers=[{"name": "Intro", "kind": "intro", "start_seconds": 0.0}],
+        metadata_source="rekordbox_export",
+        rekordbox_track_id="abc123",
+        rekordbox_average_bpm=122.0,
+        web_enrichment={"confidence": {"overall": 0.8}},
+        matched_rekordbox_track=True,
+    )
+
+    assert confidence["track_match_confidence"] == 0.96
+    assert confidence["beatgrid_confidence"] == 0.94
+    assert confidence["confidence_tier"] in {"strict", "beat_safe"}
 
 
 def test_show_catalog_round_trips(tmp_path, monkeypatch) -> None:
@@ -99,14 +146,47 @@ def test_catalog_build_command_writes_catalog_entries(tmp_path, monkeypatch) -> 
     assert catalog["track_key"] == "Artist - Song"
     assert catalog["duration_seconds"] == 123.4
     assert isinstance(catalog["show_sections"], list)
-    assert catalog["catalog_version"] == 4
+    assert catalog["catalog_version"] == 7
+    assert catalog["venue_mode"] == "small_room_50_100"
+    assert catalog["metadata_confidence"]["confidence_tier"] == "degraded"
+    assert catalog["metadata_confidence"]["source_precedence"] == [
+        "rekordbox_edited_markers",
+        "rekordbox_track_match",
+        "beatgrid_transport",
+        "audio_fallback",
+        "web_enrichment",
+    ]
     assert catalog["semantic_profile"]["version"] == 1
     assert catalog["semantic_profile"]["genre_hints"] == ["Progressive House"]
-    assert catalog["show_sections"][0]["cue_recipe"]["version"] == 1
+    assert catalog["show_sections"][0]["cue_recipe"]["version"] == 6
+    assert catalog["show_sections"][0]["section_role"] == "intro"
+    assert catalog["show_sections"][0]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["show_sections"][0]["fixture_capability_graph"]["laser"]["allowed_geometries"]["intro"]
+    assert catalog["show_sections"][0]["motif_ids"]
+    assert catalog["show_sections"][0]["cue_recipe"]["trigger_policy"]["confidence_tier"] == "degraded"
     assert catalog["web_enrichment"]["summary"]["genre_primary"] == "Progressive House"
+    assert catalog["motif_registry"]["current_motifs"]
+    assert catalog["show_fingerprint"]["hash"]
+    assert catalog["anti_template_validation"]["status"] in {"pass", "warn", "fail"}
+    assert "aggregate" in catalog["scorer_bundle"]
+    assert catalog["preview_artifacts"]["summary"]["section_stills"] >= 1
     assert catalog["model_payload"]["planner"]["genre_primary"] == "Progressive House"
     assert catalog["model_payload"]["planner"]["semantic_profile"]["genre_hints"] == ["Progressive House"]
+    assert catalog["model_payload"]["planner"]["venue_profile"]["mode"] == "small_room_50_100"
+    assert catalog["model_payload"]["planner"]["metadata_confidence"]["confidence_tier"] == "degraded"
+    assert catalog["model_payload"]["planner"]["motif_registry"]["current_motifs"]
+    assert catalog["model_payload"]["planner"]["show_fingerprint"]["hash"]
+    assert catalog["model_payload"]["planner"]["anti_template_validation"]["status"] in {"pass", "warn", "fail"}
+    assert "aggregate" in catalog["model_payload"]["planner"]["scorer_bundle"]
+    assert catalog["model_payload"]["planner"]["preview_artifacts"]["summary"]["section_stills"] >= 1
     assert isinstance(catalog["model_payload"]["sections"], list)
+    assert catalog["model_payload"]["sections"][0]["venue_mode"] == "small_room_50_100"
+    assert catalog["model_payload"]["sections"][0]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["model_payload"]["sections"][0]["fixture_capability_graph"]["laser"]["allowed_geometries"]["intro"]
+    assert catalog["model_payload"]["sections"][0]["recipe_bundle"]["cue_family_id"] == "small_room_50_100::intro::wash"
+    assert catalog["model_payload"]["sections"][0]["phaser_bundle"]
+    assert catalog["model_payload"]["sections"][0]["trigger_policy"]["confidence_tier"] == "degraded"
+    assert catalog["model_payload"]["sections"][0]["motif_ids"]
     assert catalog["model_payload"]["sections"][0]["candidates"]["laser"]
     assert catalog["model_payload"]["sections"][0]["current_selection"]["laser"]
 
@@ -238,6 +318,7 @@ def test_catalog_model_payload_includes_selected_patterns_in_candidates() -> Non
         track_seed="artist|song",
         selection_mode="procedural",
         selection_variance=0.2,
+        venue_mode="medium_room_150_400",
     )
 
     payload = cli_module._build_catalog_model_payload(
@@ -249,10 +330,16 @@ def test_catalog_model_payload_includes_selected_patterns_in_candidates() -> Non
         show_sections=show_sections,
         selection_mode="procedural",
         selection_variance=0.2,
+        venue_mode="medium_room_150_400",
         web_enrichment={"summary": {}},
     )
 
+    assert payload["track"]["venue_mode"] == "medium_room_150_400"
+    assert payload["planner"]["venue_profile"]["mode"] == "medium_room_150_400"
     for section in payload["sections"]:
+        assert section["venue_mode"] == "medium_room_150_400"
+        assert section["section_role"]
+        assert section["transition_intent"]["type"]
         for family in ("laser", "mover", "wash", "led"):
             current = section["current_selection"][family]
             if current:

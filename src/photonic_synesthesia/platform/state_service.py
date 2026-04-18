@@ -5,7 +5,7 @@ from __future__ import annotations
 from threading import Lock
 from typing import Any, cast
 
-from photonic_synesthesia.core.state import MusicStructure, PhotonicState
+from photonic_synesthesia.core.state import ControlState, MusicStructure, PhotonicState
 from photonic_synesthesia.platform.authority import ControlAuthorityService
 from photonic_synesthesia.platform.clock import PlatformClock, SystemClock
 from photonic_synesthesia.platform.commands import CommandReceipt, InMemoryCommandBus
@@ -231,7 +231,14 @@ class ControlPlaneStateService:
             self._safety_summary = safety_summary
             self._blackout_active = self._blackout_active or safety_summary.emergency_stop
             runtime_frames_seen = int(self._diagnostics.get("runtime_frames_seen", 0)) + 1
-            ilda_stats = dict((node_stats or {}).get("ilda_output", {}))
+            node_stats = node_stats or {}
+            ilda_stats = dict(node_stats.get("ilda_output", {}))
+            if (
+                "ether_dream_host" not in ilda_stats
+                and "ilda_transport" in node_stats
+                and isinstance(node_stats["ilda_transport"], dict)
+            ):
+                ilda_stats = {**ilda_stats, **dict(node_stats["ilda_transport"])}
             self._diagnostics = {
                 "runtime_source": source,
                 "runtime_frames_seen": runtime_frames_seen,
@@ -257,27 +264,85 @@ class ControlPlaneStateService:
         )
         return self.snapshot()
 
-    def _apply_command_effects(self, command: OperatorCommand) -> None:
+    def consume_control_snapshot_for_graph(self) -> ControlState:
+        """Return the current control state and consume one-shot launch/command state."""
+        commands = self.commands.drain()
+        if commands:
+            self._apply_command_batch_effects(commands)
         with self._lock:
-            if command.command_type == CommandType.ARM:
-                self._armed_live = True
-            elif command.command_type == CommandType.DISARM:
-                self._armed_live = False
-                self._blackout_active = True
-            elif command.command_type == CommandType.BLACKOUT:
-                self._blackout_active = True
-            elif command.command_type == CommandType.CLEAR_BLACKOUT:
-                if self._armed_live:
-                    self._blackout_active = False
-            elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
-                intensity = float(command.payload.get("intensity", self._global_intensity))
-                self._global_intensity = max(0.0, min(1.0, intensity))
-            elif command.command_type == CommandType.SET_GLOBAL_SPEED:
-                speed = float(command.payload.get("speed", self._global_speed))
-                self._global_speed = max(0.0, speed)
-            elif command.command_type == CommandType.LAUNCH_SCENE:
-                self._pending_scene_id = cast(str | None, command.payload.get("scene_id"))
-            elif command.command_type == CommandType.HOLD_SCENE:
-                self._scene_hold = cast(str | None, command.payload.get("scene_id"))
-            elif command.command_type == CommandType.RELEASE_SCENE_HOLD:
-                self._scene_hold = None
+            control_state: ControlState = {
+                "armed_live": self._armed_live,
+                "blackout_active": self._blackout_active,
+                "global_intensity": self._global_intensity,
+                "global_speed": self._global_speed,
+                "scene_hold": self._scene_hold,
+                "launched_scene": self._pending_scene_id,
+            }
+            self._pending_scene_id = None
+
+        return control_state
+
+    def _apply_command_batch_effects(self, commands: list[OperatorCommand]) -> None:
+        with self._lock:
+            armed_live = self._armed_live
+            blackout_active = self._blackout_active
+            global_intensity = self._global_intensity
+            global_speed = self._global_speed
+            scene_hold = self._scene_hold
+            pending_scene_id = self._pending_scene_id
+
+            should_blackout = False
+            should_disarm = False
+            should_clear_blackout = False
+
+            for command in commands:
+                if command.command_type == CommandType.ARM:
+                    armed_live = True
+                elif command.command_type == CommandType.DISARM:
+                    armed_live = False
+                    should_disarm = True
+                    should_blackout = True
+                elif command.command_type == CommandType.BLACKOUT:
+                    should_blackout = True
+                elif command.command_type == CommandType.CLEAR_BLACKOUT:
+                    should_clear_blackout = True
+                elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
+                    global_intensity = max(
+                        0.0,
+                        min(
+                            1.0,
+                            float(command.payload.get("intensity", global_intensity)),
+                        ),
+                    )
+                elif command.command_type == CommandType.SET_GLOBAL_SPEED:
+                    global_speed = max(
+                        0.0,
+                        float(command.payload.get("speed", global_speed)),
+                    )
+                elif command.command_type == CommandType.LAUNCH_SCENE:
+                    pending_scene_id = cast(str | None, command.payload.get("scene_id"))
+                elif command.command_type == CommandType.HOLD_SCENE:
+                    scene_hold = cast(str | None, command.payload.get("scene_id"))
+                elif command.command_type == CommandType.RELEASE_SCENE_HOLD:
+                    scene_hold = None
+
+            if should_disarm:
+                armed_live = False
+                blackout_active = True
+            else:
+                if should_blackout:
+                    blackout_active = True
+                elif should_clear_blackout and self._armed_live and not should_blackout:
+                    # Preserve legacy semantics: clear requests are ignored when system
+                    # is disarmed at graph ingestion time.
+                    blackout_active = False
+
+            self._armed_live = armed_live
+            self._blackout_active = blackout_active
+            self._global_intensity = global_intensity
+            self._global_speed = global_speed
+            self._pending_scene_id = pending_scene_id
+            self._scene_hold = scene_hold
+
+    def _apply_command_effects(self, command: OperatorCommand) -> None:
+        self._apply_command_batch_effects([command])

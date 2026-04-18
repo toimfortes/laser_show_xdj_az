@@ -732,6 +732,13 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     class PlaybackSelectionVarianceRequest(BaseModel):
         selection_variance: float
 
+    class PlaybackOperatorIntentRequest(BaseModel):
+        intent: str
+        scope: str = "track"
+        target: str = "all"
+        amount: float = 0.25
+        expires_at: str | None = None
+
     class PlaybackProDJLinkTrackRequest(BaseModel):
         title: str
         artist: str | None = None
@@ -900,6 +907,24 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=404, detail="No playback file is active")
         try:
             return playback_context.set_selection_variance(request.selection_variance)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/mock/playback/operator-intents")
+    async def apply_playback_operator_intent(
+        request: PlaybackOperatorIntentRequest,
+    ) -> dict[str, Any]:
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback file is active")
+        try:
+            return playback_context.apply_operator_intent(
+                intent=request.intent,
+                scope=request.scope,
+                target=request.target,
+                amount=request.amount,
+                expires_at=request.expires_at or "",
+            )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

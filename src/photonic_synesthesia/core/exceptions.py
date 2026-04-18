@@ -224,7 +224,7 @@ class SceneError(ConfigError):
 
 
 class GraphError(PhotonicError):
-    """Base exception for LangGraph-related errors."""
+    """Base exception for pipeline execution errors."""
 
     pass
 

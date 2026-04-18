@@ -1,15 +1,14 @@
 """
-LangGraph Builder for Photonic Synesthesia.
+Sequential Builder for Photonic Synesthesia.
 
-Constructs the main state machine graph that orchestrates all
+Constructs the main processing pipeline that orchestrates all
 sensor acquisition, analysis, and fixture control nodes.
 """
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
-
-from langgraph.graph import END, StateGraph
 
 from photonic_synesthesia.core.config import Settings
 from photonic_synesthesia.core.logging import get_logger
@@ -23,24 +22,42 @@ from photonic_synesthesia.graph.nodes import (
     FeatureExtractNode,
     FusionNode,
     ILDAOutputNode,
+    ILDADACOutputNode,
     InterpreterNode,
     LaserControlNode,
     MidiSenseNode,
     MovingHeadControlNode,
     PanelControlNode,
     SafetyInterlockNode,
+    SafetyMonitor,
     SceneSelectNode,
     StructureDetectNode,
+    LaserVectorInterlockNode,
 )
-from photonic_synesthesia.platform import CommandType, OperatorCommand
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
 
 
+class _SequentialPipeline:
+    """Simple deterministic node pipeline with single-pass execution."""
+
+    def __init__(self, node_names: list[str], nodes: dict[str, Any]):
+        self._node_names = node_names
+        self._nodes = nodes
+
+    def invoke(self, state: PhotonicState) -> PhotonicState:
+        current_state = state
+        for name in self._node_names:
+            node = self._nodes[name]
+            current_state = node(current_state)
+        return current_state
+
+
 class PhotonicGraph:
     """
-    Wrapper around the compiled LangGraph for the photonic synesthesia system.
+    Wrapper around the deterministic node pipeline for the photonic
+    synesthesia system.
 
     Provides methods for running the graph continuously and managing
     the sensor/output lifecycle.
@@ -48,17 +65,20 @@ class PhotonicGraph:
 
     def __init__(
         self,
-        graph: Any,  # Compiled StateGraph
+        graph: Any,  # Compiled sequential pipeline
         settings: Settings,
         nodes: dict[str, Any],
         control_plane_service: ControlPlaneStateService | None = None,
+        safety_monitor: SafetyMonitor | None = None,
     ):
         self.graph = graph
         self.settings = settings
         self.nodes = nodes
+        self.safety_monitor = safety_monitor
         self.control_plane_service = control_plane_service
         self._running = False
         self._state = create_initial_state()
+        self._state_lock = Lock()
         self.hybrid_pacing = settings.runtime_flags.hybrid_pacing
         self.dual_loop = settings.runtime_flags.dual_loop
 
@@ -78,8 +98,12 @@ class PhotonicGraph:
             self.nodes["dmx_output"].start()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "start"):
             self.nodes["ilda_output"].start()
+        if "ilda_transport" in self.nodes and hasattr(self.nodes["ilda_transport"], "start"):
+            self.nodes["ilda_transport"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
             self.nodes["safety_interlock"].start()
+        if self.safety_monitor is not None:
+            self.safety_monitor.start()
 
     def stop(self) -> None:
         """Stop all processing and clean up resources."""
@@ -93,8 +117,12 @@ class PhotonicGraph:
             self.nodes["midi_sense"].stop()
         if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "stop"):
             self.nodes["cv_sense"].stop()
+        if "ilda_transport" in self.nodes and hasattr(self.nodes["ilda_transport"], "stop"):
+            self.nodes["ilda_transport"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
+        if self.safety_monitor is not None:
+            self.safety_monitor.stop()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
             self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
@@ -102,68 +130,47 @@ class PhotonicGraph:
 
     def step(self) -> PhotonicState:
         """Execute one iteration of the graph."""
-        self._drain_control_commands()
-        self._state = self.graph.invoke(self._state)
-        if self.control_plane_service is not None:
-            node_stats = {
-                name: node.get_stats()
-                for name, node in self.nodes.items()
-                if hasattr(node, "get_stats")
-            }
-            self.control_plane_service.update_from_photonic_state(self._state, node_stats=node_stats)
-        return self._state
+        with self._state_lock:
+            self._sync_control_state()
+            self._sync_output_blackout_latches()
+            self._state = self.graph.invoke(self._state)
+            if self.control_plane_service is not None:
+                node_stats = {
+                    name: node.get_stats()
+                    for name, node in self.nodes.items()
+                    if hasattr(node, "get_stats")
+                }
+                self.control_plane_service.update_from_photonic_state(
+                    self._state,
+                    node_stats=node_stats,
+                )
+            return self._state
 
-    def _drain_control_commands(self) -> None:
+    def _sync_control_state(self) -> None:
         if self.control_plane_service is None:
             return
-        for command in self.control_plane_service.commands.drain():
-            self._apply_control_command(command)
+        self._state["control_state"].update(
+            self.control_plane_service.consume_control_snapshot_for_graph(),
+        )
 
-    def _apply_control_command(self, command: OperatorCommand) -> None:
+    def _sync_output_blackout_latches(self) -> None:
         control_state = self._state["control_state"]
+        safety_state = self._state["safety_state"]
+        should_blackout = bool(
+            not control_state["armed_live"]
+            or control_state["blackout_active"]
+            or safety_state["emergency_stop"]
+        )
 
-        if command.command_type == CommandType.ARM:
-            control_state["armed_live"] = True
-        elif command.command_type == CommandType.DISARM:
-            control_state["armed_live"] = False
-            control_state["blackout_active"] = True
-            self._request_blackout()
-        elif command.command_type == CommandType.BLACKOUT:
-            control_state["blackout_active"] = True
-            self._request_blackout()
-        elif command.command_type == CommandType.CLEAR_BLACKOUT:
-            if control_state["armed_live"]:
-                control_state["blackout_active"] = False
-                self._clear_blackout()
-        elif command.command_type == CommandType.SET_GLOBAL_INTENSITY:
-            intensity = float(command.payload.get("intensity", control_state["global_intensity"]))
-            control_state["global_intensity"] = max(0.0, min(1.0, intensity))
-        elif command.command_type == CommandType.SET_GLOBAL_SPEED:
-            speed = float(command.payload.get("speed", control_state["global_speed"]))
-            control_state["global_speed"] = max(0.1, speed)
-        elif command.command_type == CommandType.LAUNCH_SCENE:
-            control_state["launched_scene"] = str(command.payload.get("scene_id", "idle"))
-        elif command.command_type == CommandType.HOLD_SCENE:
-            scene_id = command.payload.get("scene_id") or self._state["scene_state"]["current_scene"]
-            control_state["scene_hold"] = str(scene_id)
-        elif command.command_type == CommandType.RELEASE_SCENE_HOLD:
-            control_state["scene_hold"] = None
-
-    def _request_blackout(self) -> None:
-        dmx_output = self.nodes.get("dmx_output")
-        if dmx_output is not None and hasattr(dmx_output, "request_blackout"):
-            dmx_output.request_blackout()
-        ilda_output = self.nodes.get("ilda_output")
-        if ilda_output is not None and hasattr(ilda_output, "request_blackout"):
-            ilda_output.request_blackout()
-
-    def _clear_blackout(self) -> None:
-        dmx_output = self.nodes.get("dmx_output")
-        if dmx_output is not None and hasattr(dmx_output, "clear_blackout_request"):
-            dmx_output.clear_blackout_request()
-        ilda_output = self.nodes.get("ilda_output")
-        if ilda_output is not None and hasattr(ilda_output, "clear_blackout_request"):
-            ilda_output.clear_blackout_request()
+        for output_name in ("dmx_output", "ilda_output", "ilda_transport"):
+            output = self.nodes.get(output_name)
+            if output is None:
+                continue
+            if should_blackout:
+                if hasattr(output, "request_blackout"):
+                    output.request_blackout()
+            elif hasattr(output, "clear_blackout_request"):
+                output.clear_blackout_request()
 
     def run_loop(self, target_fps: float = 50.0) -> None:
         """Run the graph in a continuous loop at target FPS."""
@@ -221,7 +228,8 @@ class PhotonicGraph:
     @property
     def state(self) -> PhotonicState:
         """Get current state."""
-        return self._state
+        with self._state_lock:
+            return self._state
 
 
 def build_photonic_graph(
@@ -300,70 +308,60 @@ def build_photonic_graph(
         settings.safety.laser,
         fixtures_dir=settings.fixtures_dir,
     )
+    nodes["ilda_transport"] = ILDADACOutputNode(
+        settings.ilda,
+        settings.safety.laser,
+        settings.fixtures,
+    )
 
     # Safety node
     nodes["safety_interlock"] = SafetyInterlockNode(
         settings.safety,
         settings.fixtures,
         dmx_output=nodes["dmx_output"],
+        ilda_output=nodes["ilda_transport"],
     )
+    safety_monitor = SafetyMonitor(
+        dmx_output=nodes["dmx_output"],
+        ilda_output=nodes["ilda_transport"],
+        check_interval=0.1,
+        max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
+    )
+    nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
 
     if node_overrides:
         nodes.update(node_overrides)
 
-    # Build graph
-    graph = StateGraph(PhotonicState)
-
-    # Add all nodes
-    for name, node in nodes.items():
-        graph.add_node(name, node)
-
-    # Define edges
-    # Entry point: audio capture
-    graph.set_entry_point("audio_sense")
-
-    # Deterministic single-writer flow:
-    # LangGraph merge semantics reject concurrent writes to scalar keys
-    # (e.g. `timestamp`) unless reducers are explicitly configured.
-    # Keep one path per step so each key has a single writer.
-    graph.add_edge("audio_sense", "feature_extract")
-    graph.add_edge("feature_extract", "beat_track")
-    graph.add_edge("beat_track", "structure_detect")
-    graph.add_edge("structure_detect", "midi_sense")
-    graph.add_edge("midi_sense", "cv_sense")
-    graph.add_edge("cv_sense", "fusion")
-
-    # Scene selection after fusion
-    graph.add_edge("fusion", "director_intent")
-    graph.add_edge("director_intent", "scene_select")
-
-    # Fixture control (sequential for the same reason as above)
-    graph.add_edge("scene_select", "laser_control")
-    graph.add_edge("laser_control", "moving_head_control")
-    graph.add_edge("moving_head_control", "panel_control")
-    graph.add_edge("panel_control", "interpreter")
-
-    # Safety check BEFORE committing to DMX universe
-    graph.add_edge("interpreter", "safety_interlock")
-
-    # ILDA frame generation shares the same semantic state but not the DMX universe.
-    graph.add_edge("safety_interlock", "ilda_output")
-
-    # DMX output after safety has validated/clamped commands
-    graph.add_edge("ilda_output", "dmx_output")
-
-    # Loop back for continuous operation
-    # Note: In practice, we use run_loop() which handles the iteration
-    graph.add_edge("dmx_output", END)
-
-    # Compile
-    compiled = graph.compile()
+    pipeline = _SequentialPipeline(
+        node_names=[
+            "audio_sense",
+            "feature_extract",
+            "beat_track",
+            "structure_detect",
+            "midi_sense",
+            "cv_sense",
+            "fusion",
+            "director_intent",
+            "scene_select",
+            "laser_control",
+            "moving_head_control",
+            "panel_control",
+            "interpreter",
+            "safety_interlock",
+            "ilda_output",
+            "laser_vector_interlock",
+            "ilda_transport",
+            "dmx_output",
+        ],
+        nodes=nodes,
+    )
 
     return PhotonicGraph(
-        compiled,
+        pipeline,
         settings,
         nodes,
         control_plane_service=control_plane_service,
+        safety_monitor=safety_monitor,
     )
 
 
@@ -395,21 +393,24 @@ def build_minimal_graph(
             dmx_output=dmx_output,
         ),
     }
+    safety_monitor = SafetyMonitor(
+        dmx_output=dmx_output,
+        check_interval=0.1,
+        max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
+    )
 
-    graph = StateGraph(PhotonicState)
-
-    for name, node in nodes.items():
-        graph.add_node(name, node)
-
-    graph.set_entry_point("audio_sense")
-    graph.add_edge("audio_sense", "safety_interlock")
-    graph.add_edge("safety_interlock", "dmx_output")
-    graph.add_edge("dmx_output", END)
-
-    compiled = graph.compile()
+    pipeline = _SequentialPipeline(
+        node_names=[
+            "audio_sense",
+            "safety_interlock",
+            "dmx_output",
+        ],
+        nodes=nodes,
+    )
     return PhotonicGraph(
-        compiled,
+        pipeline,
         settings,
         nodes,
         control_plane_service=control_plane_service,
+        safety_monitor=safety_monitor,
     )

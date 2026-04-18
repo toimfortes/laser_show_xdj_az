@@ -1,7 +1,7 @@
 """
 Photonic Synesthesia: AI-Driven Laser Show Controller for XDJ-AZ
 
-An autonomous lighting control system that uses LangGraph for orchestration,
+An autonomous lighting control system built on a deterministic stage pipeline,
 combining real-time audio analysis, MIDI telemetry, and computer vision
 to create structure-aware, music-reactive light shows.
 """

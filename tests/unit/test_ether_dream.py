@@ -8,7 +8,9 @@ from photonic_synesthesia.laser.ether_dream import (
     EtherDreamStatus,
     pack_begin_command,
     pack_dac_point,
+    pack_clear_emergency_command,
     pack_ping_command,
+    pack_emergency_stop_command,
     pack_prepare_command,
     pack_stop_command,
     pack_write_data_command,
@@ -18,6 +20,8 @@ from photonic_synesthesia.laser.ether_dream import (
 
 def test_ether_dream_command_packets_have_expected_shapes() -> None:
     assert pack_prepare_command() == b"p"
+    assert pack_emergency_stop_command() == b"\x00"
+    assert pack_clear_emergency_command() == b"c"
     assert pack_stop_command() == b"s"
     begin = pack_begin_command(low_water_mark=123, point_rate=30000)
     assert begin[0] == 0x62
@@ -202,3 +206,38 @@ def test_ether_dream_client_restarts_stream_when_point_rate_changes() -> None:
     assert sent[2] == pack_begin_command(low_water_mark=12, point_rate=24000)
     assert sent[3] == pack_stop_command()
     assert sent[6] == pack_begin_command(low_water_mark=12, point_rate=12000)
+
+
+def test_ether_dream_client_issues_emergency_and_clear_commands() -> None:
+    client = EtherDreamClient.__new__(EtherDreamClient)
+    client.host = "127.0.0.1"
+    client.port = 7765
+    client.timeout_s = 1.0
+    client.low_water_mark = 12
+    client._socket = object()
+    client._prepared = True
+    client._playing = True
+    client._current_point_rate = 24000
+
+    sent: list[bytes] = []
+    statuses = [
+        (_ACK, 0x00, EtherDreamStatus(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+        (_ACK, 0x63, EtherDreamStatus(1, 0, 0, 0, 0, 0, 0, 0, 0, 0)),
+    ]
+
+    def fake_send(payload: bytes, *, expected_command: int) -> tuple[int, int, EtherDreamStatus]:
+        sent.append(payload)
+        response = statuses.pop(0)
+        assert response[1] == expected_command
+        return response
+
+    client.connect = lambda: None
+    client._send = fake_send
+
+    client.emergency_stop()
+    client.clear_emergency_stop()
+
+    assert sent[0] == pack_emergency_stop_command()
+    assert sent[1] == pack_clear_emergency_command()
+    assert not client._prepared
+    assert not client._playing

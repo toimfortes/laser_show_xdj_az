@@ -37,6 +37,14 @@ def pack_stop_command() -> bytes:
     return b"s"
 
 
+def pack_emergency_stop_command() -> bytes:
+    return b"\x00"
+
+
+def pack_clear_emergency_command() -> bytes:
+    return b"c"
+
+
 def pack_begin_command(*, low_water_mark: int, point_rate: int) -> bytes:
     return struct.pack("<BHI", 0x62, max(0, min(65535, low_water_mark)), max(1, point_rate))
 
@@ -146,6 +154,23 @@ class EtherDreamClient:
         self._prepared = False
         self._playing = False
         self._current_point_rate = None
+
+    def emergency_stop(self) -> None:
+        self.connect()
+        # Emergency stop enters E-stop state even if playback/state is inconsistent.
+        self._send(pack_emergency_stop_command(), expected_command=0x00)
+        self._prepared = False
+        self._playing = False
+        self._current_point_rate = None
+
+    def clear_emergency_stop(self) -> None:
+        if self._socket is None:
+            return
+        # Clear E-Stop if active; if not active this is a no-op at protocol level.
+        try:
+            self._send(pack_clear_emergency_command(), expected_command=0x63)
+        except OSError:
+            pass
 
     def ping(self) -> EtherDreamStatus:
         self.connect()

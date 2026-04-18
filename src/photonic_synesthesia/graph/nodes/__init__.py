@@ -24,10 +24,18 @@ _NODE_IMPORTS = {
     "CVSenseNode": ("photonic_synesthesia.graph.nodes.cv_sense", "CVSenseNode"),
     "FusionNode": ("photonic_synesthesia.graph.nodes.fusion", "FusionNode"),
     "DirectorIntentNode": (
-        "photonic_synesthesia.graph.nodes.director_intent",
+        "photonic_synesthesia.graph.nodes.director_intent", 
         "DirectorIntentNode",
     ),
     "ILDAOutputNode": ("photonic_synesthesia.graph.nodes.ilda_output", "ILDAOutputNode"),
+    "ILDADACOutputNode": (
+        "photonic_synesthesia.graph.nodes.ilda_output",
+        "ILDADACOutputNode",
+    ),
+    "LaserVectorInterlockNode": (
+        "photonic_synesthesia.graph.nodes.laser_vector_interlock",
+        "LaserVectorInterlockNode",
+    ),
     "SceneSelectNode": ("photonic_synesthesia.graph.nodes.scene_select", "SceneSelectNode"),
     "LaserControlNode": ("photonic_synesthesia.graph.nodes.fixture_control", "LaserControlNode"),
     "MovingHeadControlNode": (
@@ -40,6 +48,10 @@ _NODE_IMPORTS = {
     "SafetyInterlockNode": (
         "photonic_synesthesia.graph.nodes.safety_interlock",
         "SafetyInterlockNode",
+    ),
+    "SafetyMonitor": (
+        "photonic_synesthesia.graph.nodes.safety_interlock",
+        "SafetyMonitor",
     ),
 }
 

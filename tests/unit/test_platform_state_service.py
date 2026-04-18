@@ -67,6 +67,43 @@ def test_state_service_accept_command_applies_effects() -> None:
     assert snapshot.pending_scene_id == "intro_ambient"
 
 
+def test_state_service_consumes_command_batch_before_graph_step() -> None:
+    service = ControlPlaneStateService()
+
+    service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.ARM,
+        )
+    )
+    assert service.snapshot().armed_live is True
+
+    service.commands.publish(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.CLEAR_BLACKOUT,
+        )
+    )
+    service.commands.publish(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.DISARM,
+        )
+    )
+
+    control_state = service.consume_control_snapshot_for_graph()
+
+    assert control_state["armed_live"] is False
+    assert control_state["blackout_active"] is True
+    assert service.commands.backlog() == 0
+
+
 def test_initial_state_starts_disarmed() -> None:
     state = create_initial_state()
 

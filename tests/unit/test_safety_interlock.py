@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import threading
 
 from photonic_synesthesia.core.config import (
     FixtureConfig,
@@ -10,7 +11,7 @@ from photonic_synesthesia.core.config import (
 )
 from photonic_synesthesia.core.state import FixtureCommand, create_initial_state
 from photonic_synesthesia.dmx.universe import create_universe_buffer
-from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNode
+from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNode, SafetyMonitor
 
 
 class _DMXBlackoutProbe:
@@ -28,6 +29,41 @@ class _DMXBlackoutRequestProbe(_DMXBlackoutProbe):
 
     def request_blackout(self) -> None:
         self.requested += 1
+
+
+class _EmergencyBlackoutProbe(_DMXBlackoutProbe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.emergency = 0
+
+    def emergency_blackout(self) -> None:
+        self.emergency += 1
+
+
+class _FrameCounterProbe:
+    def __init__(self, running: bool = True, fixture_count: int = 1) -> None:
+        self.running = running
+        self.fixture_count = fixture_count
+        self.frames_sent = 0
+        self.blackouts = 0
+        self.requests = 0
+        self.emergency = 0
+
+    def get_stats(self) -> dict[str, int | float | bool | str | None]:
+        return {
+            "running": self.running,
+            "fixture_count": self.fixture_count,
+            "frames_sent": self.frames_sent,
+        }
+
+    def blackout(self) -> None:
+        self.blackouts += 1
+
+    def request_blackout(self) -> None:
+        self.requests += 1
+
+    def emergency_blackout(self) -> None:
+        self.emergency += 1
 
 
 def test_safety_interlock_uses_configured_laser_offsets() -> None:
@@ -96,6 +132,24 @@ def test_heartbeat_watchdog_prefers_request_blackout_when_available() -> None:
 
     assert dmx_probe.requested >= 1
     assert dmx_probe.blackouts == 0
+
+
+def test_heartbeat_watchdog_triggers_all_outputs_when_available() -> None:
+    safety = SafetyConfig(heartbeat_timeout_s=0.05)
+    dmx_probe = _DMXBlackoutRequestProbe()
+    ilda_probe = _EmergencyBlackoutProbe()
+    node = SafetyInterlockNode(config=safety, fixtures=[], dmx_output=dmx_probe, ilda_output=ilda_probe)
+
+    node.start()
+    deadline = time.monotonic() + 0.5
+    try:
+        while (dmx_probe.requested == 0 and ilda_probe.emergency == 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        node.stop()
+
+    assert dmx_probe.requested >= 1
+    assert ilda_probe.emergency >= 1
 
 
 def test_strobe_duration_limit_enters_cooldown_and_suppresses_strobe_channels() -> None:
@@ -202,3 +256,85 @@ def test_graceful_degradation_keeps_laser_mode_channel_unchanged() -> None:
 
     assert result["fixture_commands"][0]["channel_values"][1] == 200
     assert result["fixture_commands"][0]["channel_values"][7] == 62
+
+
+def test_safety_monitor_triggers_blackout_on_stalled_dmx_output() -> None:
+    dmx_output = _FrameCounterProbe()
+    monitor = SafetyMonitor(dmx_output=dmx_output, check_interval=0.02, max_silence=0.08)
+
+    monitor.start()
+    try:
+        deadline = time.monotonic() + 0.5
+        while dmx_output.blackouts == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        monitor.stop()
+
+    assert dmx_output.blackouts >= 1 or dmx_output.emergency >= 1 or dmx_output.requests >= 1
+
+
+def test_safety_monitor_blackout_applies_to_all_outputs_on_stall() -> None:
+    dmx_output = _FrameCounterProbe()
+    ilda_output = _FrameCounterProbe()
+    monitor = SafetyMonitor(
+        dmx_output=dmx_output,
+        ilda_output=ilda_output,
+        check_interval=0.02,
+        max_silence=0.08,
+    )
+
+    running = True
+
+    def bump_dmx() -> None:
+        while running:
+            time.sleep(0.02)
+            dmx_output.frames_sent += 1
+
+    thread = None
+    try:
+        thread = threading.Thread(target=bump_dmx, daemon=True)
+        thread.start()
+
+        monitor.start()
+        deadline = time.monotonic() + 0.5
+        while (
+            dmx_output.blackouts == 0
+            and dmx_output.emergency == 0
+            and dmx_output.requests == 0
+            and ilda_output.blackouts == 0
+            and ilda_output.emergency == 0
+            and ilda_output.requests == 0
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+    finally:
+        running = False
+        if thread is not None:
+            thread.join(timeout=0.2)
+        monitor.stop()
+
+    assert (
+        dmx_output.blackouts >= 1
+        or dmx_output.emergency >= 1
+        or dmx_output.requests >= 1
+    )
+    assert (
+        ilda_output.blackouts >= 1
+        or ilda_output.emergency >= 1
+        or ilda_output.requests >= 1
+    )
+
+
+def test_safety_monitor_skips_inactive_output() -> None:
+    probe = _FrameCounterProbe(running=False, fixture_count=0)
+    monitor = SafetyMonitor(dmx_output=probe, check_interval=0.02, max_silence=0.05)
+
+    monitor.start()
+    try:
+        time.sleep(0.2)
+    finally:
+        monitor.stop()
+
+    assert probe.blackouts == 0
+    assert probe.emergency == 0
+    assert probe.requests == 0
