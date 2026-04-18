@@ -30,6 +30,7 @@ from photonic_synesthesia.graph.nodes import (
     MovingHeadControlNode,
     PanelControlNode,
     SafetyInterlockNode,
+    SafetyMonitor,
     SceneSelectNode,
     StructureDetectNode,
     LaserVectorInterlockNode,
@@ -84,6 +85,8 @@ class PhotonicGraph:
             self.nodes["ilda_transport"].start()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "start"):
             self.nodes["safety_interlock"].start()
+        if "safety_monitor" in self.nodes and hasattr(self.nodes["safety_monitor"], "start"):
+            self.nodes["safety_monitor"].start()
 
     def stop(self) -> None:
         """Stop all processing and clean up resources."""
@@ -101,6 +104,8 @@ class PhotonicGraph:
             self.nodes["ilda_transport"].stop()
         if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
             self.nodes["safety_interlock"].stop()
+        if "safety_monitor" in self.nodes and hasattr(self.nodes["safety_monitor"], "stop"):
+            self.nodes["safety_monitor"].stop()
         if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
             self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
@@ -325,6 +330,12 @@ def build_photonic_graph(
         dmx_output=nodes["dmx_output"],
         ilda_output=nodes["ilda_transport"],
     )
+    nodes["safety_monitor"] = SafetyMonitor(
+        dmx_output=nodes["dmx_output"],
+        ilda_output=nodes["ilda_transport"],
+        check_interval=0.1,
+        max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
+    )
     nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
 
     if node_overrides:
@@ -418,6 +429,11 @@ def build_minimal_graph(
             settings.safety,
             settings.fixtures,
             dmx_output=dmx_output,
+        ),
+        "safety_monitor": SafetyMonitor(
+            dmx_output=dmx_output,
+            check_interval=0.1,
+            max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
         ),
     }
 

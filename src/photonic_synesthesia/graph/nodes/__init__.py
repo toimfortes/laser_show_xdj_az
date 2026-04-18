@@ -49,6 +49,10 @@ _NODE_IMPORTS = {
         "photonic_synesthesia.graph.nodes.safety_interlock",
         "SafetyInterlockNode",
     ),
+    "SafetyMonitor": (
+        "photonic_synesthesia.graph.nodes.safety_interlock",
+        "SafetyMonitor",
+    ),
 }
 
 
