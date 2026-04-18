@@ -1,11 +1,44 @@
 import photonic_synesthesia.ui.cli as cli_module
-from photonic_synesthesia.showplan import build_cue_recipe
+from photonic_synesthesia.showplan import (
+    anti_template_validation,
+    build_cue_recipe,
+    select_section_patterns,
+)
 from photonic_synesthesia.ui.cli import (
     _LASER_PATTERN_POOLS,
     _default_show_sections,
     _resolve_show_sections,
     _transition_context,
 )
+
+
+def test_anti_template_validation_returns_status() -> None:
+    result = anti_template_validation(
+        track_key="artist|track",
+        show_sections=[],
+        semantic_profile=None,
+        recent_catalog_entries=[],
+    )
+    assert "status" in result
+
+
+def test_select_section_patterns_returns_all_families() -> None:
+    result = select_section_patterns(
+        kind="drop",
+        context="drop_launch",
+        profile={},
+        track_seed="fixture",
+        marker_name="Drop A",
+        ordinal=0,
+        previous_patterns={"laser": None, "mover": None, "wash": None, "led": None},
+        pattern_history=None,
+        usage_count_by_family=None,
+        semantic_profile=None,
+        selection_mode="procedural",
+        energy_scale=1.0,
+        selection_variance=0.0,
+    )
+    assert set(result) == {"laser", "mover", "wash", "led"}
 
 
 def test_build_cue_recipe_returns_expected_version() -> None:

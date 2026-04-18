@@ -884,142 +884,15 @@ def _decorate_show_sections_with_motifs(show_sections: list[dict[str, Any]]) -> 
     return show_sections
 
 
-def _show_fingerprint(show_sections: list[dict[str, Any]]) -> dict[str, Any]:
-    section_roles = [str(section.get("section_role") or "") for section in show_sections]
-    lead_families = [str(section.get("lead_family") or "") for section in show_sections]
-    transition_types = [
-        str(section.get("transition_intent", {}).get("type") or "")
-        for section in show_sections
-    ]
-    motif_ids = [
-        motif_id
-        for section in show_sections
-        for motif_id in list(section.get("motif_ids") or [])
-    ]
-    palette_trajectory = [
-        str(section.get("laser_expression", {}).get("color_mode") or section.get("wash_pattern") or "")
-        for section in show_sections
-    ]
-    laser_families = [
-        str(section.get("laser_expression", {}).get("geometry_family") or "")
-        for section in show_sections
-        if section.get("laser_enabled")
-    ]
-    strobe_total = round(sum(float(section.get("strobe_level") or 0.0) for section in show_sections), 3)
-    density_curve = [
-        round(
-            _clamp(
-                (
-                    float(section.get("intensity_multiplier") or 0.0)
-                    + float(section.get("motion_multiplier") or 0.0)
-                    + float(section.get("strobe_level") or 0.0)
-                )
-                / 3.0,
-                0.0,
-                1.5,
-            ),
-            3,
-        )
-        for section in show_sections
-    ]
-    motif_counts: dict[str, int] = {}
-    for motif_id in motif_ids:
-        motif_counts[motif_id] = motif_counts.get(motif_id, 0) + 1
-    laser_family_counts: dict[str, int] = {}
-    for family in laser_families:
-        laser_family_counts[family] = laser_family_counts.get(family, 0) + 1
-    payload = {
-        "version": 1,
-        "section_roles": section_roles,
-        "lead_families": lead_families,
-        "transition_types": transition_types,
-        "motif_ids": motif_ids,
-        "motif_counts": motif_counts,
-        "palette_trajectory": palette_trajectory,
-        "laser_families": laser_families,
-        "laser_family_counts": laser_family_counts,
-        "strobe_total": strobe_total,
-        "density_curve": density_curve,
-    }
-    payload["hash"] = sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:12]
-    return payload
-
-
-def _sequence_similarity(left: list[str], right: list[str]) -> float:
-    if not left and not right:
-        return 0.0
-    if not left or not right:
-        return 1.0 if left == right else 0.0
-    length = max(len(left), len(right), 1)
-    matches = sum(
-        1
-        for index in range(length)
-        if (left[index] if index < len(left) else "") == (right[index] if index < len(right) else "")
-    )
-    return round(matches / length, 3)
-
-
-def _set_similarity(current: dict[str, Any], previous: dict[str, Any]) -> float:
-    section_role_similarity = _sequence_similarity(
-        list(current.get("section_roles") or []),
-        list(previous.get("section_roles") or []),
-    )
-    lead_similarity = _sequence_similarity(
-        list(current.get("lead_families") or []),
-        list(previous.get("lead_families") or []),
-    )
-    transition_similarity = _sequence_similarity(
-        list(current.get("transition_types") or []),
-        list(previous.get("transition_types") or []),
-    )
-    current_motif_sequence = list(current.get("motif_ids") or [])
-    previous_motif_sequence = list(previous.get("motif_ids") or [])
-    motif_sequence_similarity = _sequence_similarity(current_motif_sequence, previous_motif_sequence)
-    current_motif_counts = {str(key): int(value) for key, value in dict(current.get("motif_counts") or {}).items()}
-    previous_motif_counts = {str(key): int(value) for key, value in dict(previous.get("motif_counts") or {}).items()}
-    motif_keys = set(current_motif_counts) | set(previous_motif_counts)
-    motif_similarity = (
-        sum(min(current_motif_counts.get(key, 0), previous_motif_counts.get(key, 0)) for key in motif_keys)
-        / max(1, sum(max(current_motif_counts.get(key, 0), previous_motif_counts.get(key, 0)) for key in motif_keys))
-        if motif_keys
-        else 0.0
-    )
-    current_laser_sequence = list(current.get("laser_families") or [])
-    previous_laser_sequence = list(previous.get("laser_families") or [])
-    laser_sequence_similarity = _sequence_similarity(current_laser_sequence, previous_laser_sequence)
-    current_laser_counts = {str(key): int(value) for key, value in dict(current.get("laser_family_counts") or {}).items()}
-    previous_laser_counts = {str(key): int(value) for key, value in dict(previous.get("laser_family_counts") or {}).items()}
-    laser_keys = set(current_laser_counts) | set(previous_laser_counts)
-    laser_similarity = (
-        sum(min(current_laser_counts.get(key, 0), previous_laser_counts.get(key, 0)) for key in laser_keys)
-        / max(1, sum(max(current_laser_counts.get(key, 0), previous_laser_counts.get(key, 0)) for key in laser_keys))
-        if laser_keys
-        else 0.0
-    )
-    current_density = list(current.get("density_curve") or [])
-    previous_density = list(previous.get("density_curve") or [])
-    density_similarity = 1.0 - min(
-        1.0,
-        abs(sum(current_density) - sum(previous_density)) / max(0.001, sum(current_density) + sum(previous_density) + 0.001),
-    )
-    strobe_similarity = 1.0 - min(
-        1.0,
-        abs(float(current.get("strobe_total") or 0.0) - float(previous.get("strobe_total") or 0.0)),
-    )
-    return round(
-        (
-            section_role_similarity * 0.2
-            + lead_similarity * 0.22
-            + transition_similarity * 0.16
-            + motif_similarity * 0.12
-            + motif_sequence_similarity * 0.08
-            + laser_similarity * 0.08
-            + laser_sequence_similarity * 0.04
-            + density_similarity * 0.05
-            + strobe_similarity * 0.05
-        ),
-        3,
-    )
+from photonic_synesthesia.showplan.selection import (
+    select_section_patterns as _showplan_select_section_patterns,
+)
+from photonic_synesthesia.showplan.validation import (
+    anti_template_validation as _showplan_anti_template_validation,
+    sequence_similarity as _sequence_similarity,
+    set_similarity as _set_similarity,
+    show_fingerprint as _show_fingerprint,
+)
 
 
 def _recent_catalog_entries(current_track_key: str, limit: int = 4) -> list[dict[str, Any]]:
@@ -1049,46 +922,13 @@ def _anti_template_validation(
     semantic_profile: dict[str, Any] | None,
     recent_catalog_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    current_fingerprint = _show_fingerprint(show_sections)
-    recent_entries = list(recent_catalog_entries or _recent_catalog_entries(track_key))
-    nearest_tracks: list[dict[str, Any]] = []
-    reused_motifs: set[str] = set()
-    for payload in recent_entries:
-        fingerprint = payload.get("show_fingerprint")
-        if not isinstance(fingerprint, dict):
-            fingerprint = _show_fingerprint([dict(section) for section in payload.get("show_sections", [])])
-        similarity = _set_similarity(current_fingerprint, fingerprint)
-        reused_motifs.update(set(current_fingerprint.get("motif_ids") or []) & set(fingerprint.get("motif_ids") or []))
-        nearest_tracks.append(
-            {
-                "track_key": str(payload.get("track_key") or ""),
-                "similarity": similarity,
-                "fingerprint_hash": str(fingerprint.get("hash") or ""),
-            }
-        )
-    nearest_tracks.sort(key=lambda item: float(item["similarity"]), reverse=True)
-    mean_similarity = round(
-        sum(float(item["similarity"]) for item in nearest_tracks) / len(nearest_tracks),
-        3,
-    ) if nearest_tracks else 0.0
-    max_similarity = round(max((float(item["similarity"]) for item in nearest_tracks), default=0.0), 3)
-    status = "pass"
-    if max_similarity > 0.75 or mean_similarity > 0.7:
-        status = "fail"
-    elif max_similarity > 0.6 or mean_similarity > 0.55:
-        status = "warn"
-    genre_hints = list((semantic_profile or {}).get("genre_hints") or [])
-    return {
-        "version": 1,
-        "status": status,
-        "window": len(nearest_tracks),
-        "mean_similarity": mean_similarity,
-        "max_similarity": max_similarity,
-        "nearest_tracks": nearest_tracks[:4],
-        "reused_motifs": sorted(reused_motifs),
-        "genre_hints": genre_hints,
-        "show_fingerprint_hash": str(current_fingerprint.get("hash") or ""),
-    }
+    resolved_recent = list(recent_catalog_entries or _recent_catalog_entries(track_key))
+    return _showplan_anti_template_validation(
+        track_key=track_key,
+        show_sections=show_sections,
+        semantic_profile=semantic_profile,
+        recent_catalog_entries=resolved_recent,
+    )
 
 
 def _motif_registry(
@@ -2510,55 +2350,26 @@ def _select_section_patterns(
     energy_scale: float,
     selection_variance: float,
 ) -> dict[str, str]:
-    normalized_mode = _normalize_selection_mode(selection_mode)
-    selection_variance = _normalize_selection_variance(selection_variance)
-    resolved: dict[str, str] = {}
-    ollama_choices: dict[str, str] | None = None
-    family_candidates = {
-        family: set(_pattern_candidates(family=family, kind=kind, context=context, profile=profile))
-        for family in ("laser", "mover", "wash", "led")
-    }
-    if normalized_mode == "local_ollama_cpu":
-        ollama_choices = _ollama_section_selection(
-            kind=kind,
-            context=context,
-            profile=profile,
-            track_seed=track_seed,
-            marker_name=marker_name,
-            ordinal=ordinal,
-            energy_scale=energy_scale,
-            previous_patterns=previous_patterns,
-            pattern_history=pattern_history,
-            usage_count_by_family=usage_count_by_family,
-            semantic_profile=semantic_profile,
-            selection_variance=selection_variance,
-        )
-    for family in ("laser", "mover", "wash", "led"):
-        if (
-            ollama_choices
-            and ollama_choices.get(family)
-            and ollama_choices[family] in family_candidates[family]
-        ):
-            resolved[family] = ollama_choices[family]
-            continue
-        fallback_mode = "procedural" if normalized_mode == "local_ollama_cpu" else normalized_mode
-        resolved[family] = _select_pattern(
-            family=family,
-            kind=kind,
-            context=context,
-            profile=profile,
-            track_seed=track_seed,
-            marker_name=marker_name,
-            ordinal=ordinal,
-            previous_pattern=previous_patterns.get(family),
-            recent_patterns=(pattern_history or {}).get(family, [])[-4:],
-            usage_count_by_pattern=(usage_count_by_family or {}).get(family, {}),
-            semantic_profile=semantic_profile,
-            selection_mode=fallback_mode,
-            energy_scale=energy_scale,
-            selection_variance=selection_variance,
-        )
-    return resolved
+    return _showplan_select_section_patterns(
+        kind=kind,
+        context=context,
+        profile=profile,
+        track_seed=track_seed,
+        marker_name=marker_name,
+        ordinal=ordinal,
+        previous_patterns=previous_patterns,
+        pattern_history=pattern_history,
+        usage_count_by_family=usage_count_by_family,
+        semantic_profile=semantic_profile,
+        selection_mode=selection_mode,
+        energy_scale=energy_scale,
+        selection_variance=selection_variance,
+        normalize_selection_mode=_normalize_selection_mode,
+        normalize_selection_variance=_normalize_selection_variance,
+        pattern_candidates_fn=_pattern_candidates,
+        ollama_section_selection_fn=_ollama_section_selection,
+        select_pattern_fn=_select_pattern,
+    )
 
 
 def _section_levels(

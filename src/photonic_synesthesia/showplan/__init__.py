@@ -7,7 +7,9 @@ from typing import Any
 from photonic_synesthesia.showplan.catalog import build_show_catalog_entry
 from photonic_synesthesia.showplan.cue_recipe import build_cue_recipe
 from photonic_synesthesia.showplan.sections import resolve_show_sections
+from photonic_synesthesia.showplan.selection import select_section_patterns
 from photonic_synesthesia.showplan.semantic_profile import build_semantic_profile
+from photonic_synesthesia.showplan.validation import anti_template_validation
 
 
 def _unimplemented(*args: Any, **kwargs: Any) -> Any:
@@ -15,8 +17,6 @@ def _unimplemented(*args: Any, **kwargs: Any) -> Any:
 
 
 build_laser_program = _unimplemented
-anti_template_validation = _unimplemented
-select_section_patterns = _unimplemented
 build_catalog_model_payload = _unimplemented
 
 __all__ = [
