@@ -3,8 +3,6 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 import photonic_synesthesia.ui.cli as cli_module
-from photonic_synesthesia.showplan import build_catalog_model_payload, build_semantic_profile
-from photonic_synesthesia.showplan.semantic_profile import metadata_confidence
 from photonic_synesthesia.integrations.show_catalog import (
     list_show_catalog_paths,
     load_show_catalog,
@@ -12,6 +10,8 @@ from photonic_synesthesia.integrations.show_catalog import (
     show_catalog_path,
 )
 from photonic_synesthesia.integrations.show_plans import save_show_plan
+from photonic_synesthesia.showplan import build_catalog_model_payload, build_semantic_profile
+from photonic_synesthesia.showplan.semantic_profile import metadata_confidence
 from photonic_synesthesia.ui.cli import _load_precomputed_show_plan, cli
 
 

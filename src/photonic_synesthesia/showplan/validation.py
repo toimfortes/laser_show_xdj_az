@@ -134,7 +134,7 @@ def set_similarity(current: dict[str, Any], previous: dict[str, Any]) -> float:
         1.0,
         abs(float(current.get("strobe_total") or 0.0) - float(previous.get("strobe_total") or 0.0)),
     )
-    return round(
+    return float(round(
         (
             section_role_similarity * 0.2
             + lead_similarity * 0.22
@@ -147,7 +147,7 @@ def set_similarity(current: dict[str, Any], previous: dict[str, Any]) -> float:
             + strobe_similarity * 0.05
         ),
         3,
-    )
+    ))
 
 
 def anti_template_validation(

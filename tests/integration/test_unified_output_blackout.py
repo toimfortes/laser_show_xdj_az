@@ -3,8 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from photonic_synesthesia.core.config import DMXConfig, FixtureConfig, ILDAConfig, LaserSafetyConfig, Settings
-from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState, create_initial_state
+from photonic_synesthesia.core.config import (
+    DMXConfig,
+    FixtureConfig,
+    ILDAConfig,
+    LaserSafetyConfig,
+    Settings,
+)
+from photonic_synesthesia.core.state import (
+    FixtureCommand,
+    MusicStructure,
+    PhotonicState,
+    create_initial_state,
+)
 from photonic_synesthesia.graph.builder import PhotonicGraph, _SequentialPipeline
 from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 from photonic_synesthesia.graph.nodes.ilda_output import ILDADACOutputNode, ILDAOutputNode

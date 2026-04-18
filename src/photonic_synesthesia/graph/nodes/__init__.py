@@ -24,7 +24,7 @@ _NODE_IMPORTS = {
     "CVSenseNode": ("photonic_synesthesia.graph.nodes.cv_sense", "CVSenseNode"),
     "FusionNode": ("photonic_synesthesia.graph.nodes.fusion", "FusionNode"),
     "DirectorIntentNode": (
-        "photonic_synesthesia.graph.nodes.director_intent", 
+        "photonic_synesthesia.graph.nodes.director_intent",
         "DirectorIntentNode",
     ),
     "ILDAOutputNode": ("photonic_synesthesia.graph.nodes.ilda_output", "ILDAOutputNode"),

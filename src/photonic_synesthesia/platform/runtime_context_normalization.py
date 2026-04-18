@@ -27,6 +27,8 @@ def normalize_selection_mode(selection_mode: str | None) -> str:
 
 
 def normalize_selection_variance(value: Any | None) -> float:
+    if value is None:
+        return 0.0
     try:
         normalized = float(value)
     except (TypeError, ValueError):

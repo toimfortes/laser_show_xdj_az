@@ -1,6 +1,5 @@
-from pathlib import Path
-
 import json
+from pathlib import Path
 
 from photonic_synesthesia.core.config import SceneConfig
 from photonic_synesthesia.core.state import MusicStructure, create_initial_state

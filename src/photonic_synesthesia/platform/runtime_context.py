@@ -13,16 +13,32 @@ from uuid import uuid4
 
 from photonic_synesthesia.platform.runtime_context_normalization import (
     clamp as _clamp,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_metadata_source as _normalize_metadata_source,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_operator_intent as _normalize_operator_intent,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_operator_scope as _normalize_operator_scope,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_operator_target as _normalize_operator_target,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_selection_mode as _normalize_selection_mode,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_selection_variance as _normalize_selection_variance,
+)
+from photonic_synesthesia.platform.runtime_context_normalization import (
     normalize_venue_mode as _normalize_venue_mode,
 )
 from photonic_synesthesia.platform.runtime_context_operator_intents import (
     apply_operator_intent_to_section as _apply_operator_intent_to_section,
+)
+from photonic_synesthesia.platform.runtime_context_operator_intents import (
     intent_expired as _intent_expired,
 )
 from photonic_synesthesia.platform.runtime_context_playback_scope import (
@@ -30,10 +46,6 @@ from photonic_synesthesia.platform.runtime_context_playback_scope import (
 )
 from photonic_synesthesia.platform.runtime_context_section_mutations import (
     apply_nested_change as _apply_nested_change,
-    promote_family_to_hero as _promote_family_to_hero,
-    set_family_intensity as _set_family_intensity,
-    sync_cue_family_family_id as _sync_cue_family_family_id,
-    update_operator_override as _update_operator_override,
 )
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
@@ -97,7 +109,7 @@ class PlaybackContext:
         ]
         sections = copy.deepcopy(self._base_show_sections)
         for intent_payload in active_intents:
-            target_ids = set(str(item) for item in list(intent_payload.get("target_ids") or []))
+            target_ids = {str(item) for item in list(intent_payload.get("target_ids") or [])}
             if not target_ids:
                 target_ids = _section_ids_for_scope(
                     sections,

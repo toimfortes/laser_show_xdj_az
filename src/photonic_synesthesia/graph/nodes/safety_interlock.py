@@ -495,9 +495,7 @@ class SafetyMonitor:
         self.check_interval = max(check_interval, 0.01)
         self.max_silence = max(max_silence, 0.05)
 
-        self._last_frame_count: dict[str, int] = {
-            name: 0 for name in self._outputs
-        }
+        self._last_frame_count: dict[str, int] = dict.fromkeys(self._outputs, 0)
         self._last_check_time: dict[str, float] = {
             name: time.monotonic() for name in self._outputs
         }

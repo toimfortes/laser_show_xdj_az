@@ -3,7 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
-from photonic_synesthesia.core.state import ILDAPoint, create_initial_state
+from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.graph.nodes.ilda_output import ILDADACOutputNode
 from photonic_synesthesia.graph.nodes.laser_vector_interlock import LaserVectorInterlockNode
 

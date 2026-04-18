@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import copy
 import socket
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     CATALOG_VERSION as _CATALOG_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
 )
 
@@ -224,7 +229,7 @@ def build_show_catalog_entry(
         },
         "web_enrichment": copy.deepcopy(web_enrichment) if isinstance(web_enrichment, dict) else {},
         "provenance": {
-            "generated_at": datetime.now(UTC).isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "planner_version": show_section_generator_version,
             "laser_program_version": laser_program_version,
             "selection_mode": selection_mode,

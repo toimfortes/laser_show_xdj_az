@@ -23,10 +23,12 @@ from photonic_synesthesia.showplan._patterns import (
 )
 from photonic_synesthesia.showplan.types import (
     LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
-    VENUE_MODES as _VENUE_MODES,
+)
+from photonic_synesthesia.showplan.types import (
     apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
+)
+from photonic_synesthesia.showplan.types import (
     laser_zone_policy as _laser_zone_policy,
-    normalize_venue_mode as _normalize_venue_mode,
 )
 
 _PHRASE_ENVELOPES: dict[str, dict[str, Any]] = {

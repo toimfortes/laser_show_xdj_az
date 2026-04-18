@@ -13,11 +13,14 @@ import math
 import os
 import urllib.error as urllib_error
 import urllib.request as urllib_request
+from collections.abc import Callable
 from hashlib import sha1
 from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
+)
+from photonic_synesthesia.showplan.types import (
     pattern_stage,
 )
 
@@ -223,6 +226,8 @@ def normalize_selection_mode(selection_mode: str | None) -> str:
 
 
 def normalize_selection_variance(value: Any | None) -> float:
+    if value is None:
+        return 0.0
     try:
         normalized = float(value)
     except (TypeError, ValueError):
@@ -623,9 +628,9 @@ def ollama_section_selection(
     usage_count_by_family: dict[str, dict[str, int]] | None,
     semantic_profile: dict[str, Any] | None,
     selection_variance: float,
-    ollama_model_name_fn=None,
-    ollama_generate_endpoint_fn=None,
-    ollama_num_gpu_option_fn=None,
+    ollama_model_name_fn: Callable[..., Any] | None = None,
+    ollama_generate_endpoint_fn: Callable[..., Any] | None = None,
+    ollama_num_gpu_option_fn: Callable[..., Any] | None = None,
 ) -> dict[str, str] | None:
     _ollama_model_name = ollama_model_name_fn or _default_ollama_model_name
     _ollama_generate_endpoint = ollama_generate_endpoint_fn or _default_ollama_generate_endpoint

@@ -6,7 +6,7 @@ import html
 import json
 import re
 import urllib.parse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any
 from urllib import error as urllib_error
@@ -34,7 +34,8 @@ def _normalize_text_with_spaces(value: str) -> str:
 def _request_text(url: str) -> str:
     request = urllib_request.Request(url, headers={"User-Agent": _USER_AGENT})
     with urllib_request.urlopen(request, timeout=_REQUEST_TIMEOUT_SECONDS) as response:
-        return response.read().decode("utf-8", "ignore")
+        data: bytes = response.read()
+    return data.decode("utf-8", "ignore")
 
 
 def _request_json(url: str) -> Any:
@@ -103,9 +104,10 @@ def _extract_beatport_next_data(text: str) -> dict[str, Any] | None:
     if not match:
         return None
     try:
-        return json.loads(match.group(1))
+        parsed = json.loads(match.group(1))
     except json.JSONDecodeError:
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _fetch_apple_music_metadata(
@@ -127,9 +129,9 @@ def _fetch_apple_music_metadata(
             candidate_title=str(result.get("trackName") or ""),
             candidate_artist=str(result.get("artistName") or ""),
             expected_duration_seconds=duration_seconds,
-            candidate_duration_seconds=_safe_float(result.get("trackTimeMillis")) / 1000.0
-            if _safe_float(result.get("trackTimeMillis")) is not None
-            else None,
+            candidate_duration_seconds=(
+                (ms / 1000.0) if (ms := _safe_float(result.get("trackTimeMillis"))) is not None else None
+            ),
         )
         if best_match is None or score > best_match[0]:
             best_match = (score, result)
@@ -203,7 +205,7 @@ def _fetch_beatport_metadata(
         for item in result.get("remixers") or []
         if isinstance(item, dict) and str(item.get("artist_name") or "").strip()
     ]
-    artist_names = [
+    artist_list = [
         str(item.get("artist_name") or "").strip()
         for item in result.get("artists", [])
         if isinstance(item, dict) and str(item.get("artist_name") or "").strip()
@@ -218,7 +220,7 @@ def _fetch_beatport_metadata(
         "source": "beatport",
         "confidence": round(best_match[0], 3),
         "track_title": track_title,
-        "track_artist": ", ".join(artist_names),
+        "track_artist": ", ".join(artist_list),
         "mix_name": mix_name,
         "track_url": f"https://www.beatport.com/track/{url_slug}/{result.get('track_id')}",
         "genre_primary": genres[0] if genres else "",
@@ -427,7 +429,7 @@ def fetch_web_enrichment(
 
     return {
         "version": _WEB_ENRICHMENT_VERSION,
-        "generated_at": datetime.now(UTC).isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
         "query": {
             "title": title,
             "artist": artist,

@@ -10,10 +10,12 @@ from typing import Any
 
 from photonic_synesthesia.showplan._patterns import (
     LASER_PATTERN_GEOMETRY as _LASER_PATTERN_GEOMETRY,
+)
+from photonic_synesthesia.showplan._patterns import (
     _stable_float,
 )
-from photonic_synesthesia.showplan.types import clamp as _clamp, pattern_stage as _pattern_stage
-
+from photonic_synesthesia.showplan.types import clamp as _clamp
+from photonic_synesthesia.showplan.types import pattern_stage as _pattern_stage
 
 _CONTENT_FAMILY_BY_CONTEXT: dict[str, str] = {
     "intro_set": "beam",
