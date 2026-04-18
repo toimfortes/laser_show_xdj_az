@@ -1,10 +1,37 @@
 import photonic_synesthesia.ui.cli as cli_module
+from photonic_synesthesia.showplan import build_cue_recipe
 from photonic_synesthesia.ui.cli import (
     _LASER_PATTERN_POOLS,
     _default_show_sections,
     _resolve_show_sections,
     _transition_context,
 )
+
+
+def test_build_cue_recipe_returns_expected_version() -> None:
+    payload = build_cue_recipe(
+        kind="drop",
+        context="drop_launch",
+        laser_pattern="fan",
+        mover_pattern="sweep",
+        wash_pattern="ambient",
+        led_pattern="pulse",
+        laser_enabled=True,
+        movers_enabled=True,
+        washes_enabled=True,
+        leds_enabled=True,
+        section_role="drop_1",
+        venue_mode="small_room_50_100",
+        venue_profile={"mode": "small_room_50_100"},
+        transition_intent={"type": "bloom"},
+        cue_family_id="small_room_50_100::drop_1::mover",
+        lead_family="mover",
+        fixture_role_map={"mover": {"role": "hero"}},
+        capability_graph={"mover": {}},
+        capability_notes=[],
+        metadata_confidence=None,
+    )
+    assert payload["version"] == 6
 
 
 def _markers() -> list[dict[str, object]]:
