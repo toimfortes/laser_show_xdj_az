@@ -3,7 +3,7 @@ from __future__ import annotations
 from click.testing import CliRunner
 
 import photonic_synesthesia.ui.cli as cli_module
-from photonic_synesthesia.showplan import build_semantic_profile
+from photonic_synesthesia.showplan import build_catalog_model_payload, build_semantic_profile
 from photonic_synesthesia.showplan.semantic_profile import metadata_confidence
 from photonic_synesthesia.integrations.show_catalog import (
     list_show_catalog_paths,
@@ -13,6 +13,21 @@ from photonic_synesthesia.integrations.show_catalog import (
 )
 from photonic_synesthesia.integrations.show_plans import save_show_plan
 from photonic_synesthesia.ui.cli import _load_precomputed_show_plan, cli
+
+
+def test_build_catalog_model_payload_returns_sections() -> None:
+    payload = build_catalog_model_payload(
+        track_key="artist|track",
+        track_title="Track",
+        track_artist="Artist",
+        duration_seconds=120.0,
+        structure_markers=[],
+        show_sections=[],
+        selection_mode="procedural",
+        selection_variance=0.0,
+        venue_mode="small_room_50_100",
+    )
+    assert "sections" in payload
 
 
 def test_showplan_build_semantic_profile_returns_expected_shape() -> None:

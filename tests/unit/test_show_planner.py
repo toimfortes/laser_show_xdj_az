@@ -2,6 +2,7 @@ import photonic_synesthesia.ui.cli as cli_module
 from photonic_synesthesia.showplan import (
     anti_template_validation,
     build_cue_recipe,
+    build_laser_program,
     select_section_patterns,
 )
 from photonic_synesthesia.ui.cli import (
@@ -10,6 +11,19 @@ from photonic_synesthesia.ui.cli import (
     _resolve_show_sections,
     _transition_context,
 )
+
+
+def test_build_laser_program_returns_phrase_roles() -> None:
+    payload = build_laser_program(
+        track_seed="fixture",
+        base_pattern="fan",
+        kind="drop",
+        context="drop_launch",
+        ordinal=0,
+        profile={},
+        venue_mode="small_room_50_100",
+    )
+    assert payload["launch"]["label"] == "Launch Hook"
 
 
 def test_anti_template_validation_returns_status() -> None:
