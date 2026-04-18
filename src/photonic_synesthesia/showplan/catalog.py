@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import copy
 import socket
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     CATALOG_VERSION as _CATALOG_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
 )
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import threading
+import time
 
 from photonic_synesthesia.core.config import (
     FixtureConfig,

@@ -5,7 +5,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
-from photonic_synesthesia.core.state import ILDAPoint, ILDAFrame, MusicStructure, create_initial_state
+from photonic_synesthesia.core.state import (
+    ILDAFrame,
+    ILDAPoint,
+    MusicStructure,
+    create_initial_state,
+)
 from photonic_synesthesia.graph.nodes.ilda_output import ILDADACOutputNode, ILDAOutputNode
 from photonic_synesthesia.graph.nodes.laser_vector_interlock import LaserVectorInterlockNode
 from photonic_synesthesia.laser.ilda_file import encode_ild

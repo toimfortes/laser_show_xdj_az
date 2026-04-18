@@ -25,7 +25,7 @@ def intent_expired(
     if expires_at == "end_of_track":
         return playhead_seconds >= max(0.0, duration_seconds)
     if expires_at == "next_phrase":
-        target_ids = set(str(item) for item in list(intent_payload.get("target_ids") or []))
+        target_ids = {str(item) for item in list(intent_payload.get("target_ids") or [])}
         if not target_ids:
             return False
         for section in show_sections:

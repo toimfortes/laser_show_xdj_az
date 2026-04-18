@@ -21,10 +21,11 @@ from photonic_synesthesia.graph.nodes import (
     DMXOutputNode,
     FeatureExtractNode,
     FusionNode,
-    ILDAOutputNode,
     ILDADACOutputNode,
+    ILDAOutputNode,
     InterpreterNode,
     LaserControlNode,
+    LaserVectorInterlockNode,
     MidiSenseNode,
     MovingHeadControlNode,
     PanelControlNode,
@@ -32,7 +33,6 @@ from photonic_synesthesia.graph.nodes import (
     SafetyMonitor,
     SceneSelectNode,
     StructureDetectNode,
-    LaserVectorInterlockNode,
 )
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 

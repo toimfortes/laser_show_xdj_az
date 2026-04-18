@@ -13,14 +13,14 @@ import copy
 from typing import Any
 
 from photonic_synesthesia.showplan._patterns import (
-    _dedupe,
     _stable_digest,
     pattern_candidates,
     pattern_stage,
 )
 from photonic_synesthesia.showplan.types import (
-    VENUE_MODES as _VENUE_MODES,
     clamp as _clamp,
+)
+from photonic_synesthesia.showplan.types import (
     normalize_venue_mode as _normalize_venue_mode,
 )
 

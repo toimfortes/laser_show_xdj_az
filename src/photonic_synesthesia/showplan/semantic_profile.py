@@ -7,7 +7,6 @@ from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     SEMANTIC_PROFILE_VERSION,
-    clamp as _clamp,
     safe_confidence_value,
 )
 

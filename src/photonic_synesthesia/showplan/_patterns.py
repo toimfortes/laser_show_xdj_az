@@ -18,6 +18,8 @@ from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
+)
+from photonic_synesthesia.showplan.types import (
     pattern_stage,
 )
 

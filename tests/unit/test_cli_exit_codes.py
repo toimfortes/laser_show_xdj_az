@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-import photonic_synesthesia.ui.cli as cli_module
 from photonic_synesthesia.ui.cli import cli
 
 

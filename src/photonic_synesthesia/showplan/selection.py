@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from photonic_synesthesia.showplan._patterns import (
     normalize_selection_mode as _default_normalize_selection_mode,
+)
+from photonic_synesthesia.showplan._patterns import (
     normalize_selection_variance as _default_normalize_selection_variance,
+)
+from photonic_synesthesia.showplan._patterns import (
     ollama_section_selection as _default_ollama_section_selection,
+)
+from photonic_synesthesia.showplan._patterns import (
     pattern_candidates as _default_pattern_candidates,
+)
+from photonic_synesthesia.showplan._patterns import (
     select_pattern as _default_select_pattern,
 )
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 import time
 from collections import defaultdict, deque
-from typing import DefaultDict, Deque
 
 from photonic_synesthesia.core.config import LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
@@ -44,12 +43,12 @@ class LaserVectorInterlockNode:
         assert self.config is not None
         self._min_beat_confidence = max(0.0, min(1.0, min_beat_confidence))
 
-        self._last_point: DefaultDict[str, tuple[int, int] | None] = defaultdict(
+        self._last_point: defaultdict[str, tuple[int, int] | None] = defaultdict(
             lambda: None,
         )
-        self._still_streak: DefaultDict[str, int] = defaultdict(int)
-        self._last_lit_state: DefaultDict[str, bool] = defaultdict(lambda: False)
-        self._lit_transition_timestamps: DefaultDict[str, Deque[float]] = defaultdict(deque)
+        self._still_streak: defaultdict[str, int] = defaultdict(int)
+        self._last_lit_state: defaultdict[str, bool] = defaultdict(lambda: False)
+        self._lit_transition_timestamps: defaultdict[str, deque[float]] = defaultdict(deque)
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()

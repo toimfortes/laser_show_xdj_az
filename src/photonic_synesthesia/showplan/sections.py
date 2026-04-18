@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from photonic_synesthesia.showplan.types import (
     CUE_RECIPE_VERSION as _CUE_RECIPE_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
 )
 

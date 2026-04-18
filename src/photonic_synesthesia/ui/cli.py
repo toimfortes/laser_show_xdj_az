@@ -16,7 +16,6 @@ import signal
 import socket
 import sys
 import time
-from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
@@ -30,42 +29,93 @@ from photonic_synesthesia import __version__
 from photonic_synesthesia.core.logging import configure_logging, get_logger
 from photonic_synesthesia.showplan import (
     build_catalog_model_payload as _build_catalog_model_payload,
+)
+from photonic_synesthesia.showplan import (
     build_cue_recipe as _cue_recipe,
+)
+from photonic_synesthesia.showplan import (
     build_laser_program as _laser_program,
+)
+from photonic_synesthesia.showplan import (
     build_show_catalog_entry as _showplan_build_show_catalog_entry,
+)
+from photonic_synesthesia.showplan import (
     resolve_show_sections as _showplan_resolve_show_sections,
 )
 from photonic_synesthesia.showplan._variants import (
     auto_markers_for_duration as _auto_markers_for_duration,
+)
+from photonic_synesthesia.showplan._variants import (
     fixture_enablement as _fixture_enablement,
+)
+from photonic_synesthesia.showplan._variants import (
     laser_expression as _laser_expression,
+)
+from photonic_synesthesia.showplan._variants import (
     laser_variant as _laser_variant,
+)
+from photonic_synesthesia.showplan._variants import (
     led_variant as _led_variant,
+)
+from photonic_synesthesia.showplan._variants import (
     mover_variant as _mover_variant,
-    pick_word as _pick_word,
+)
+from photonic_synesthesia.showplan._variants import (
     section_levels as _section_levels,
+)
+from photonic_synesthesia.showplan._variants import (
     strobe_profile as _strobe_profile,
-    variant_label as _variant_label,
+)
+from photonic_synesthesia.showplan._variants import (
     wash_variant as _wash_variant,
+)
+from photonic_synesthesia.showplan.selection import (
+    select_section_patterns as _showplan_select_section_patterns,
 )
 from photonic_synesthesia.showplan.semantic_profile import (
     build_semantic_profile as _showplan_build_semantic_profile,
+)
+from photonic_synesthesia.showplan.semantic_profile import (
     metadata_confidence as _showplan_metadata_confidence,
 )
 from photonic_synesthesia.showplan.types import (
     CATALOG_VERSION as _CATALOG_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     CUE_RECIPE_VERSION as _CUE_RECIPE_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     LASER_PROGRAM_VERSION as _LASER_PROGRAM_VERSION,
-    SEMANTIC_PROFILE_VERSION as _SEMANTIC_PROFILE_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     SHOW_SECTION_GENERATOR_VERSION as _SHOW_SECTION_GENERATOR_VERSION,
+)
+from photonic_synesthesia.showplan.types import (
     VENUE_MODES as _VENUE_MODES,
+)
+from photonic_synesthesia.showplan.types import (
     apply_venue_laser_zone_policy as _apply_venue_laser_zone_policy,
+)
+from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
+)
+from photonic_synesthesia.showplan.types import (
     cue_family_id as _cue_family_id,
+)
+from photonic_synesthesia.showplan.types import (
     laser_zone_policy as _laser_zone_policy,
+)
+from photonic_synesthesia.showplan.types import (
     normalize_venue_mode as _normalize_venue_mode,
+)
+from photonic_synesthesia.showplan.types import (
     pattern_stage as _pattern_stage,
-    safe_confidence_value as _safe_confidence_value,
+)
+from photonic_synesthesia.showplan.validation import (
+    anti_template_validation as _showplan_anti_template_validation,
+)
+from photonic_synesthesia.showplan.validation import (
+    show_fingerprint as _show_fingerprint,
 )
 
 logger = get_logger(__name__)
@@ -718,17 +768,6 @@ def _decorate_show_sections_with_motifs(show_sections: list[dict[str, Any]]) -> 
                 default=0,
             )
     return show_sections
-
-
-from photonic_synesthesia.showplan.selection import (
-    select_section_patterns as _showplan_select_section_patterns,
-)
-from photonic_synesthesia.showplan.validation import (
-    anti_template_validation as _showplan_anti_template_validation,
-    sequence_similarity as _sequence_similarity,
-    set_similarity as _set_similarity,
-    show_fingerprint as _show_fingerprint,
-)
 
 
 def _recent_catalog_entries(current_track_key: str, limit: int = 4) -> list[dict[str, Any]]:
@@ -2811,11 +2850,11 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
     from photonic_synesthesia.graph import build_photonic_graph
     from photonic_synesthesia.platform import (
         ControlPlaneStateService,
+        PlaybackContext,
         clear_shared_control_plane_service,
         clear_shared_playback_context,
-        set_shared_playback_context,
         set_shared_control_plane_service,
-        PlaybackContext,
+        set_shared_playback_context,
     )
     from photonic_synesthesia.ui.web_panel import serve_in_thread
 
