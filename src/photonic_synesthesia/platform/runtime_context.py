@@ -11,68 +11,21 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from photonic_synesthesia.platform.runtime_context_normalization import (
+    clamp as _clamp,
+    normalize_metadata_source as _normalize_metadata_source,
+    normalize_operator_intent as _normalize_operator_intent,
+    normalize_operator_scope as _normalize_operator_scope,
+    normalize_operator_target as _normalize_operator_target,
+    normalize_selection_mode as _normalize_selection_mode,
+    normalize_selection_variance as _normalize_selection_variance,
+    normalize_venue_mode as _normalize_venue_mode,
+)
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
-_PLAYBACK_SELECTION_MODES = {"procedural", "ai_assisted", "local_ollama_cpu"}
-_PLAYBACK_VENUE_MODES = {"small_room_50_100", "medium_room_150_400"}
-_PLAYBACK_OPERATOR_INTENTS = {
-    "darken",
-    "brighten",
-    "reduce_laser_density",
-    "less_strobe",
-    "favor_overhead",
-    "freeze_hero_family",
-    "hold_current_palette",
-    "delay_peak",
-    "promote_washes",
-}
-_PLAYBACK_OPERATOR_SCOPES = {"current_section", "next_phrase", "track", "set"}
-_PLAYBACK_OPERATOR_TARGETS = {"all", "lasers", "movers", "washes", "leds", "strobes"}
-
-
-def _normalize_selection_mode(selection_mode: str | None) -> str:
-    value = str(selection_mode or "procedural").strip().lower().replace("-", "_")
-    return value if value in _PLAYBACK_SELECTION_MODES else "procedural"
-
-
-def _normalize_selection_variance(value: Any | None) -> float:
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    return round(max(0.0, min(1.0, normalized)), 3)
-
-
-def _normalize_metadata_source(source: str | None) -> str:
-    value = str(source or "manual").strip().lower().replace("-", "_")
-    return value or "manual"
-
-
-def _normalize_venue_mode(value: str | None) -> str:
-    normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
-    return normalized if normalized in _PLAYBACK_VENUE_MODES else "small_room_50_100"
-
-
-def _normalize_operator_intent(value: str | None) -> str:
-    normalized = str(value or "").strip().lower().replace("-", "_")
-    return normalized if normalized in _PLAYBACK_OPERATOR_INTENTS else ""
-
-
-def _normalize_operator_scope(value: str | None) -> str:
-    normalized = str(value or "track").strip().lower().replace("-", "_")
-    return normalized if normalized in _PLAYBACK_OPERATOR_SCOPES else "track"
-
-
-def _normalize_operator_target(value: str | None) -> str:
-    normalized = str(value or "all").strip().lower().replace("-", "_")
-    return normalized if normalized in _PLAYBACK_OPERATOR_TARGETS else "all"
-
-
-def _clamp(value: float, minimum: float, maximum: float) -> float:
-    return max(minimum, min(maximum, value))
 
 
 def _section_ids_for_scope(show_sections: list[dict[str, Any]], playhead_seconds: float, scope: str) -> set[str]:
