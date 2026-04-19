@@ -3381,21 +3381,26 @@ function drawWashIcon(ctx, x, y, r, fillColor, strokeColor) {
   ctx.fill();
 }
 
-function drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor) {
-  // Long horizontal strip + pixel dots
-  const barW = r * 2.4;
-  const barH = r * 0.55;
+function drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor, barWidth, pixelCount) {
+  // Long horizontal strip + pixel dots. Caller passes the fixture's real
+  // rendered width (in canvas pixels) so the icon length matches the
+  // actual lit strip rendered by drawLedBar — otherwise a 0.40-wide
+  // bar with 24 pixels would show as the same tiny icon as a 0.10-wide
+  // 6-pixel bar, and the two look identical on the stage.
+  const barW = Math.max(r * 1.6, barWidth || r * 2.4);
+  const barH = Math.max(r * 0.55, Math.min(barW * 0.14, r * 0.85));
   ctx.fillStyle = fillColor;
   ctx.fillRect(x - barW / 2, y - barH / 2, barW, barH);
   ctx.strokeStyle = strokeColor;
   ctx.strokeRect(x - barW / 2, y - barH / 2, barW, barH);
-  // Pixel dots
-  const pixelCount = 6;
-  const pixelSpacing = barW / (pixelCount + 1);
+  // Pixel dots — one per actual LED pixel (capped so dense strips still read)
+  const dots = Math.min(Math.max(2, pixelCount || 6), 32);
+  const pixelSpacing = barW / (dots + 1);
+  const dotRadius = Math.max(r * 0.09, Math.min(pixelSpacing * 0.28, r * 0.18));
   ctx.fillStyle = strokeColor;
-  for (let i = 1; i <= pixelCount; i += 1) {
+  for (let i = 1; i <= dots; i += 1) {
     ctx.beginPath();
-    ctx.arc(x - barW / 2 + i * pixelSpacing, y, r * 0.12, 0, Math.PI * 2);
+    ctx.arc(x - barW / 2 + i * pixelSpacing, y, dotRadius, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -3405,17 +3410,36 @@ function drawFixtureBody(ctx, fixture, width, height) {
   const y = fixture.y * height;
   const selected = fixture.id === appState.selectedFixtureId;
   const r = 14;
+  // LED bars scale to fixture.width × canvas width so the icon matches
+  // the real lit strip. Everything else uses the fixed icon radius.
+  const isLedBar = fixture.type === "led_bar";
+  const ledBarPixelLength = isLedBar
+    ? Math.max(0, Number(fixture.width || 0)) * width
+    : 0;
+  const ledBarVisualWidth = isLedBar ? Math.max(r * 1.6, ledBarPixelLength) : 0;
 
   // Selection halo — draws behind the icon so it reads as a soft ring.
+  // For LED bars we draw a rounded rect that wraps the whole strip
+  // length; a small circular halo wouldn't read for a 150-px-wide bar.
   if (selected) {
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, r * 1.7, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(248, 94, 0, 0.18)";
-    ctx.fill();
     ctx.strokeStyle = "rgba(248, 94, 0, 0.75)";
     ctx.lineWidth = 2;
-    ctx.stroke();
+    if (isLedBar) {
+      const pad = 10;
+      const halW = ledBarVisualWidth / 2 + pad;
+      const halH = r * 0.9 + pad;
+      ctx.beginPath();
+      ctx.rect(x - halW, y - halH, halW * 2, halH * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -3433,7 +3457,13 @@ function drawFixtureBody(ctx, fixture, width, height) {
   } else if (fixture.type === "wash") {
     drawWashIcon(ctx, x, y, r, fillColor, strokeColor);
   } else if (fixture.type === "led_bar") {
-    drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor);
+    // Scale the icon so its strip length matches the actual lit bar
+    // drawn by drawLedBar(). fixture.width is normalised [0, 1] across
+    // the stage canvas; multiply by the stage canvas width to recover
+    // the rendered bar length.
+    const barPixelLength = Math.max(0, Number(fixture.width || 0)) * width;
+    const pixelCount = Math.max(1, Math.round(Number(fixture.pixel_count || 6)));
+    drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor, barPixelLength, pixelCount);
   } else {
     // Unknown type — fall back to the legacy square so it still renders
     ctx.fillStyle = fillColor;
@@ -3443,9 +3473,10 @@ function drawFixtureBody(ctx, fixture, width, height) {
   }
   ctx.restore();
 
-  // Label — nudged right of the icon; widen the offset for the LED bar
-  // since the bar itself extends further horizontally.
-  const labelOffset = fixture.type === "led_bar" ? r * 1.6 : r * 1.4;
+  // Label — nudged right of the icon. For LED bars, land the label past
+  // the actual strip's right edge so it doesn't sit on top of the pixel
+  // dots; for other fixtures, a fixed offset from centre is fine.
+  const labelOffset = isLedBar ? ledBarVisualWidth / 2 + 8 : r * 1.4;
   ctx.fillStyle = "rgba(255,255,255,0.88)";
   ctx.font = "600 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
   ctx.textBaseline = "middle";
