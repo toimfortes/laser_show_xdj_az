@@ -21,9 +21,11 @@ class InterpreterNode:
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()
         strobe_budget = float(state["director_state"]["strobe_budget_hz"])
+        global_intensity = float(state["control_state"]["global_intensity"])
         state["fixture_commands"] = self.interpreter.interpret(
             state["fixture_commands"],
             strobe_budget_hz=strobe_budget,
+            global_intensity=global_intensity,
         )
         state["processing_times"]["interpreter"] = time.time() - start_time
         return state

@@ -14,7 +14,11 @@ from __future__ import annotations
 import math
 import signal
 import unittest.mock as mock
+import warnings
+import wave
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 from photonic_synesthesia.core.config import (
@@ -28,6 +32,13 @@ from photonic_synesthesia.dmx.universe import DMX_START_CODE, create_universe_bu
 from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNode
 
+
+def _armed_state():
+    state = create_initial_state()
+    state["control_state"]["armed_live"] = True
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Finite-value guard
 # ---------------------------------------------------------------------------
@@ -36,7 +47,7 @@ from photonic_synesthesia.graph.nodes.safety_interlock import SafetyInterlockNod
 def test_dmx_output_rejects_nan_channel_value() -> None:
     """NaN values must be silently dropped; existing channels stay unchanged."""
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
@@ -59,7 +70,7 @@ def test_dmx_output_rejects_nan_channel_value() -> None:
 def test_dmx_output_rejects_inf_channel_value() -> None:
     """Inf values must be silently dropped; existing channels stay unchanged."""
     node = DMXOutputNode(DMXConfig(interface_type="artnet"))
-    state = create_initial_state()
+    state = _armed_state()
     state["fixture_commands"] = [
         FixtureCommand(
             fixture_id="fx1",
@@ -78,6 +89,35 @@ def test_dmx_output_rejects_inf_channel_value() -> None:
     assert universe[3] == 50
     assert universe[4] == 0, "+Inf must be rejected"
     assert universe[5] == 0, "-Inf must be rejected"
+
+
+def test_dmx_output_request_blackout_latches_zero_universe() -> None:
+    node = DMXOutputNode(DMXConfig(interface_type="artnet"))
+    state = _armed_state()
+    state["fixture_commands"] = [
+        FixtureCommand(
+            fixture_id="fx1",
+            fixture_type="laser",
+            channel_values={1: 255, 2: 127},
+        )
+    ]
+    node(state)
+    assert node.get_stats()["blackout_requested"] is False
+
+    node.request_blackout()
+    state = _armed_state()
+    state["fixture_commands"] = [
+        FixtureCommand(
+            fixture_id="fx1",
+            fixture_type="laser",
+            channel_values={1: 255},
+        )
+    ]
+    result = node(state)
+
+    assert result["dmx_universe"][1] == 0
+    assert result["dmx_universe"][2] == 0
+    assert node.get_stats()["blackout_requested"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +269,186 @@ def test_run_loop_stop_called_in_finally() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Feature extraction logging hygiene
+# ---------------------------------------------------------------------------
+
+
+def test_feature_extract_logs_missing_librosa_only_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing librosa warning should emit once per node, not once per frame."""
+    from photonic_synesthesia.graph.nodes import feature_extract as feature_extract_module
+
+    monkeypatch.setattr(feature_extract_module, "LIBROSA_AVAILABLE", False)
+    warning_mock = mock.MagicMock()
+    monkeypatch.setattr(feature_extract_module.logger, "warning", warning_mock)
+
+    node = feature_extract_module.FeatureExtractNode()
+    node(create_initial_state())
+    node(create_initial_state())
+
+    assert warning_mock.call_count == 1
+
+
+def test_feature_extract_suppresses_short_signal_fft_warnings() -> None:
+    """Short analysis buffers should not emit librosa n_fft size warnings."""
+    from photonic_synesthesia.graph.nodes.feature_extract import FeatureExtractNode
+
+    node = FeatureExtractNode(n_fft=1024, hop_length=256)
+    short_signal = np.linspace(-0.5, 0.5, 698, dtype=np.float32)
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        features = node._extract_features(short_signal, 48_000)
+
+    assert features["mfcc_vector"]
+    assert not [
+        warning
+        for warning in captured
+        if "n_fft=" in str(warning.message) and "too large for input signal" in str(warning.message)
+    ]
+
+
+def test_resolve_show_sections_rebuilds_legacy_single_auto_groove_plan() -> None:
+    """Legacy one-section auto plans should be rebuilt into dynamic phrase sections."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Auto Groove",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 0.0,
+                }
+            ]
+        },
+        [],
+        324.388,
+        track_seed="legacy-auto-track",
+    )
+
+    assert len(resolved) >= 5
+    assert resolved[0]["start_seconds"] == 0.0
+    assert resolved[-1]["end_seconds"] == 324.388
+    assert any(section["kind"] == "drop" for section in resolved)
+
+
+def test_resolve_show_sections_rebuilds_fractional_timing_plan() -> None:
+    """Bad persisted plans with 0..1 normalized timings should be rebuilt in real seconds."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Auto Intro",
+                    "kind": "intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 0.25,
+                },
+                {
+                    "id": "section_001",
+                    "label": "Auto Drop 2",
+                    "kind": "drop",
+                    "start_seconds": 0.25,
+                    "end_seconds": 0.5,
+                },
+            ]
+        },
+        [],
+        324.388,
+        track_seed="fractional-auto-track",
+    )
+
+    assert len(resolved) >= 5
+    assert resolved[1]["start_seconds"] > 1.0
+    assert resolved[-1]["end_seconds"] == 324.388
+
+
+def test_resolve_show_sections_refreshes_legacy_laser_program_shape() -> None:
+    """Persisted sections with the old wide laser-program layout should be upgraded."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Drop A",
+                    "kind": "drop",
+                    "start_seconds": 0.0,
+                    "end_seconds": 64.0,
+                    "laser_program": {
+                        "launch": {"label": "Legacy Launch", "pattern": "tunnel"},
+                        "sustain": [
+                            {"label": "Legacy Sustain 1", "pattern": "tunnel"},
+                            {"label": "Legacy Sustain 2", "pattern": "fan"},
+                            {"label": "Legacy Sustain 3", "pattern": "sheet"},
+                        ],
+                        "fills": [
+                            {"label": "Legacy Fill 1", "pattern": "crisscross"},
+                        ],
+                        "release": {"label": "Legacy Release", "pattern": "spirograph"},
+                    },
+                }
+            ]
+        },
+        [{"name": "Drop A", "kind": "drop", "start_seconds": 0.0, "energy_hint": 8}],
+        64.0,
+        track_seed="legacy-laser-program",
+    )
+
+    laser_program = resolved[0]["laser_program"]
+    assert laser_program["launch"]["label"] == "Launch Hook"
+    assert [look["label"] for look in laser_program["sustain"]] == ["Sustain A", "Sustain B"]
+    assert [look["label"] for look in laser_program["fills"]] == ["Fill A", "Fill B"]
+    assert laser_program["release"]["label"] == "Release Hook"
+
+
+def test_resolve_show_sections_refreshes_legacy_generated_section_patterns() -> None:
+    """Older persisted sections should refresh generated lighting fields from current defaults."""
+    from photonic_synesthesia.ui.cli import _resolve_show_sections
+
+    resolved = _resolve_show_sections(
+        {
+            "show_sections": [
+                {
+                    "id": "section_000",
+                    "label": "Build A",
+                    "kind": "build",
+                    "start_seconds": 0.0,
+                    "end_seconds": 64.0,
+                    "scene_id": "intro_ambient",
+                    "fixture_mode": "intro",
+                    "laser_pattern": "beam_sequence_clockwise",
+                    "mover_pattern": "drift",
+                    "wash_pattern": "ambient",
+                    "led_pattern": "pulse",
+                    "laser_program": {
+                        "launch": {"label": "Launch Hook", "pattern": "beam_sequence_clockwise"},
+                        "sustain": [{"label": "Sustain A", "pattern": "beam_sequence_clockwise"}, {"label": "Sustain B", "pattern": "dual_beam"}],
+                        "fills": [{"label": "Fill A", "pattern": "beam_sequence_clockwise"}, {"label": "Fill B", "pattern": "beam_sequence_clockwise"}],
+                        "release": {"label": "Release Hook", "pattern": "beam_sequence_clockwise"},
+                    },
+                }
+            ]
+        },
+        [{"name": "Build A", "kind": "build", "start_seconds": 0.0, "energy_hint": 7}],
+        64.0,
+        track_seed="refresh-generated-fields",
+    )
+
+    section = resolved[0]
+    assert section["generator_version"] == 7
+    assert section["fixture_mode"] == "rebuild"
+    assert section["laser_pattern"] != "beam_sequence_clockwise"
+    assert section["mover_pattern"] != "drift"
+    assert section["wash_pattern"] != "ambient"
+
+
+# ---------------------------------------------------------------------------
 # CLI dmx_test: cleanup in finally for non-KeyboardInterrupt exceptions
 # ---------------------------------------------------------------------------
 
@@ -291,3 +511,285 @@ def test_sigterm_handler_calls_graph_stop() -> None:
         runner.invoke(cli, ["run", "--mock"])
 
     assert len(stop_calls) >= 1, "graph.stop() must be called when SIGTERM is received"
+
+
+def test_run_file_uses_audio_file_sensor_override(tmp_path: Path) -> None:
+    """run-file must inject the file-backed audio sensor into the graph builder."""
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.core.state import create_initial_state
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    captured: dict[str, object] = {}
+
+    class _FakeGraph:
+        def __init__(self, audio_node: AudioFileSenseNode) -> None:
+            self._running = True
+            self._audio_node = audio_node
+
+        def start(self) -> None:
+            self._audio_node.start()
+
+        def step(self):  # type: ignore[no-untyped-def]
+            state = create_initial_state()
+            state = self._audio_node(state)
+            if self._audio_node.finished:
+                self._running = False
+            return state
+
+        def stop(self) -> None:
+            self._running = False
+            self._audio_node.stop()
+
+    def _fake_build(*args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["mock_sensors"] = kwargs["mock_sensors"]
+        captured["audio_node"] = kwargs["node_overrides"]["audio_sense"]
+        return _FakeGraph(captured["audio_node"])  # type: ignore[arg-type]
+
+    with mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["run-file", str(audio_path), "--offline", "--fps", "10"])
+
+    assert result.exit_code == 0
+    assert captured["mock_sensors"] is True
+    assert isinstance(captured["audio_node"], AudioFileSenseNode)
+    assert "No ILDA fixtures configured; falling back to in-memory preview." in result.output
+
+
+def test_run_file_web_startup_failure_preserves_original_error(tmp_path: Path) -> None:
+    """run-file --web must not mask startup failures with cleanup-time crashes."""
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    with mock.patch(
+        "photonic_synesthesia.graph.nodes.audio_file_sense.AudioFileSenseNode.start",
+        side_effect=RuntimeError("decode failed"),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["run-file", str(audio_path), "--web"])
+
+    assert result.exit_code == 1
+    assert "decode failed" in result.output
+    assert "UnboundLocalError" not in result.output
+
+
+def test_run_file_applies_ether_dream_cli_overrides(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.core.state import create_initial_state
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+runtime_flags:
+  allow_unverified_laser_profiles: true
+fixtures:
+  - id: laser-main
+    name: Main Laser
+    type: laser
+    profile: laser_aucd_cx338b_hybrid
+    start_address: 1
+    enabled: true
+""".strip(),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, object] = {}
+
+    class _FakeGraph:
+        def __init__(self, audio_node: AudioFileSenseNode) -> None:
+            self._running = True
+            self._audio_node = audio_node
+
+        def start(self) -> None:
+            self._audio_node.start()
+
+        def step(self):  # type: ignore[no-untyped-def]
+            state = create_initial_state()
+            state = self._audio_node(state)
+            if self._audio_node.finished:
+                self._running = False
+            return state
+
+        def stop(self) -> None:
+            self._running = False
+            self._audio_node.stop()
+
+    def _fake_build(settings, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["transport_type"] = settings.ilda.transport_type
+        captured["host"] = settings.ilda.ether_dream_host
+        captured["port"] = settings.ilda.ether_dream_port
+        return _FakeGraph(kwargs["node_overrides"]["audio_sense"])
+
+    fake_socket = mock.MagicMock()
+    fake_socket.__enter__.return_value = fake_socket
+    fake_socket.__exit__.return_value = False
+
+    with (
+        mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build),
+        mock.patch("photonic_synesthesia.ui.cli.socket.create_connection", return_value=fake_socket),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--config",
+                str(config_path),
+                "run-file",
+                str(audio_path),
+                "--offline",
+                "--fps",
+                "10",
+                "--ilda-transport",
+                "ether_dream",
+                "--ether-dream-host",
+                "192.0.2.10",
+                "--ether-dream-port",
+                "9001",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "ILDA Transport: Ether Dream 192.0.2.10:9001" in result.output
+    assert captured["transport_type"] == "ether_dream"
+    assert captured["host"] == "192.0.2.10"
+    assert captured["port"] == 9001
+
+
+def test_run_file_rejects_invalid_ether_dream_port(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run-file",
+            str(audio_path),
+            "--ilda-transport",
+            "ether_dream",
+            "--ether-dream-port",
+            "70000",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--ether-dream-port must be between 1 and 65535" in result.output
+
+
+def test_run_file_rejects_explicit_ild_transport_without_ilda_fixture(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "run-file",
+            str(audio_path),
+            "--ilda-transport",
+            "ild",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "ILDA output requested but no enabled ILDA-primary laser fixtures are configured." in result.output
+
+
+def test_run_file_allows_explicit_memory_transport_without_ilda_fixture(tmp_path: Path) -> None:
+    from click.testing import CliRunner
+
+    from photonic_synesthesia.core.state import create_initial_state
+    from photonic_synesthesia.graph.nodes.audio_file_sense import AudioFileSenseNode
+    from photonic_synesthesia.ui.cli import cli
+
+    audio_path = tmp_path / "fixture.wav"
+    with wave.open(str(audio_path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * 800)
+
+    captured: dict[str, object] = {}
+
+    class _FakeGraph:
+        def __init__(self, audio_node: AudioFileSenseNode) -> None:
+            self._running = True
+            self._audio_node = audio_node
+
+        def start(self) -> None:
+            self._audio_node.start()
+
+        def step(self):  # type: ignore[no-untyped-def]
+            state = create_initial_state()
+            state = self._audio_node(state)
+            if self._audio_node.finished:
+                self._running = False
+            return state
+
+        def stop(self) -> None:
+            self._running = False
+            self._audio_node.stop()
+
+    def _fake_build(settings, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["transport_type"] = settings.ilda.transport_type
+        return _FakeGraph(kwargs["node_overrides"]["audio_sense"])
+
+    with mock.patch("photonic_synesthesia.graph.build_photonic_graph", side_effect=_fake_build):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run-file",
+                str(audio_path),
+                "--offline",
+                "--fps",
+                "10",
+                "--ilda-transport",
+                "memory",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert "ILDA Transport: in-memory preview only" in result.output
+    assert captured["transport_type"] == "memory"

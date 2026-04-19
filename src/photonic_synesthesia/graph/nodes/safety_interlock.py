@@ -17,17 +17,11 @@ from collections.abc import Callable
 from typing import Protocol
 
 from photonic_synesthesia.core.config import FixtureConfig, SafetyConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState, SafetyState
 from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
-try:
-    import structlog
-
-    logger = structlog.get_logger()
-except ImportError:  # pragma: no cover - fallback for minimal test envs
-    import logging
-
-    logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SupportsBlackout(Protocol):
@@ -35,6 +29,20 @@ class SupportsBlackout(Protocol):
 
     def blackout(self) -> None:
         """Immediately zero output."""
+
+
+class SupportsEmergencyBlackout(Protocol):
+    """Optional immediate emergency shutdown API."""
+
+    def emergency_blackout(self) -> None:
+        """Immediately force zero output."""
+
+
+class SupportsBlackoutRequest(SupportsBlackout, Protocol):
+    """Optional non-blocking blackout latch API for watchdog callbacks."""
+
+    def request_blackout(self) -> None:
+        """Request blackout asynchronously."""
 
 
 class SupportsBlackoutAndStats(SupportsBlackout, Protocol):
@@ -92,8 +100,8 @@ class HeartbeatWatchdog:
             if elapsed > self._timeout_s and not self._timeout_triggered:
                 self._timeout_triggered = True
                 logger.critical(
-                    "Heartbeat watchdog timeout - triggering blackout (elapsed=%.3fs)",
-                    elapsed,
+                    "Heartbeat watchdog timeout - triggering blackout",
+                    elapsed=round(elapsed, 3),
                 )
                 self._on_timeout()
 
@@ -112,7 +120,28 @@ class SafetyInterlockNode:
         config: SafetyConfig,
         fixtures: list[FixtureConfig],
         dmx_output: SupportsBlackout | None = None,
+        ilda_output: SupportsBlackout | SupportsEmergencyBlackout | None = None,
+        *,
+        require_watchdog: bool = False,
     ) -> None:
+        """Build a safety interlock node.
+
+        Args:
+            config: safety limits and heartbeat timeout.
+            fixtures: fixtures whose channels need clamping.
+            dmx_output: DMX transmitter exposing ``blackout()`` (or
+                ``request_blackout()``). Needed for the watchdog.
+            ilda_output: ILDA transmitter with the same blackout contract.
+                Needed for the watchdog when ILDA hardware is present.
+            require_watchdog: when ``True`` (the production default wired
+                by :mod:`photonic_synesthesia.graph.builder`), raise
+                :class:`ValueError` if neither ``dmx_output`` nor
+                ``ilda_output`` was supplied. This closes the failure
+                mode where a caller silently loses the dead-man switch
+                by forgetting to wire an output.
+                Tests that exercise the clamp/strobe logic without a
+                watchdog can leave the flag at ``False``.
+        """
         self.config = config
         self.fixtures = fixtures
 
@@ -133,11 +162,57 @@ class SafetyInterlockNode:
         # Emergency stop state
         self._emergency_stop = False
         self._heartbeat_watchdog: HeartbeatWatchdog | None = None
-        if dmx_output is not None:
+        watchdog_callbacks = self._build_heartbeat_callbacks(dmx_output, ilda_output)
+        if watchdog_callbacks:
+            timeout_callback = self._make_heartbeat_callback(watchdog_callbacks)
             self._heartbeat_watchdog = HeartbeatWatchdog(
-                on_timeout=dmx_output.blackout,
+                on_timeout=timeout_callback,
                 timeout_s=self.config.heartbeat_timeout_s,
             )
+        elif require_watchdog:
+            raise ValueError(
+                "SafetyInterlockNode: require_watchdog=True but no dmx_output "
+                "or ilda_output was provided; cannot install HeartbeatWatchdog. "
+                "Production graphs must wire at least one output so the "
+                "dead-man switch exists."
+            )
+
+    @staticmethod
+    def _build_heartbeat_callbacks(
+        *outputs: SupportsBlackout | SupportsEmergencyBlackout | None,
+    ) -> list[Callable[[], None]]:
+        """Resolve a stable callback list for emergency handling."""
+        callbacks: list[Callable[[], None]] = []
+        for output in outputs:
+            if output is None:
+                continue
+
+            emergency_handler = getattr(output, "emergency_blackout", None)
+            if callable(emergency_handler):
+                callbacks.append(emergency_handler)
+                continue
+
+            request_handler = getattr(output, "request_blackout", None)
+            if callable(request_handler):
+                callbacks.append(request_handler)
+                continue
+
+            blackout_handler = getattr(output, "blackout", None)
+            if callable(blackout_handler):
+                callbacks.append(blackout_handler)
+
+        return callbacks
+
+    @staticmethod
+    def _make_heartbeat_callback(callbacks: list[Callable[[], None]]) -> Callable[[], None]:
+        def _on_timeout() -> None:
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("Emergency safety callback failed")
+
+        return _on_timeout
 
     def start(self) -> None:
         """Start independent watchdog thread when available."""
@@ -430,18 +505,31 @@ class SafetyMonitor:
 
     def __init__(
         self,
-        dmx_output: SupportsBlackoutAndStats,
+        dmx_output: SupportsBlackoutAndStats | None = None,
+        ilda_output: SupportsBlackoutAndStats | None = None,
         check_interval: float = 0.1,
         max_silence: float = 1.0,
     ) -> None:
-        self.dmx_output = dmx_output
-        self.check_interval = check_interval
-        self.max_silence = max_silence
+        if dmx_output is None and ilda_output is None:
+            raise TypeError("SafetyMonitor requires at least one output to monitor")
 
-        self._last_frame_count = 0
-        self._last_check_time = time.time()
+        self._outputs: dict[str, SupportsBlackoutAndStats] = {}
+        if dmx_output is not None:
+            self._outputs["dmx"] = dmx_output
+        if ilda_output is not None:
+            self._outputs["ilda"] = ilda_output
+
+        self.check_interval = max(check_interval, 0.01)
+        self.max_silence = max(max_silence, 0.05)
+
+        self._last_frame_count: dict[str, int] = dict.fromkeys(self._outputs, 0)
+        self._last_check_time: dict[str, float] = {
+            name: time.monotonic() for name in self._outputs
+        }
+
         self._running = False
         self._thread: threading.Thread | None = None
+        self._last_stall_log: float = 0.0
 
     def start(self) -> None:
         """Start safety monitoring."""
@@ -464,27 +552,101 @@ class SafetyMonitor:
             self._thread = None
 
     def _monitor_loop(self) -> None:
-        """Monitor DMX output health."""
+        """Monitor critical output health."""
         while self._running:
             time.sleep(self.check_interval)
 
-            stats = self.dmx_output.get_stats()
-            current_frames_raw = stats.get("frames_sent", 0)
-            current_frames = (
-                current_frames_raw if isinstance(current_frames_raw, int) else self._last_frame_count
-            )
-            current_time = time.time()
+            now = time.monotonic()
+            stalled_outputs: list[str] = []
 
-            if current_frames == self._last_frame_count:
-                # No new frames sent
-                silence_duration = current_time - self._last_check_time
-                if silence_duration > self.max_silence:
-                    logger.critical(
-                        "DMX output stalled - triggering blackout",
-                        silence=silence_duration,
+            for output_name, output in self._outputs.items():
+                if not self._is_output_active(output):
+                    self._last_frame_count[output_name] = self._safe_frame_count(
+                        output,
+                        self._last_frame_count[output_name],
                     )
-                    self.dmx_output.blackout()
-            else:
-                self._last_check_time = current_time
+                    self._last_check_time[output_name] = now
+                    continue
 
-            self._last_frame_count = current_frames
+                current_frames = self._safe_frame_count(
+                    output,
+                    self._last_frame_count[output_name],
+                )
+
+                if current_frames != self._last_frame_count[output_name]:
+                    self._last_frame_count[output_name] = current_frames
+                    self._last_check_time[output_name] = now
+                    continue
+
+                if now - self._last_check_time[output_name] > self.max_silence:
+                    stalled_outputs.append(output_name)
+
+            if stalled_outputs:
+                self._trigger_blackout(stalled_outputs)
+                if now - self._last_stall_log > max(self.check_interval, 1.0):
+                    logger.critical(
+                        "Output(s) stalled - triggering emergency blackout",
+                        outputs=stalled_outputs,
+                    )
+                    self._last_stall_log = now
+
+                for output_name in stalled_outputs:
+                    output = self._outputs[output_name]
+                    self._last_frame_count[output_name] = self._safe_frame_count(
+                        output,
+                        self._last_frame_count[output_name],
+                    )
+
+    @staticmethod
+    def _build_output_blackout_callbacks(
+        output: SupportsBlackoutAndStats,
+    ) -> list[Callable[[], None]]:
+        """Resolve emergency blackout callbacks with the safest method first."""
+        callbacks: list[Callable[[], None]] = []
+        emergency_handler = getattr(output, "emergency_blackout", None)
+        if callable(emergency_handler):
+            callbacks.append(emergency_handler)
+            return callbacks
+
+        request_handler = getattr(output, "request_blackout", None)
+        if callable(request_handler):
+            callbacks.append(request_handler)
+            return callbacks
+
+        blackout_handler = getattr(output, "blackout", None)
+        if callable(blackout_handler):
+            callbacks.append(blackout_handler)
+
+        return callbacks
+
+    def _is_output_active(self, output: SupportsBlackoutAndStats) -> bool:
+        """Return False for outputs that are not currently running."""
+        stats = output.get_stats()
+        running = stats.get("running")
+        if running is True:
+            return True
+        if running is False:
+            return False
+
+        # If running flag is absent, fall back to whether there are fixtures.
+        fixture_count = stats.get("fixture_count")
+        return not (isinstance(fixture_count, int) and fixture_count == 0)
+
+    def _safe_frame_count(self, output: SupportsBlackoutAndStats, fallback: int) -> int:
+        """Read frame counter from output stats with defensive defaults."""
+        stats = output.get_stats()
+        raw = stats.get("frames_sent")
+        return raw if isinstance(raw, int) else fallback
+
+    def _trigger_blackout(self, stalled_outputs: list[str]) -> None:
+        """Apply emergency blackout across monitored outputs."""
+        for output in self._outputs.values():
+            handlers = self._build_output_blackout_callbacks(output)
+            for callback in handlers:
+                try:
+                    callback()
+                except Exception:
+                    logger.exception("Safety monitor blackout callback failed")
+
+        for output_name in stalled_outputs:
+            logger.warning("Safety monitor detected stalled output", output=output_name)

@@ -1,0 +1,871 @@
+{
+  "_meta": {
+    "generated_at": "2026-02-23T03:32:20Z",
+    "git_sha": "6150bc0a8da7ad239ef9046ad38d317bf69b08a1",
+    "scope_files": [
+      "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md",
+      "src/photonic_synesthesia/graph/nodes/audio_sense.py",
+      "src/photonic_synesthesia/graph/nodes/cv_sense.py",
+      "src/photonic_synesthesia/graph/nodes/dmx_output.py",
+      "src/photonic_synesthesia/graph/nodes/safety_interlock.py",
+      "src/photonic_synesthesia/graph/builder.py",
+      "schemas/critique_spec_dual_loop_plan.json"
+    ],
+    "include_prefixes": [
+      "src/",
+      "tests/",
+      "scripts/"
+    ]
+  },
+  "docs/REMEDIATION_PLAN_DUAL_LOOP_2026-02-23.md": {
+    "line_count": 459,
+    "hash": "879839959a41ea6c33d8d42a5f1b99d24c1dd8ffcfd193e27823e1fbb1372141",
+    "git_sha": "",
+    "error": "not_python_or_syntax_error"
+  },
+  "src/photonic_synesthesia/graph/nodes/audio_sense.py": {
+    "line_count": 193,
+    "functions": {
+      "__init__": {
+        "lineno": 42,
+        "end_lineno": 59,
+        "args": [
+          "self",
+          "config"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_audio_callback": {
+        "lineno": 61,
+        "end_lineno": 86,
+        "args": [
+          "self",
+          "indata",
+          "_frames",
+          "_time_info",
+          "status"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "start": {
+        "lineno": 88,
+        "end_lineno": 137,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "stop": {
+        "lineno": 139,
+        "end_lineno": 150,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__call__": {
+        "lineno": 152,
+        "end_lineno": 179,
+        "args": [
+          "self",
+          "state"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "is_running": {
+        "lineno": 182,
+        "end_lineno": 184,
+        "args": [
+          "self"
+        ],
+        "decorators": [
+          "property"
+        ],
+        "is_async": false
+      },
+      "get_stats": {
+        "lineno": 186,
+        "end_lineno": 193,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      }
+    },
+    "classes": {
+      "AudioSenseNode": {
+        "lineno": 34,
+        "end_lineno": 193,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "_audio_callback",
+          "start",
+          "stop",
+          "__call__",
+          "is_running",
+          "get_stats"
+        ]
+      }
+    },
+    "imports": [
+      "__future__",
+      "collections",
+      "numpy",
+      "numpy.typing",
+      "photonic_synesthesia.core.config",
+      "photonic_synesthesia.core.exceptions",
+      "photonic_synesthesia.core.state",
+      "sounddevice",
+      "structlog",
+      "threading",
+      "time"
+    ],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "3661df7b2f17d3de385bde4d7996329ad5b4f3d4863990ded52f9aca14c63c7f",
+    "git_sha": "e3ef9954e96fc3d2a4168dac5e185578c1a87d68"
+  },
+  "src/photonic_synesthesia/graph/nodes/cv_sense.py": {
+    "line_count": 313,
+    "functions": {
+      "__init__": {
+        "lineno": 42,
+        "end_lineno": 76,
+        "args": [
+          "self",
+          "config",
+          "cv_threaded"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "start": {
+        "lineno": 78,
+        "end_lineno": 88,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "stop": {
+        "lineno": 90,
+        "end_lineno": 95,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_load_digit_templates": {
+        "lineno": 97,
+        "end_lineno": 106,
+        "args": [
+          "self",
+          "template_dir"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__call__": {
+        "lineno": 108,
+        "end_lineno": 145,
+        "args": [
+          "self",
+          "state"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_worker_loop": {
+        "lineno": 147,
+        "end_lineno": 153,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_refresh_cached_state": {
+        "lineno": 155,
+        "end_lineno": 181,
+        "args": [
+          "self",
+          "capture_time"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_capture_region": {
+        "lineno": 183,
+        "end_lineno": 200,
+        "args": [
+          "self",
+          "roi"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_detect_bpm": {
+        "lineno": 202,
+        "end_lineno": 233,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_match_digits": {
+        "lineno": 235,
+        "end_lineno": 258,
+        "args": [
+          "self",
+          "img"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_analyze_waveform": {
+        "lineno": 260,
+        "end_lineno": 302,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "configure_regions": {
+        "lineno": 304,
+        "end_lineno": 313,
+        "args": [
+          "self",
+          "bpm_roi",
+          "waveform_roi"
+        ],
+        "decorators": [],
+        "is_async": false
+      }
+    },
+    "classes": {
+      "CVSenseNode": {
+        "lineno": 34,
+        "end_lineno": 313,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "_load_digit_templates",
+          "__call__",
+          "_worker_loop",
+          "_refresh_cached_state",
+          "_capture_region",
+          "_detect_bpm",
+          "_match_digits",
+          "_analyze_waveform",
+          "configure_regions"
+        ]
+      }
+    },
+    "imports": [
+      "__future__",
+      "cv2",
+      "mss",
+      "numpy",
+      "pathlib",
+      "photonic_synesthesia.core.config",
+      "photonic_synesthesia.core.state",
+      "pytesseract",
+      "structlog",
+      "threading",
+      "time",
+      "typing"
+    ],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "5cea066fcc81bf45114d45dcbec78327c0f7979166b6828f4f7053c46633ce61",
+    "git_sha": "e3ef9954e96fc3d2a4168dac5e185578c1a87d68"
+  },
+  "src/photonic_synesthesia/graph/nodes/dmx_output.py": {
+    "line_count": 320,
+    "functions": {
+      "__init__": {
+        "lineno": 58,
+        "end_lineno": 80,
+        "args": [
+          "self",
+          "config",
+          "dmx_double_buffer"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "start": {
+        "lineno": 82,
+        "end_lineno": 132,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "stop": {
+        "lineno": 134,
+        "end_lineno": 172,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_transmit_loop": {
+        "lineno": 174,
+        "end_lineno": 197,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_send_frame": {
+        "lineno": 199,
+        "end_lineno": 232,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_artnet_universe_address": {
+        "lineno": 234,
+        "end_lineno": 247,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__call__": {
+        "lineno": 249,
+        "end_lineno": 275,
+        "args": [
+          "self",
+          "state"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "set_channel": {
+        "lineno": 277,
+        "end_lineno": 282,
+        "args": [
+          "self",
+          "channel",
+          "value"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "request_blackout": {
+        "lineno": 284,
+        "end_lineno": 290,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "blackout": {
+        "lineno": 292,
+        "end_lineno": 296,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "get_stats": {
+        "lineno": 298,
+        "end_lineno": 307,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_apply_fixture_commands": {
+        "lineno": 310,
+        "end_lineno": 320,
+        "args": [
+          "universe",
+          "commands"
+        ],
+        "decorators": [
+          "staticmethod"
+        ],
+        "is_async": false
+      }
+    },
+    "classes": {
+      "DMXOutputNode": {
+        "lineno": 42,
+        "end_lineno": 320,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "_transmit_loop",
+          "_send_frame",
+          "_artnet_universe_address",
+          "__call__",
+          "set_channel",
+          "request_blackout",
+          "blackout",
+          "get_stats",
+          "_apply_fixture_commands"
+        ]
+      }
+    },
+    "imports": [
+      "__future__",
+      "logging",
+      "math",
+      "photonic_synesthesia.core.config",
+      "photonic_synesthesia.core.exceptions",
+      "photonic_synesthesia.core.state",
+      "photonic_synesthesia.dmx.artnet",
+      "photonic_synesthesia.dmx.universe",
+      "pyftdi.serialext",
+      "structlog",
+      "threading",
+      "time"
+    ],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "d63842dec20cabfef23c58d852bacb54b93a38433fb393fdfa895f8723d527ac",
+    "git_sha": "e3ef9954e96fc3d2a4168dac5e185578c1a87d68"
+  },
+  "src/photonic_synesthesia/graph/nodes/safety_interlock.py": {
+    "line_count": 501,
+    "functions": {
+      "blackout": {
+        "lineno": 36,
+        "end_lineno": 37,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "request_blackout": {
+        "lineno": 43,
+        "end_lineno": 44,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "get_stats": {
+        "lineno": 50,
+        "end_lineno": 51,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__init__": {
+        "lineno": 442,
+        "end_lineno": 455,
+        "args": [
+          "self",
+          "dmx_output",
+          "check_interval",
+          "max_silence"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "start": {
+        "lineno": 457,
+        "end_lineno": 468,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "stop": {
+        "lineno": 470,
+        "end_lineno": 475,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "beat": {
+        "lineno": 90,
+        "end_lineno": 93,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_run_loop": {
+        "lineno": 95,
+        "end_lineno": 105,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__call__": {
+        "lineno": 163,
+        "end_lineno": 283,
+        "args": [
+          "self",
+          "state"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_emergency_blackout": {
+        "lineno": 285,
+        "end_lineno": 287,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_derive_strobe_channels": {
+        "lineno": 289,
+        "end_lineno": 303,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_apply_strobe_guards": {
+        "lineno": 305,
+        "end_lineno": 381,
+        "args": [
+          "self",
+          "state",
+          "universe",
+          "current_time"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_apply_graceful_degradation": {
+        "lineno": 383,
+        "end_lineno": 417,
+        "args": [
+          "self",
+          "state",
+          "universe",
+          "beat_confidence"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "trigger_emergency_stop": {
+        "lineno": 419,
+        "end_lineno": 422,
+        "args": [
+          "self",
+          "source"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "reset_emergency_stop": {
+        "lineno": 424,
+        "end_lineno": 427,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "is_safe": {
+        "lineno": 429,
+        "end_lineno": 431,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_monitor_loop": {
+        "lineno": 477,
+        "end_lineno": 501,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      }
+    },
+    "classes": {
+      "SupportsBlackout": {
+        "lineno": 33,
+        "end_lineno": 37,
+        "bases": [
+          "Protocol"
+        ],
+        "methods": [
+          "blackout"
+        ]
+      },
+      "SupportsBlackoutRequest": {
+        "lineno": 40,
+        "end_lineno": 44,
+        "bases": [
+          "SupportsBlackout",
+          "Protocol"
+        ],
+        "methods": [
+          "request_blackout"
+        ]
+      },
+      "SupportsBlackoutAndStats": {
+        "lineno": 47,
+        "end_lineno": 51,
+        "bases": [
+          "SupportsBlackout",
+          "Protocol"
+        ],
+        "methods": [
+          "get_stats"
+        ]
+      },
+      "HeartbeatWatchdog": {
+        "lineno": 54,
+        "end_lineno": 105,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "beat",
+          "_run_loop"
+        ]
+      },
+      "SafetyInterlockNode": {
+        "lineno": 108,
+        "end_lineno": 431,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "__call__",
+          "_emergency_blackout",
+          "_derive_strobe_channels",
+          "_apply_strobe_guards",
+          "_apply_graceful_degradation",
+          "trigger_emergency_stop",
+          "reset_emergency_stop",
+          "is_safe"
+        ]
+      },
+      "SafetyMonitor": {
+        "lineno": 434,
+        "end_lineno": 501,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "_monitor_loop"
+        ]
+      }
+    },
+    "imports": [
+      "__future__",
+      "collections",
+      "collections.abc",
+      "logging",
+      "photonic_synesthesia.core.config",
+      "photonic_synesthesia.core.state",
+      "photonic_synesthesia.dmx.universe",
+      "structlog",
+      "threading",
+      "time",
+      "typing"
+    ],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "26504e90c6c63547603fee0cc5bb135807be10bee09da13a76fdd64c8aaed20f",
+    "git_sha": "6db5fb4f05ad08a742ff7c02b737f3ea7858625d"
+  },
+  "src/photonic_synesthesia/graph/builder.py": {
+    "line_count": 322,
+    "functions": {
+      "build_photonic_graph": {
+        "lineno": 158,
+        "end_lineno": 282,
+        "args": [
+          "settings",
+          "mock_sensors"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "build_minimal_graph": {
+        "lineno": 285,
+        "end_lineno": 322,
+        "args": [
+          "settings"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "__init__": {
+        "lineno": 46,
+        "end_lineno": 58,
+        "args": [
+          "self",
+          "graph",
+          "settings",
+          "nodes"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "start": {
+        "lineno": 60,
+        "end_lineno": 75,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "stop": {
+        "lineno": 77,
+        "end_lineno": 92,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "step": {
+        "lineno": 94,
+        "end_lineno": 97,
+        "args": [
+          "self"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "run_loop": {
+        "lineno": 99,
+        "end_lineno": 130,
+        "args": [
+          "self",
+          "target_fps"
+        ],
+        "decorators": [],
+        "is_async": false
+      },
+      "_sleep_with_hybrid_pacing": {
+        "lineno": 133,
+        "end_lineno": 150,
+        "args": [
+          "sleep_time"
+        ],
+        "decorators": [
+          "staticmethod"
+        ],
+        "is_async": false
+      },
+      "state": {
+        "lineno": 153,
+        "end_lineno": 155,
+        "args": [
+          "self"
+        ],
+        "decorators": [
+          "property"
+        ],
+        "is_async": false
+      }
+    },
+    "classes": {
+      "PhotonicGraph": {
+        "lineno": 38,
+        "end_lineno": 155,
+        "bases": [],
+        "methods": [
+          "__init__",
+          "start",
+          "stop",
+          "step",
+          "run_loop",
+          "_sleep_with_hybrid_pacing",
+          "state"
+        ]
+      }
+    },
+    "imports": [
+      "__future__",
+      "langgraph.graph",
+      "photonic_synesthesia.core.config",
+      "photonic_synesthesia.core.state",
+      "photonic_synesthesia.graph.nodes",
+      "photonic_synesthesia.graph.nodes.mocks",
+      "structlog",
+      "time",
+      "typing"
+    ],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "b834264eedc6622db74f7ff79247df46fddaa41848603f7c89d9177442c1df55",
+    "git_sha": "e3ef9954e96fc3d2a4168dac5e185578c1a87d68"
+  },
+  "schemas/critique_spec_dual_loop_plan.json": {
+    "line_count": 121,
+    "functions": {},
+    "classes": {},
+    "imports": [],
+    "exceptions": [],
+    "patterns": {
+      "async_db_calls": [],
+      "ownership_predicates": []
+    },
+    "hash": "c00a601f6ed1d0d273d94f4286f01ee7425777cc42accaa5085ca158f33642fd",
+    "git_sha": ""
+  }
+}

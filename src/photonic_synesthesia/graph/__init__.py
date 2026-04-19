@@ -1,4 +1,4 @@
-"""LangGraph orchestration for Photonic Synesthesia."""
+"""Execution pipeline exports for Photonic Synesthesia."""
 
 from __future__ import annotations
 

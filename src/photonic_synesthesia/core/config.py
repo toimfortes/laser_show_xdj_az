@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -68,6 +68,20 @@ class DMXConfig(BaseModel):
     artnet_subnet: int = 0
 
 
+class ILDAConfig(BaseModel):
+    """ILDA frame generation/export configuration."""
+
+    enabled: bool = True
+    transport_type: str = "memory"  # "memory", "json", "ild", "ether_dream"
+    points_per_frame: int = 120
+    target_fps: float = 30.0
+    export_path: Path | None = None
+    ether_dream_host: str = "127.0.0.1"
+    ether_dream_port: int = 7765
+    ether_dream_timeout_s: float = 1.0
+    ether_dream_low_water_mark: int = 0
+
+
 class FixtureConfig(BaseModel):
     """Individual fixture configuration."""
 
@@ -88,6 +102,16 @@ class LaserSafetyConfig(BaseModel):
     speed_channel_offset: int = 4
     max_intensity_no_movement: int = 50
     enable_delay_ms: int = 500
+    ilda_x_min: int = -32767
+    ilda_x_max: int = 32767
+    ilda_y_min: int = -32767
+    ilda_y_max: int = 32767
+    ilda_max_point_count: int = 512
+    ilda_min_point_velocity: int = 250
+    ilda_max_point_velocity: int = 40000
+    ilda_max_color_value: int = 255
+    ilda_max_blink_hz: float = 12.0
+    ilda_blackout_hold_s: float = 0.5
 
 
 class StrobeSafetyConfig(BaseModel):
@@ -143,6 +167,17 @@ class SceneConfig(BaseModel):
     transition_time_s: float = 0.5
 
 
+class RuntimeFlagsConfig(BaseModel):
+    """Runtime feature flags for staged rollout of performance changes."""
+
+    cv_threaded: bool = True
+    dmx_double_buffer: bool = True
+    hybrid_pacing: bool = True
+    streaming_dsp: bool = False
+    dual_loop: bool = False
+    allow_unverified_laser_profiles: bool = False
+
+
 class Settings(BaseSettings):
     """
     Main application settings.
@@ -164,10 +199,12 @@ class Settings(BaseSettings):
     pro_dj_link: ProDJLinkConfig = Field(default_factory=ProDJLinkConfig)
     cv: CVConfig = Field(default_factory=CVConfig)
     dmx: DMXConfig = Field(default_factory=DMXConfig)
+    ilda: ILDAConfig = Field(default_factory=ILDAConfig)
     safety: SafetyConfig = Field(default_factory=SafetyConfig)
     beat_tracking: BeatTrackingConfig = Field(default_factory=BeatTrackingConfig)
     structure_detection: StructureDetectionConfig = Field(default_factory=StructureDetectionConfig)
     scene: SceneConfig = Field(default_factory=SceneConfig)
+    runtime_flags: RuntimeFlagsConfig = Field(default_factory=RuntimeFlagsConfig)
 
     # Fixtures
     fixtures: list[FixtureConfig] = Field(default_factory=list)

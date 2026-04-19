@@ -7,27 +7,33 @@ template matching for digit OCR and color analysis for waveform lookahead.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
-import structlog
 
 from photonic_synesthesia.core.config import CVConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import CVState, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
+_cv2: Any = None
+_mss: Any = None
 try:
-    import cv2
-    import mss
+    import cv2 as _cv2_import
+    import mss as _mss_import
 
+    _cv2 = _cv2_import
+    _mss = _mss_import
     CV_AVAILABLE = True
 except ImportError:
     CV_AVAILABLE = False
-    cv2 = None
-    mss = None
+
+cv2: Any = _cv2
+mss: Any = _mss
 
 
 class CVSenseNode:
@@ -38,9 +44,10 @@ class CVSenseNode:
     for fast, reliable digit recognition.
     """
 
-    def __init__(self, config: CVConfig):
+    def __init__(self, config: CVConfig, cv_threaded: bool = False):
         self.config = config
         self.enabled = config.enabled and CV_AVAILABLE
+        self.cv_threaded = cv_threaded
 
         # Screen capture
         self._sct = None
@@ -61,6 +68,36 @@ class CVSenseNode:
         # Results cache
         self._last_bpm: float | None = None
         self._last_lookahead: tuple[float, float, float] = (0.5, 0.5, 0.5)
+        self._state_lock = threading.Lock()
+        self._cached_state = CVState(
+            detected_bpm=None,
+            lookahead_bass=0.5,
+            lookahead_mids=0.5,
+            lookahead_highs=0.5,
+            waveform_phase=0.0,
+            capture_timestamp=0.0,
+        )
+        self._worker_thread: threading.Thread | None = None
+        self._worker_running = False
+
+    def start(self) -> None:
+        """Start background capture worker for threaded mode."""
+        if not self.enabled or not self.cv_threaded or self._worker_running:
+            return
+        self._worker_running = True
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop,
+            name="CV-Sense",
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def stop(self) -> None:
+        """Stop background capture worker."""
+        self._worker_running = False
+        if self._worker_thread is not None:
+            self._worker_thread.join(timeout=1.0)
+            self._worker_thread = None
 
     def _load_digit_templates(self, template_dir: Path) -> None:
         """Load pre-rendered digit templates for template matching."""
@@ -82,21 +119,47 @@ class CVSenseNode:
             state["sensor_status"]["cv"] = False
             return state
 
+        if self.cv_threaded:
+            with self._state_lock:
+                cached = self._cached_state.copy()
+            state["cv_state"] = CVState(**cached)
+            state["sensor_status"]["cv"] = (
+                cached["capture_timestamp"] > 0.0
+                and (current_time - cached["capture_timestamp"]) <= (self._capture_interval * 3)
+            )
+            state["processing_times"]["cv_sense"] = time.time() - start_time
+            return state
+
         # Rate limiting
         if current_time - self._last_capture_time < self._capture_interval:
             # Use cached values
-            state["cv_state"] = CVState(
-                detected_bpm=self._last_bpm,
-                lookahead_bass=self._last_lookahead[0],
-                lookahead_mids=self._last_lookahead[1],
-                lookahead_highs=self._last_lookahead[2],
-                waveform_phase=0.0,
-                capture_timestamp=self._last_capture_time,
-            )
+            with self._state_lock:
+                cached = self._cached_state.copy()
+            state["cv_state"] = CVState(**cached)
             return state
 
-        self._last_capture_time = current_time
+        self._refresh_cached_state(current_time)
+        with self._state_lock:
+            cached = self._cached_state.copy()
+        state["cv_state"] = CVState(**cached)
+        state["sensor_status"]["cv"] = True
 
+        # Record processing time
+        state["processing_times"]["cv_sense"] = time.time() - start_time
+
+        return state
+
+    def _worker_loop(self) -> None:
+        """Capture CV state in a background thread for low-jitter graph reads."""
+        while self._worker_running:
+            now = time.time()
+            if now - self._last_capture_time >= self._capture_interval:
+                self._refresh_cached_state(now)
+            time.sleep(min(0.005, self._capture_interval / 4))
+
+    def _refresh_cached_state(self, capture_time: float) -> None:
+        """Refresh cached CV state from the latest capture."""
+        self._last_capture_time = capture_time
         try:
             # Capture BPM region
             if self._bpm_roi:
@@ -108,26 +171,19 @@ class CVSenseNode:
             if self._waveform_roi:
                 self._last_lookahead = self._analyze_waveform()
 
-            state["sensor_status"]["cv"] = True
+            new_state = CVState(
+                detected_bpm=self._last_bpm,
+                lookahead_bass=self._last_lookahead[0],
+                lookahead_mids=self._last_lookahead[1],
+                lookahead_highs=self._last_lookahead[2],
+                waveform_phase=0.0,
+                capture_timestamp=capture_time,
+            )
+            with self._state_lock:
+                self._cached_state = new_state
 
         except Exception as e:
             logger.error("CV capture failed", error=str(e))
-            state["sensor_status"]["cv"] = False
-
-        # Update state
-        state["cv_state"] = CVState(
-            detected_bpm=self._last_bpm,
-            lookahead_bass=self._last_lookahead[0],
-            lookahead_mids=self._last_lookahead[1],
-            lookahead_highs=self._last_lookahead[2],
-            waveform_phase=0.0,
-            capture_timestamp=current_time,
-        )
-
-        # Record processing time
-        state["processing_times"]["cv_sense"] = time.time() - start_time
-
-        return state
 
     def _capture_region(self, roi: dict[str, int]) -> np.ndarray | None:
         """Capture a screen region."""
@@ -231,17 +287,23 @@ class CVSenseNode:
 
         # Convert to HSV for color detection
         hsv = cv2.cvtColor(lookahead, cv2.COLOR_BGR2HSV)
+        blue_lower = np.array([100, 50, 50], dtype=np.uint8)
+        blue_upper = np.array([130, 255, 255], dtype=np.uint8)
+        amber_lower = np.array([10, 100, 100], dtype=np.uint8)
+        amber_upper = np.array([25, 255, 255], dtype=np.uint8)
+        white_lower = np.array([0, 0, 200], dtype=np.uint8)
+        white_upper = np.array([180, 30, 255], dtype=np.uint8)
 
         # Blue detection (bass) - H: 100-130
-        blue_mask = cv2.inRange(hsv, (100, 50, 50), (130, 255, 255))
+        blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
         bass_intensity = np.sum(blue_mask) / (255 * blue_mask.size)
 
         # Orange/amber detection (mids) - H: 10-25
-        amber_mask = cv2.inRange(hsv, (10, 100, 100), (25, 255, 255))
+        amber_mask = cv2.inRange(hsv, amber_lower, amber_upper)
         mid_intensity = np.sum(amber_mask) / (255 * amber_mask.size)
 
         # White detection (highs) - Low saturation, high value
-        white_mask = cv2.inRange(hsv, (0, 0, 200), (180, 30, 255))
+        white_mask = cv2.inRange(hsv, white_lower, white_upper)
         high_intensity = np.sum(white_mask) / (255 * white_mask.size)
 
         return (

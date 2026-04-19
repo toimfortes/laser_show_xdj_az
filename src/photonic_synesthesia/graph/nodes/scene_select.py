@@ -1,5 +1,4 @@
-"""
-Scene Selection Node: AI-driven scene selection based on fused state.
+"""Scene Selection Node: AI-driven scene selection based on fused state.
 
 Maps musical structure, energy levels, and DJ intent to lighting scenes.
 """
@@ -10,23 +9,19 @@ import json
 import time
 from typing import Any
 
-import structlog
-
 from photonic_synesthesia.core.config import SceneConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import MusicStructure, PhotonicState, SceneState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class SceneSelectNode:
     """
     Selects appropriate lighting scene based on current state.
 
-    Uses a priority-based system:
-    1. MIDI pad triggers (manual override - highest priority)
-    2. Drop detection (immediate high-energy response)
-    3. Structure-based selection (buildup, breakdown, etc.)
-    4. Energy-based fallback
+    The director provides the target scene. This node applies operator
+    overrides and transition constraints, then falls back only when needed.
     """
 
     def __init__(self, config: SceneConfig):
@@ -45,7 +40,7 @@ class SceneSelectNode:
             MusicStructure.DROP: "drop_intense",
             MusicStructure.BREAKDOWN: "breakdown_ambient",
             MusicStructure.OUTRO: "outro_fade",
-            MusicStructure.UNKNOWN: "idle",
+            MusicStructure.UNKNOWN: self.config.default_scene,
         }
 
     def _load_scenes(self) -> None:
@@ -79,43 +74,71 @@ class SceneSelectNode:
         current_scene = state["scene_state"]["current_scene"]
         pending_scene = None
         transition_progress = state["scene_state"]["transition_progress"]
+        control_state = state["control_state"]
+
+        # =================================================================
+        # Priority 0: Control Plane Scene Hold / Launch
+        # =================================================================
+        held_scene = control_state["scene_hold"]
+        launched_scene = control_state["launched_scene"]
+        if held_scene:
+            pending_scene = held_scene
+        elif launched_scene:
+            pending_scene = launched_scene
 
         # =================================================================
         # Priority 1: MIDI Pad Override
         # =================================================================
-        pad_triggers = state["midi_state"]["pad_triggers"]
-        for pad in pad_triggers:
-            if pad in self.pad_overrides:
-                pending_scene = self.pad_overrides[pad]
-                logger.info("Pad override triggered", pad=pad, scene=pending_scene)
-                break
+        if pending_scene is None:
+            pad_triggers = state["midi_state"]["pad_triggers"]
+            for pad in pad_triggers:
+                if pad in self.pad_overrides:
+                    pending_scene = self.pad_overrides[pad]
+                    logger.info("Pad override triggered", pad=pad, scene=pending_scene)
+                    break
 
         # =================================================================
-        # Priority 2: Drop Detection
+        # Priority 2: Director-directed transition (single source of target scene)
         # =================================================================
         if pending_scene is None:
             director = state.get("director_state")
             if director:
-                target_scene = director["target_scene"]
-                if director["allow_scene_transition"] or target_scene == current_scene:
-                    pending_scene = target_scene
-                else:
+                proposed = str(director["target_scene"])
+                allow_transition = bool(director.get("allow_scene_transition", True))
+                if proposed in self.scenes and (
+                    allow_transition or proposed == current_scene
+                ):
+                    pending_scene = proposed
+                elif not self._is_valid_scene_name(proposed):
+                    logger.debug(
+                        "Director proposed scene not found in catalog",
+                        proposed=proposed,
+                    )
+                    if allow_transition:
+                        pending_scene = self.structure_scenes.get(
+                            state["current_structure"],
+                            self.config.default_scene,
+                        )
+                    else:
+                        pending_scene = current_scene
+                elif not allow_transition:
                     pending_scene = current_scene
-            elif state["current_structure"] == MusicStructure.DROP:
-                pending_scene = "drop_intense"
-            elif state["drop_probability"] > 0.9:
-                # Pre-load drop scene
-                pending_scene = "drop_intense"
 
         # =================================================================
-        # Priority 3: Structure-Based Selection
+        # Priority 3: Structure-based fallback
         # =================================================================
         if pending_scene is None:
-            structure = state["current_structure"]
-            pending_scene = self.structure_scenes.get(structure, "idle")
+            pending_scene = self.structure_scenes.get(
+                state["current_structure"],
+                self.config.default_scene,
+            )
+
+        # Validate fallback scenes to avoid invalid transitions into deleted scene files.
+        if not self._is_valid_scene_name(pending_scene):
+            pending_scene = self._resolve_fallback_scene(state["current_structure"])
 
         # =================================================================
-        # Priority 4: Energy-Based Adjustment
+        # Priority 4: Energy-based adjustment
         # =================================================================
         energy = state["audio_features"]["rms_energy"]
         if pending_scene and pending_scene in self.scenes:
@@ -139,7 +162,8 @@ class SceneSelectNode:
                 transition_progress = 0.0
             else:
                 # Continue existing transition
-                transition_time = self.config.transition_time_s
+                speed_scalar = max(0.1, float(control_state["global_speed"]))
+                transition_time = self.config.transition_time_s / speed_scalar
                 elapsed = current_time - state["scene_state"]["transition_start_time"]
                 transition_progress = min(1.0, elapsed / transition_time)
 
@@ -164,10 +188,69 @@ class SceneSelectNode:
             scene_start_time=state["scene_state"]["scene_start_time"],
         )
 
+        # =================================================================
+        # Apply Scene Overrides to Director State
+        # =================================================================
+        # Scenes may carry a "director_overrides" block that patches a
+        # small whitelisted set of DirectorState fields after
+        # director_intent has run. Whitelisting keeps the TypedDict
+        # contract intact (mypy won't accept dynamic key assignment on a
+        # TypedDict) and prevents scene JSON from mutating unrelated
+        # director state.
+        _OVERRIDABLE_KEYS = {
+            "color_theme",
+            "movement_style",
+            "laser_aggression",
+            "color_drive",
+            "laser_motion_energy",
+            "laser_color_energy",
+            "strobe_budget_hz",
+        }
+        if current_scene in self.scenes:
+            overrides = self.scenes[current_scene].get("director_overrides", {})
+            if overrides:
+                director_state = state["director_state"]
+                for key, value in overrides.items():
+                    if key not in _OVERRIDABLE_KEYS:
+                        continue
+                    if key == "color_theme":
+                        director_state["color_theme"] = str(value)
+                    elif key == "movement_style":
+                        director_state["movement_style"] = str(value)
+                    elif key == "laser_aggression":
+                        director_state["laser_aggression"] = float(value)
+                    elif key == "color_drive":
+                        director_state["color_drive"] = float(value)
+                    elif key == "laser_motion_energy":
+                        director_state["laser_motion_energy"] = float(value)
+                    elif key == "laser_color_energy":
+                        director_state["laser_color_energy"] = float(value)
+                    elif key == "strobe_budget_hz":
+                        director_state["strobe_budget_hz"] = float(value)
+                    logger.debug("Applied scene override", key=key, value=value)
+
         # Record processing time
         state["processing_times"]["scene_select"] = time.time() - start_time
 
         return state
+
+    def _is_valid_scene_name(self, scene_name: str) -> bool:
+        return scene_name in self.scenes
+
+    def _resolve_fallback_scene(self, structure: MusicStructure) -> str:
+        """Return best-known fallback scene for this structure/current config."""
+        if not self.scenes:
+            return self.config.default_scene
+
+        fallback = self.structure_scenes.get(structure, self.config.default_scene)
+        if fallback in self.scenes:
+            return fallback
+
+        for candidate in (self.config.default_scene, "idle"):
+            if candidate in self.scenes:
+                return candidate
+
+        return sorted(self.scenes)[0]
 
     def get_scene_data(self, scene_name: str) -> dict[str, Any] | None:
         """Get full scene definition by name."""

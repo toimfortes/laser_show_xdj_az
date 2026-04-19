@@ -1,8 +1,8 @@
 """
-LangGraph State Definitions for Photonic Synesthesia.
+State definitions for Photonic Synesthesia.
 
-This module defines the central state object that flows through the LangGraph
-state machine, containing all sensor data, analysis results, and control signals.
+This module defines the central state object that flows through the execution
+pipeline, containing all sensor data, analysis results, and control signals.
 """
 
 from __future__ import annotations
@@ -37,6 +37,30 @@ class FixtureCommand(TypedDict):
     channel_values: dict[int, int]  # channel_offset -> value (0-255)
 
 
+class ILDAPoint(TypedDict):
+    """One ILDA point in DAC coordinate space."""
+
+    x: int
+    y: int
+    r: int
+    g: int
+    b: int
+    blanked: bool
+
+
+class ILDAFrame(TypedDict):
+    """Generated ILDA frame for one fixture."""
+
+    fixture_id: str
+    profile_name: str
+    geometry_family: str
+    color_mode: str
+    target_bias: str
+    point_count: int
+    repeat: bool
+    points: list[ILDAPoint]
+
+
 class AudioFeatures(TypedDict):
     """Extracted audio features from spectral analysis."""
 
@@ -47,6 +71,17 @@ class AudioFeatures(TypedDict):
     low_energy: float  # 20-200 Hz
     mid_energy: float  # 200-2000 Hz
     high_energy: float  # 2000+ Hz
+    harmonic_ratio: float  # Harmonic-vs-percussive balance
+    percussive_ratio: float
+    tonal_stability: float  # Stable/pad-like vs harmonically shifting
+    harmonic_change: float  # Harmonic motion / chord-change pressure
+    harmonic_tension: float  # Tonal instability / suspense estimate
+    pitch_salience: float  # How prominent a pitched lead is
+    pitch_height: float  # Approximate normalized register of dominant pitch
+    melodic_contour: float  # Rising/falling melodic slope estimate
+    melodic_stability: float  # Stable note holding vs jittery melodic motion
+    onset_density: float  # How densely attacks are occurring
+    timbral_harshness: float  # Bright/noisy/aggressive timbre estimate
     mfcc_vector: list[float]
 
 
@@ -109,6 +144,15 @@ class DirectorState(TypedDict):
     color_theme: str
     movement_style: str
     strobe_budget_hz: float
+    melodic_smoothness: float
+    laser_aggression: float
+    color_drive: float
+    laser_motion_energy: float
+    laser_color_energy: float
+    phrase_role: str
+    subphrase_role: str
+    fill_pressure: float
+    phrase_intensity: float
     allow_scene_transition: bool
 
 
@@ -133,13 +177,24 @@ class SafetyState(TypedDict):
     emergency_stop: bool
 
 
+class ControlState(TypedDict):
+    """Operator control-plane overrides applied to execution."""
+
+    armed_live: bool
+    blackout_active: bool
+    global_intensity: float
+    global_speed: float
+    scene_hold: str | None
+    launched_scene: str | None
+
+
 class PhotonicState(TypedDict):
     """
-    Central state object flowing through LangGraph.
+    Central state object flowing through the execution pipeline.
 
     This TypedDict contains all sensor data, analysis results, and control
     signals used by the photonic synesthesia system. It is passed between
-    nodes in the LangGraph state machine and updated incrementally.
+    processing nodes and updated incrementally.
     """
 
     # Timing & Synchronization
@@ -185,12 +240,16 @@ class PhotonicState(TypedDict):
 
     # Fixture Commands (output)
     fixture_commands: list[FixtureCommand]
+    ilda_frames: list[ILDAFrame]
 
     # DMX Universe Buffer
     dmx_universe: bytes  # Start code + 512 channel slots
 
     # Safety Status
     safety_state: SafetyState
+
+    # Operator Controls
+    control_state: ControlState
 
     # System Health
     sensor_status: dict[str, bool]  # Which sensors are active
@@ -216,6 +275,17 @@ def create_initial_state() -> PhotonicState:
             low_energy=0.0,
             mid_energy=0.0,
             high_energy=0.0,
+            harmonic_ratio=0.0,
+            percussive_ratio=0.0,
+            tonal_stability=0.0,
+            harmonic_change=0.0,
+            harmonic_tension=0.0,
+            pitch_salience=0.0,
+            pitch_height=0.0,
+            melodic_contour=0.0,
+            melodic_stability=0.0,
+            onset_density=0.0,
+            timbral_harshness=0.0,
             mfcc_vector=[0.0] * 13,
         ),
         # Beat
@@ -274,6 +344,15 @@ def create_initial_state() -> PhotonicState:
             color_theme="neutral",
             movement_style="steady",
             strobe_budget_hz=0.0,
+            melodic_smoothness=0.0,
+            laser_aggression=0.0,
+            color_drive=0.0,
+            laser_motion_energy=0.0,
+            laser_color_energy=0.0,
+            phrase_role="unknown",
+            subphrase_role="idle",
+            fill_pressure=0.0,
+            phrase_intensity=0.0,
             allow_scene_transition=True,
         ),
         # Scene
@@ -286,6 +365,7 @@ def create_initial_state() -> PhotonicState:
         ),
         # Fixture output
         fixture_commands=[],
+        ilda_frames=[],
         dmx_universe=bytes(create_universe_buffer()),  # Start code + 512 channels
         # Safety
         safety_state=SafetyState(
@@ -295,6 +375,15 @@ def create_initial_state() -> PhotonicState:
             laser_enabled=True,
             strobe_enabled=True,
             emergency_stop=False,
+        ),
+        # Operator Controls
+        control_state=ControlState(
+            armed_live=False,
+            blackout_active=False,
+            global_intensity=1.0,
+            global_speed=1.0,
+            scene_hold=None,
+            launched_scene=None,
         ),
         # System
         sensor_status={

@@ -72,3 +72,25 @@ def test_interpreter_caps_strobe_from_director_budget() -> None:
 
     result = node(state)
     assert result["fixture_commands"][0]["channel_values"][26] == 0
+
+
+def test_interpreter_scales_panel_intensity_from_control_state() -> None:
+    settings = Settings()
+    node = InterpreterNode(settings.safety, max_delta_per_frame=255)
+    state = create_initial_state()
+    state["control_state"]["global_intensity"] = 0.5
+    state["fixture_commands"] = [
+        FixtureCommand(
+            fixture_id="panel1",
+            fixture_type="panel",
+            channel_values={50: 200, 51: 100, 52: 80, 53: 60},
+        )
+    ]
+
+    result = node(state)
+    scaled = result["fixture_commands"][0]["channel_values"]
+
+    assert scaled[50] == 100
+    assert scaled[51] == 50
+    assert scaled[52] == 40
+    assert scaled[53] == 30

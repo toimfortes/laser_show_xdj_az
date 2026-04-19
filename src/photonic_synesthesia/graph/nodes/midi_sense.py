@@ -11,12 +11,11 @@ import queue
 import time
 from typing import cast
 
-import structlog
-
 from photonic_synesthesia.core.config import MidiConfig
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import MidiState, PhotonicState
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 try:
     import mido

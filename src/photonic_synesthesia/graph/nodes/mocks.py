@@ -11,8 +11,7 @@ import math
 import random
 import time
 
-import structlog
-
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import (
     AudioFeatures,
     BeatInfo,
@@ -23,7 +22,7 @@ from photonic_synesthesia.core.state import (
 )
 from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 
 class MockAudioSenseNode:
@@ -96,6 +95,17 @@ class MockAudioSenseNode:
             low_energy=0.6 + 0.3 * math.sin(beat_phase * math.pi),
             mid_energy=0.4,
             high_energy=0.2,
+            harmonic_ratio=0.65 + 0.15 * math.sin(t * 0.17),
+            percussive_ratio=0.35 + 0.15 * math.cos(t * 0.21),
+            tonal_stability=0.72 + 0.12 * math.sin(t * 0.09),
+            harmonic_change=0.22 + 0.18 * math.sin(t * 0.31),
+            harmonic_tension=0.34 + 0.2 * math.sin(t * 0.23),
+            pitch_salience=0.58 + 0.2 * math.sin(t * 0.13),
+            pitch_height=0.46 + 0.18 * math.sin(t * 0.11),
+            melodic_contour=0.5 + 0.18 * math.sin(t * 0.07),
+            melodic_stability=0.68 + 0.14 * math.cos(t * 0.12),
+            onset_density=0.44 + 0.22 * math.sin(beat_phase * math.pi * 2),
+            timbral_harshness=0.3 + 0.28 * math.sin(t * 0.27),
             mfcc_vector=[0.0] * 13,
         )
 

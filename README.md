@@ -2,7 +2,7 @@
 
 **AI-Driven Laser Show Controller for AlphaTheta XDJ-AZ**
 
-An autonomous lighting control system that uses LangGraph for orchestration, combining real-time audio analysis, MIDI telemetry, and computer vision to create structure-aware, music-reactive light shows.
+An autonomous lighting control system built around a deterministic node pipeline, combining real-time audio analysis, MIDI telemetry, and computer vision to create structure-aware, music-reactive light shows.
 
 ## Overview
 
@@ -16,7 +16,7 @@ Photonic Synesthesia operates on a "Listener-Observer" model using air-gap techn
 ## Key Features
 
 - **Structure Detection**: Automatically detects drops, buildups, and breakdowns
-- **LangGraph Orchestration**: Modular state machine with parallel sensor processing
+- **Deterministic Pipeline Runtime**: Ordered node execution with explicit safety and output stages
 - **Safety Interlocks**: Multiple layers of software safety for laser operation
 - **Scene System**: JSON-defined scenes with beat-synced effects
 - **No Pro DJ Link Required**: Works entirely through audio loopback and MIDI
@@ -110,19 +110,15 @@ fixtures:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  LangGraph State Machine             │
+│                Deterministic Node Pipeline          │
 ├─────────────────────────────────────────────────────┤
-│  Audio Sense → Feature Extract → Beat Track →       │
-│      ↓              ↓              ↓                │
-│  MIDI Sense  ────→ Fusion ←──── CV Sense           │
-│                      ↓                               │
-│              Scene Selection                         │
-│                      ↓                               │
-│  Laser Ctrl   Moving Head Ctrl   Panel Ctrl        │
-│       ↓              ↓              ↓               │
-│              DMX Output                              │
-│                  ↓                                   │
-│          Safety Interlock                            │
+│ Audio Sense → Feature Extract → Beat Track         │
+│ Structure Detect → MIDI Sense → CV Sense           │
+│ Fusion → Director Intent → Scene Select            │
+│ Laser / Moving Head / Panel Control                │
+│ Interpreter → Safety Interlock                     │
+│ ILDA Frame Build → ILDA Vector Interlock           │
+│ ILDA Transport + DMX Output                        │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -161,7 +157,7 @@ black src/
 laser_show_xdj_az/
 ├── src/photonic_synesthesia/
 │   ├── core/           # State, config, exceptions
-│   ├── graph/          # LangGraph orchestration
+│   ├── graph/          # Deterministic pipeline orchestration
 │   │   └── nodes/      # Graph node implementations
 │   ├── analysis/       # Audio/visual analysis
 │   ├── dmx/            # DMX control layer
@@ -176,7 +172,6 @@ laser_show_xdj_az/
 
 ## Research Sources
 
-- [LangGraph](https://github.com/langchain-ai/langgraph) - State machine orchestration
 - [librosa](https://librosa.org/) - Audio analysis
 - [BeatNet](https://github.com/mjhydri/BeatNet) - Real-time beat tracking
 - [madmom](https://github.com/CPJKU/madmom) - Music information retrieval
