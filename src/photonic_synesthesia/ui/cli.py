@@ -762,6 +762,11 @@ def _build_track_metadata_binding_callback(
             "semantic_profile": semantic_profile,
             "metadata_confidence": metadata_confidence,
             "operator_intents": copy.deepcopy((persisted_show_plan or {}).get("operator_intents", [])),
+            # v2-added fields surfaced to bind_track_metadata (cycle-1 panel
+            # UF-1, UF-3; cycle-3 panel NC-7). Helper installs them via the
+            # _persisted_timeline_flags_hint + staged_look paths.
+            "timeline_flags": copy.deepcopy((persisted_show_plan or {}).get("timeline_flags", []) or []),
+            "staged_look": copy.deepcopy((persisted_show_plan or {}).get("staged_look")),
             "venue_mode": venue_mode,
             "structure_markers": structure_markers,
             "show_sections": show_sections,
@@ -1656,6 +1661,9 @@ def run_file(
                     venue_mode=venue_mode,
                     metadata_confidence=copy.deepcopy(metadata_confidence),
                     operator_intents=copy.deepcopy((persisted_show_plan or {}).get("operator_intents", [])),
+                    # v2-added persisted fields (cycle-1 panel UF-1 + UF-3).
+                    timeline_flags=copy.deepcopy((persisted_show_plan or {}).get("timeline_flags", []) or []),
+                    staged_look=copy.deepcopy((persisted_show_plan or {}).get("staged_look")),
                     waveform=audio_node.waveform_preview(),
                     structure_markers=structure_markers,
                     show_sections=active_show_sections,
