@@ -3276,26 +3276,180 @@ function drawLedBar(ctx, fixture, output, width, height) {
   }
 }
 
+// =============================================================================
+// Fixture-type icons (Canvas 2D silhouettes)
+//
+// Each draw_*Icon() renders a small silhouette for the matching fixture type
+// at an origin (x, y) with a target visual radius r (≈ half the icon's long
+// edge). The fill/stroke colours are passed in so the caller can theme them
+// per selection state without every icon re-deriving the palette.
+//
+// Icons are intentionally cheap to draw — pure fillPath / strokePath — so we
+// can redraw the full rig every animation frame without blowing the frame
+// budget.
+// =============================================================================
+
+function drawMovingHeadIcon(ctx, x, y, r, fillColor, strokeColor) {
+  // Base plate (squat trapezoid)
+  ctx.beginPath();
+  ctx.moveTo(x - r * 0.95, y + r * 0.85);
+  ctx.lineTo(x + r * 0.95, y + r * 0.85);
+  ctx.lineTo(x + r * 0.80, y + r * 0.55);
+  ctx.lineTo(x - r * 0.80, y + r * 0.55);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+  // Yoke (two vertical arms)
+  ctx.fillRect(x - r * 0.80, y - r * 0.25, r * 0.16, r * 0.80);
+  ctx.fillRect(x + r * 0.64, y - r * 0.25, r * 0.16, r * 0.80);
+  ctx.strokeRect(x - r * 0.80, y - r * 0.25, r * 0.16, r * 0.80);
+  ctx.strokeRect(x + r * 0.64, y - r * 0.25, r * 0.16, r * 0.80);
+  // Barrel (cylinder) — rounded rect
+  const barrelTop = y - r * 0.85;
+  const barrelH = r * 1.15;
+  const barrelW = r * 1.15;
+  ctx.beginPath();
+  ctx.moveTo(x - barrelW / 2, barrelTop + r * 0.15);
+  ctx.arc(x - barrelW / 2 + r * 0.15, barrelTop + r * 0.15, r * 0.15, Math.PI, Math.PI * 1.5);
+  ctx.lineTo(x + barrelW / 2 - r * 0.15, barrelTop);
+  ctx.arc(x + barrelW / 2 - r * 0.15, barrelTop + r * 0.15, r * 0.15, Math.PI * 1.5, 0);
+  ctx.lineTo(x + barrelW / 2, barrelTop + barrelH);
+  ctx.lineTo(x - barrelW / 2, barrelTop + barrelH);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+  // Lens (emit dot)
+  ctx.beginPath();
+  ctx.arc(x, barrelTop + barrelH - r * 0.08, r * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = strokeColor;
+  ctx.fill();
+}
+
+function drawLaserIcon(ctx, x, y, r, fillColor, strokeColor) {
+  // Rectangular projector body
+  const bodyW = r * 1.9;
+  const bodyH = r * 0.95;
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(x - bodyW / 2, y - bodyH / 2, bodyW, bodyH);
+  ctx.strokeStyle = strokeColor;
+  ctx.strokeRect(x - bodyW / 2, y - bodyH / 2, bodyW, bodyH);
+  // Front lens tube
+  ctx.fillRect(x + bodyW / 2 - 1, y - r * 0.24, r * 0.38, r * 0.48);
+  ctx.strokeRect(x + bodyW / 2 - 1, y - r * 0.24, r * 0.38, r * 0.48);
+  // Emit dot
+  ctx.beginPath();
+  ctx.arc(x + bodyW / 2 + r * 0.38, y, r * 0.18, 0, Math.PI * 2);
+  ctx.fillStyle = strokeColor;
+  ctx.fill();
+  // Cooling fins on top
+  const finW = r * 0.14;
+  for (let i = -2; i <= 2; i += 1) {
+    ctx.fillStyle = strokeColor;
+    ctx.fillRect(x + i * finW * 1.4 - finW / 2, y - bodyH / 2 - r * 0.18, finW, r * 0.18);
+  }
+}
+
+function drawWashIcon(ctx, x, y, r, fillColor, strokeColor) {
+  // PAR-can silhouette: circle front + short tail
+  // Rear housing
+  ctx.fillStyle = fillColor;
+  ctx.beginPath();
+  ctx.rect(x - r * 0.30, y - r * 0.60, r * 0.60, r * 1.20);
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+  // Circular front lens
+  ctx.beginPath();
+  ctx.arc(x + r * 0.30, y, r * 0.85, 0, Math.PI * 2);
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+  // Inner lens ring
+  ctx.beginPath();
+  ctx.arc(x + r * 0.30, y, r * 0.55, 0, Math.PI * 2);
+  ctx.strokeStyle = strokeColor;
+  ctx.stroke();
+  // Bright pupil
+  ctx.beginPath();
+  ctx.arc(x + r * 0.30, y, r * 0.22, 0, Math.PI * 2);
+  ctx.fillStyle = strokeColor;
+  ctx.fill();
+}
+
+function drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor) {
+  // Long horizontal strip + pixel dots
+  const barW = r * 2.4;
+  const barH = r * 0.55;
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(x - barW / 2, y - barH / 2, barW, barH);
+  ctx.strokeStyle = strokeColor;
+  ctx.strokeRect(x - barW / 2, y - barH / 2, barW, barH);
+  // Pixel dots
+  const pixelCount = 6;
+  const pixelSpacing = barW / (pixelCount + 1);
+  ctx.fillStyle = strokeColor;
+  for (let i = 1; i <= pixelCount; i += 1) {
+    ctx.beginPath();
+    ctx.arc(x - barW / 2 + i * pixelSpacing, y, r * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function drawFixtureBody(ctx, fixture, width, height) {
   const x = fixture.x * width;
   const y = fixture.y * height;
   const selected = fixture.id === appState.selectedFixtureId;
-  ctx.fillStyle = selected ? "rgba(255, 255, 255, 0.96)" : "rgba(250, 248, 241, 0.85)";
-  ctx.fillRect(x - 9, y - 9, 18, 18);
-  ctx.strokeStyle = selected ? "rgba(248, 94, 0, 0.95)" : "rgba(0,0,0,0.35)";
-  ctx.lineWidth = selected ? 2 : 1;
-  ctx.strokeRect(x - 9, y - 9, 18, 18);
+  const r = 14;
 
+  // Selection halo — draws behind the icon so it reads as a soft ring.
   if (selected) {
+    ctx.save();
     ctx.beginPath();
-    ctx.arc(x, y, 18, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(248, 94, 0, 0.35)";
+    ctx.arc(x, y, r * 1.7, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(248, 94, 0, 0.18)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(248, 94, 0, 0.75)";
+    ctx.lineWidth = 2;
     ctx.stroke();
+    ctx.restore();
   }
 
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.font = "600 12px Trebuchet MS";
-  ctx.fillText(fixture.label, x + 14, y + 4);
+  const fillColor = selected ? "rgba(255, 255, 255, 0.96)" : "rgba(240, 240, 246, 0.82)";
+  const strokeColor = selected ? "rgba(248, 94, 0, 0.95)" : "rgba(16, 22, 32, 0.78)";
+  ctx.save();
+  ctx.lineWidth = selected ? 1.6 : 1.1;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+
+  if (fixture.type === "moving_head") {
+    drawMovingHeadIcon(ctx, x, y, r, fillColor, strokeColor);
+  } else if (fixture.type === "laser") {
+    drawLaserIcon(ctx, x, y, r, fillColor, strokeColor);
+  } else if (fixture.type === "wash") {
+    drawWashIcon(ctx, x, y, r, fillColor, strokeColor);
+  } else if (fixture.type === "led_bar") {
+    drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor);
+  } else {
+    // Unknown type — fall back to the legacy square so it still renders
+    ctx.fillStyle = fillColor;
+    ctx.strokeStyle = strokeColor;
+    ctx.fillRect(x - 9, y - 9, 18, 18);
+    ctx.strokeRect(x - 9, y - 9, 18, 18);
+  }
+  ctx.restore();
+
+  // Label — nudged right of the icon; widen the offset for the LED bar
+  // since the bar itself extends further horizontally.
+  const labelOffset = fixture.type === "led_bar" ? r * 1.6 : r * 1.4;
+  ctx.fillStyle = "rgba(255,255,255,0.88)";
+  ctx.font = "600 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.fillText(fixture.label, x + labelOffset, y);
 }
 
 function renderStage(timeMillis) {
