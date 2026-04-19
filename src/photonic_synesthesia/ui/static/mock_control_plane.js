@@ -2660,7 +2660,7 @@ function fixtureOutput(fixture, visual) {
       white_accent: Math.max(Number(laserExpression.white_accent || 0), lookEmphasis * 0.85),
       color_cycle_rate: Number(laserExpression.color_cycle_rate || 1) * (0.85 + lookMotion * 0.22),
     };
-    const beamColor = laserBeamColor(color, colorExpression, { phase, intensity: patternIntensity }, visual);
+    const beamColor = laserBeamColor(fixture.color, colorExpression, { phase, intensity: patternIntensity }, visual);
     const melodicSweepBias = 0.72 + visual.melodicSmoothness * 0.45;
     const aggressionSweepBias = 0.75 + visual.laserAggression * 0.5;
     const expressionTargetBias = targetBias === "crowd"
