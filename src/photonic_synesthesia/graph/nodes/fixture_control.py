@@ -486,10 +486,16 @@ class MovingHeadControlNode:
         )
 
     def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
-        playback = get_shared_playback_context()
-        if playback is None:
-            return None
-        snapshot = playback.snapshot()
+        # Cycle-1 panel UF-17 fix: read from the per-tick published snapshot;
+        # fall back to the global context for callers bypassing the graph
+        # publisher (unit tests + the safety-only minimal pipeline). See
+        # ilda_output._current_program_look comment.
+        snapshot = dict(state.get("playback_snapshot") or {})
+        if not snapshot:
+            playback = get_shared_playback_context()
+            if playback is None:
+                return None
+            snapshot = playback.snapshot()
         sections = snapshot.get("show_sections") or []
         if not sections:
             return None

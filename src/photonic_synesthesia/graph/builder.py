@@ -7,6 +7,7 @@ sensor acquisition, analysis, and fixture control nodes.
 
 from __future__ import annotations
 
+import copy
 from threading import Lock
 from typing import Any
 
@@ -34,6 +35,11 @@ from photonic_synesthesia.graph.nodes import (
     SceneSelectNode,
     StructureDetectNode,
 )
+from photonic_synesthesia.graph.nodes.laser_zone_runtime import LaserZoneRuntimeNode
+from photonic_synesthesia.graph.nodes.preposition import PrepositionNode
+from photonic_synesthesia.graph.nodes.surface_compositor import SurfaceCompositorNode
+from photonic_synesthesia.graph.nodes.trigger_router import TriggerRouterNode
+from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
@@ -128,11 +134,36 @@ class PhotonicGraph:
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].stop()
 
+    def _publish_playback_snapshot(self) -> None:
+        """Publish one playback_snapshot per tick + reset frame-local artifacts.
+
+        Cycle-1 panel UF-8 + cycle-3 panel 3C-N2: deep-copy the snapshot
+        at the publication boundary so nodes can't poison the
+        PlaybackContext authored cache through nested-dict aliasing.
+        Cycle-1 panel SF-3: explicitly reset frame-local artifacts so a
+        prior tick's values can't leak via a node's fallback logic.
+        Cycle-2 panel NC-8: use `_snapshot_internal_locked` so we pay
+        for exactly ONE deep-copy per tick (the public `snapshot()` would
+        cost two).
+        """
+        playback = get_shared_playback_context()
+        if playback is None:
+            self._state["playback_snapshot"] = {}
+        else:
+            with playback._lock:
+                aliased = playback._snapshot_internal_locked()
+            self._state["playback_snapshot"] = copy.deepcopy(aliased)
+        self._state["preposition_targets"] = []
+        self._state["surface_layers"] = []
+        self._state["laser_zone_rules"] = {}
+        self._state["trigger_events"] = []
+
     def step(self) -> PhotonicState:
         """Execute one iteration of the graph."""
         with self._state_lock:
             self._sync_control_state()
             self._sync_output_blackout_latches()
+            self._publish_playback_snapshot()
             self._state = self.graph.invoke(self._state)
             if self.control_plane_service is not None:
                 node_stats = {
@@ -332,6 +363,16 @@ def build_photonic_graph(
     )
     nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
 
+    # Professional rollout (Task 3) runtime nodes. Ordering: trigger_router
+    # / preposition / surface_compositor land AFTER scene_select so they
+    # see the active section in the published snapshot; laser_zone_runtime
+    # lands AFTER ilda_output (which populates `state["laser_zone_rules"]`)
+    # and BEFORE laser_vector_interlock (which validates the final frame).
+    nodes["trigger_router"] = TriggerRouterNode()
+    nodes["preposition"] = PrepositionNode(fixtures=settings.fixtures)
+    nodes["surface_compositor"] = SurfaceCompositorNode(fixtures=settings.fixtures)
+    nodes["laser_zone_runtime"] = LaserZoneRuntimeNode(fixtures=settings.fixtures)
+
     if node_overrides:
         nodes.update(node_overrides)
 
@@ -346,12 +387,16 @@ def build_photonic_graph(
             "fusion",
             "director_intent",
             "scene_select",
+            "trigger_router",
+            "preposition",
+            "surface_compositor",
             "laser_control",
             "moving_head_control",
             "panel_control",
             "interpreter",
             "safety_interlock",
             "ilda_output",
+            "laser_zone_runtime",
             "laser_vector_interlock",
             "ilda_transport",
             "dmx_output",

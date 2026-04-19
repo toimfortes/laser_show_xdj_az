@@ -257,10 +257,19 @@ class ILDAOutputNode:
         )
 
     def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
-        playback = get_shared_playback_context()
-        if playback is None:
-            return None
-        snapshot = playback.snapshot()
+        # Cycle-1 panel UF-17 fix: read from the per-tick published snapshot
+        # (deep-copied by `_publish_playback_snapshot` so direct mutation is
+        # safe) instead of calling `get_shared_playback_context().snapshot()`
+        # mid-tick. The retrofit makes ILDAOutputNode and the new Task 3
+        # nodes read the SAME authored state within one tick. Fallback to
+        # the global context for callers that bypass the graph publisher
+        # (unit tests + the safety-only minimal pipeline).
+        snapshot = dict(state.get("playback_snapshot") or {})
+        if not snapshot:
+            playback = get_shared_playback_context()
+            if playback is None:
+                return None
+            snapshot = playback.snapshot()
         sections = snapshot.get("show_sections") or []
         if not sections:
             return None

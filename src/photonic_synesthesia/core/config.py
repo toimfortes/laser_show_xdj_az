@@ -91,6 +91,17 @@ class FixtureConfig(BaseModel):
     profile: str  # Reference to profile YAML
     start_address: int = Field(ge=1, le=512)
     enabled: bool = True
+    # Professional rollout (Task 3): per-fixture half-plane for the laser
+    # zone runtime's "protected" blanking. Cycle-1 panel UF-20: cycle-1
+    # plan hardcoded `y < 0` which only worked for center-origin Y-up
+    # rigs; the per-fixture override lets ceiling-mounted / off-center
+    # geometries calibrate their own protected half-plane.
+    # Default `(y, 0.0, True)` matches the cycle-1 behavior.
+    safety_protected_half_plane: dict[str, Any] | None = None
+    # Surface-fixture grouping for SurfaceCompositorNode (cycle-2 NC-9):
+    # if authored `surface_program.target` matches a `surface_group`,
+    # the layer is broadcast to every panel sharing that group.
+    surface_group: str | None = None
 
 
 class LaserSafetyConfig(BaseModel):
