@@ -75,6 +75,9 @@ from photonic_synesthesia.showplan._variants import (
 from photonic_synesthesia.showplan._variants import (
     wash_variant as _wash_variant,
 )
+from photonic_synesthesia.showplan.creative_profiles import (
+    CREATIVE_PROFILES as _CREATIVE_PROFILES,
+)
 from photonic_synesthesia.showplan.sections import (
     default_show_sections as _showplan_default_show_sections,
 )
@@ -219,119 +222,6 @@ _LED_PATTERN_POOLS: dict[str, list[str]] = {
     "outro": ["fade", "horizontal_ramp", "pulse"],
 }
 
-_CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
-    "festival_peak": {
-        "strobe_bias": 0.22,
-        "motion_bias": 0.18,
-        "intensity_bias": 0.08,
-        "allow_intro_lasers": False,
-        "allow_breakdown_lasers": False,
-        "allow_intro_leds": True,
-        "patterns": {
-            "laser": {
-                "build": ["vertical_rake", "horizontal_rake", "rotor", "cone", "scan_slice", "spiral_tunnel"],
-                "drop": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "split_zone_beams", "target_rotate_chase", "sheet", "mixed_beam_fx"],
-            },
-            "mover": {
-                "build": ["rise", "mirror_fan", "figure_eight", "circle"],
-                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "square", "diamond"],
-            },
-            "wash": {
-                "drop": ["white_peak", "drop_slam", "downbeat_hit", "punch"],
-            },
-            "led": {
-                "drop": ["chase", "fizzle", "audio_spectrum", "rotating_line", "snake"],
-            },
-        },
-    },
-    "euphoric_arc": {
-        "strobe_bias": 0.08,
-        "motion_bias": 0.12,
-        "intensity_bias": 0.04,
-        "allow_intro_lasers": True,
-        "allow_breakdown_lasers": True,
-        "allow_intro_leds": False,
-        "patterns": {
-            "laser": {
-                "intro": ["fan", "beam_fan_narrow", "liquid_sky", "wave", "circle_trace"],
-                "build": ["cone", "wave", "vertical_rake", "rotor", "loop_trace", "spiral_tunnel"],
-                "drop": ["burst_fan", "tunnel", "starburst", "crisscross", "beam_fan_wide", "point_array"],
-                "breakdown": ["liquid_sky", "thin_scan", "fan", "spirograph", "circle_trace"],
-            },
-            "mover": {
-                "build": ["mirror_fan", "figure_eight", "rise", "circle"],
-                "drop": ["cross_sweep", "diamond", "square", "snap_hits"],
-            },
-            "wash": {
-                "intro": ["ambient", "breath", "center_out"],
-                "build": ["bloom", "build_ramp", "outside_in"],
-                "drop": ["white_peak", "punch", "drop_slam"],
-                "breakdown": ["breakdown_glow", "fade", "ambient"],
-            },
-            "led": {
-                "build": ["vertical_build", "ramp", "snake"],
-                "drop": ["audio_spectrum", "rotating_line", "chase"],
-            },
-        },
-    },
-    "percussive_driver": {
-        "strobe_bias": 0.18,
-        "motion_bias": 0.1,
-        "intensity_bias": 0.06,
-        "allow_intro_lasers": False,
-        "allow_breakdown_lasers": False,
-        "allow_intro_leds": True,
-        "patterns": {
-            "laser": {
-                "build": ["vertical_rake", "horizontal_rake", "cone", "scan_slice", "target_step_chase"],
-                "drop": ["shutter_hits", "alternating_beam_groups", "burst_fan", "starburst", "split_zone_beams", "target_rotate_chase", "beam_sequence_counterclockwise"],
-            },
-            "mover": {
-                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "line_bounce"],
-            },
-            "wash": {
-                "drop": ["downbeat_hit", "drop_slam", "punch", "white_peak"],
-            },
-            "led": {
-                "build": ["vertical_offset", "vertical_build", "ramp"],
-                "drop": ["chase", "fizzle", "snake", "audio_spectrum"],
-            },
-        },
-    },
-    "hypnotic_motorik": {
-        "strobe_bias": -0.04,
-        "motion_bias": 0.14,
-        "intensity_bias": -0.02,
-        "allow_intro_lasers": True,
-        "allow_breakdown_lasers": True,
-        "allow_intro_leds": False,
-        "patterns": {
-            "laser": {
-                "intro": ["wave", "liquid_sky", "fan", "wave_trace", "circle_trace"],
-                "build": ["rotor", "cone", "wave", "vertical_rake", "loop_trace", "target_bounce_chase"],
-                "drop": ["tunnel", "crisscross", "rotor", "burst_fan", "spiral_tunnel", "sheet"],
-                "breakdown": ["liquid_sky", "wave", "thin_scan", "helix", "spirograph"],
-            },
-            "mover": {
-                "intro": ["drift", "circle", "leaf"],
-                "build": ["figure_eight", "circle", "mirror_fan"],
-                "drop": ["cross_sweep", "square", "diamond", "ping_pong_tilt"],
-                "breakdown": ["hold", "leaf", "drift"],
-            },
-            "wash": {
-                "intro": ["ambient", "gradient_roll", "breath"],
-                "build": ["gradient_roll", "bloom", "center_out"],
-                "drop": ["punch", "white_peak", "downbeat_hit"],
-            },
-            "led": {
-                "intro": ["pulse", "horizontal_lines", "fade"],
-                "build": ["rotating_line", "ramp", "vertical_offset"],
-                "drop": ["rotating_line", "audio_spectrum", "snake", "chase"],
-            },
-        },
-    },
-}
-
 _TRANSITION_PATTERN_HINTS: dict[str, dict[str, list[str]]] = {
     "build_riser": {
         "laser": ["vertical_rake", "horizontal_rake", "rotor", "cone", "scan_slice", "target_step_chase", "spiral_tunnel"],
@@ -386,182 +276,6 @@ _CONTENT_FAMILY_BY_CONTEXT: dict[str, str] = {
     "breakdown_release": "abstract",
     "outro_release": "beam",
 }
-
-_GEOMETRY_STRATEGIES: dict[str, dict[str, str]] = {
-    "fan": {
-        "content_family": "beam",
-        "blanking_strategy": "open_groove",
-        "target_strategy": "wide_zone_sweep",
-        "color_strategy": "slow_palette_drift",
-    },
-    "burst": {
-        "content_family": "transition",
-        "blanking_strategy": "impact_gates",
-        "target_strategy": "drop_launch_fan",
-        "color_strategy": "white_accent_launch",
-    },
-    "grouped": {
-        "content_family": "beam",
-        "blanking_strategy": "alternating_groups",
-        "target_strategy": "split_zone_hits",
-        "color_strategy": "contrast_flips",
-    },
-    "tunnel": {
-        "content_family": "beam",
-        "blanking_strategy": "breathing_aperture",
-        "target_strategy": "depth_chase",
-        "color_strategy": "center_pull_morph",
-    },
-    "lattice": {
-        "content_family": "beam",
-        "blanking_strategy": "cross_cutting",
-        "target_strategy": "cross_room_fans",
-        "color_strategy": "dual_cycle_contrast",
-    },
-    "rake": {
-        "content_family": "transition",
-        "blanking_strategy": "riser_chops",
-        "target_strategy": "vertical_pressure",
-        "color_strategy": "narrowing_palette",
-    },
-    "sky": {
-        "content_family": "abstract",
-        "blanking_strategy": "soft_air",
-        "target_strategy": "aerial_hold",
-        "color_strategy": "harmonic_morph",
-    },
-    "cone": {
-        "content_family": "abstract",
-        "blanking_strategy": "soft_sweep",
-        "target_strategy": "ceiling_bloom",
-        "color_strategy": "halo_morph",
-    },
-    "scan": {
-        "content_family": "beam",
-        "blanking_strategy": "tight_slice",
-        "target_strategy": "line_sweep",
-        "color_strategy": "single_hue_focus",
-    },
-    "helix": {
-        "content_family": "abstract",
-        "blanking_strategy": "rolling_draw",
-        "target_strategy": "spiral_air_wrap",
-        "color_strategy": "evolving_multicolor",
-    },
-    "array": {
-        "content_family": "beam",
-        "blanking_strategy": "point_steps",
-        "target_strategy": "center_axis_hold",
-        "color_strategy": "target_color_steps",
-    },
-    "sheet": {
-        "content_family": "beam",
-        "blanking_strategy": "sheet_open",
-        "target_strategy": "sheet_wall",
-        "color_strategy": "texture_flip",
-    },
-    "trace": {
-        "content_family": "abstract",
-        "blanking_strategy": "shape_draw",
-        "target_strategy": "shape_trace",
-        "color_strategy": "shape_outline_morph",
-    },
-    "sequence": {
-        "content_family": "transition",
-        "blanking_strategy": "point_steps",
-        "target_strategy": "sequenced_targets",
-        "color_strategy": "target_color_steps",
-    },
-}
-
-_LASER_PATTERN_GEOMETRY: dict[str, str] = {
-    "fan": "fan",
-    "beam_fan_narrow": "fan",
-    "beam_fan_wide": "fan",
-    "cross_room_fans": "fan",
-    "thin_scan": "scan",
-    "scan_slice": "scan",
-    "wave": "scan",
-    "vertical_rake": "rake",
-    "horizontal_rake": "rake",
-    "liquid_sky": "sky",
-    "cone": "cone",
-    "tunnel": "tunnel",
-    "spiral_tunnel": "tunnel",
-    "crisscross": "lattice",
-    "lattice": "lattice",
-    "rotor": "helix",
-    "helix": "helix",
-    "spirograph": "helix",
-    "wave_trace": "helix",
-    "loop_trace": "helix",
-    "roll_trace": "helix",
-    "burst_fan": "burst",
-    "starburst": "burst",
-    "shutter_hits": "burst",
-    "mixed_beam_fx": "burst",
-    "alternating_beam_groups": "grouped",
-    "split_zone_beams": "grouped",
-    "target_split_chase": "grouped",
-    "static_beam": "array",
-    "dual_beam": "array",
-    "tri_beam": "array",
-    "point_array": "array",
-    "spoke_wheel": "array",
-    "sheet": "sheet",
-    "circle_trace": "trace",
-    "vertical_line_trace": "trace",
-    "horizontal_line_trace": "trace",
-    "triangle_trace": "trace",
-    "square_trace": "trace",
-    "pentagon_trace": "trace",
-    "hexagon_trace": "trace",
-    "target_step_chase": "sequence",
-    "target_bounce_chase": "sequence",
-    "target_rotate_chase": "sequence",
-    "target_ring_chase": "sequence",
-    "beam_sequence_clockwise": "sequence",
-    "beam_sequence_counterclockwise": "sequence",
-}
-
-_PHRASE_ENVELOPES: dict[str, dict[str, Any]] = {
-    "intro": {
-        "launch_bars": 0,
-        "sustain_bars": 16,
-        "release_bars": 8,
-        "normalize_after_bars": 4,
-        "intensity_curve": "gentle_ramp",
-    },
-    "build": {
-        "launch_bars": 4,
-        "sustain_bars": 8,
-        "release_bars": 2,
-        "normalize_after_bars": 2,
-        "intensity_curve": "escalating_riser",
-    },
-    "drop": {
-        "launch_bars": 4,
-        "sustain_bars": 8,
-        "release_bars": 4,
-        "normalize_after_bars": 4,
-        "intensity_curve": "impact_then_settle",
-    },
-    "breakdown": {
-        "launch_bars": 0,
-        "sustain_bars": 16,
-        "release_bars": 8,
-        "normalize_after_bars": 2,
-        "intensity_curve": "floating_plateau",
-    },
-    "outro": {
-        "launch_bars": 0,
-        "sustain_bars": 8,
-        "release_bars": 8,
-        "normalize_after_bars": 2,
-        "intensity_curve": "progressive_subtraction",
-    },
-}
-
 
 def _discover_rekordbox_xml() -> Path | None:
     for candidate in _DEFAULT_REKORDBOX_XML_CANDIDATES:
@@ -1107,8 +821,6 @@ def _build_track_metadata_binding_callback(
     return _bind
 
 
-
-
 def _stable_digest(label: str) -> bytes:
     return sha1(label.encode()).digest()
 
@@ -1152,9 +864,6 @@ def _normalize_selection_variance(value: Any | None) -> float:
     except (TypeError, ValueError):
         return 0.0
     return round(_clamp(normalized, 0.0, 1.0), 3)
-
-
-
 
 
 def _select_section_patterns(

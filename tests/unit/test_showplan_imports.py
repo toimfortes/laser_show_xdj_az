@@ -40,6 +40,21 @@ def test_showplan_sections_resolve_show_sections_matches_existing_shape() -> Non
     assert resolved
 
 
+def test_cli_and_model_payloads_share_creative_profiles_source() -> None:
+    """Regression: cli and showplan.model_payloads must reference the same
+    CREATIVE_PROFILES object, not duplicated copies. Drift was flagged in
+    the 2026-04-19 showplan review (Finding #4).
+    """
+    from photonic_synesthesia.showplan.creative_profiles import CREATIVE_PROFILES
+    from photonic_synesthesia.showplan.model_payloads import (
+        _CREATIVE_PROFILES as model_payloads_ref,
+    )
+    from photonic_synesthesia.ui.cli import _CREATIVE_PROFILES as cli_ref
+
+    assert cli_ref is CREATIVE_PROFILES
+    assert model_payloads_ref is CREATIVE_PROFILES
+
+
 def test_showplan_sections_resolve_raises_when_no_builder_injected() -> None:
     """Missing default_show_sections_fn is a wiring bug, not a degradation path."""
     with pytest.raises(ShowplanError):

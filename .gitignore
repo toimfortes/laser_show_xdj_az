@@ -11,6 +11,11 @@ __pycache__/
 .ruff_cache/
 .codex_tmp/
 
+# Local virtualenvs
+.venv/
+venv/
+venv313/
+
 # Editor/agent workspace artifacts
 .codex
 .claude/
