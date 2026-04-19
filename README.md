@@ -115,12 +115,43 @@ fixtures:
 │ Audio Sense → Feature Extract → Beat Track         │
 │ Structure Detect → MIDI Sense → CV Sense           │
 │ Fusion → Director Intent → Scene Select            │
+│ Trigger Router → Preposition → Surface Compositor   │
 │ Laser / Moving Head / Panel Control                │
 │ Interpreter → Safety Interlock                     │
-│ ILDA Frame Build → ILDA Vector Interlock           │
-│ ILDA Transport + DMX Output                        │
+│ ILDA Frame Build → Laser Zone Runtime              │
+│   → ILDA Vector Interlock → ILDA Transport         │
+│ DMX Output                                          │
 └─────────────────────────────────────────────────────┘
 ```
+
+The professional-rollout authored-state ownership model:
+
+- `PlaybackContext` owns authored show data (`show_sections`,
+  `timeline_flags`, `staged_look`, `operator_workspace_banks`).
+- `PhotonicGraph.step()` publishes one `playback_snapshot` per tick
+  via deep-copy at the publication boundary, plus an explicit reset
+  of the four frame-local artifact fields (`trigger_events`,
+  `preposition_targets`, `surface_layers`, `laser_zone_rules`).
+- `TriggerRouterNode`, `PrepositionNode`, `SurfaceCompositorNode`,
+  and the retrofitted `ILDAOutputNode` / `MovingHeadControlNode`
+  all read authored state from `state["playback_snapshot"]` — never
+  the global PlaybackContext mid-tick.
+- `LaserZoneRuntimeNode` is a pure transform on `ilda_frames`
+  (brightness clamp + per-fixture protected half-plane); it runs
+  AFTER `ilda_output` (which populates `state["laser_zone_rules"]`)
+  and BEFORE `laser_vector_interlock`.
+
+Operator preview/commit staging:
+
+- `set_staged_look()` is preview-only — surfaces in `playback_snapshot`
+  for UI rendering, does not affect runtime output.
+- `commit_staged_look()` deep-merges the staged overrides into the
+  authored section (operator-supplied keys win; authored siblings
+  survive) and clears the staged sidecar.
+- The hash-derived revision counter is split: `_authored_hash` gates
+  the snapshot cache; `_flags_hash` gates `_timeline_flag_revision`
+  so non-flag mutations (staged_look, intent expiry, tag edits) do
+  NOT clear `TriggerRouterNode`'s fire-once ledger.
 
 ## Safety
 
