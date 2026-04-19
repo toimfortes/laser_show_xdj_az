@@ -695,6 +695,14 @@ class ILDADACOutputNode:
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()
+        # Heartbeat: advance the frame counter unconditionally on every
+        # __call__ so the SafetyMonitor can tell the graph is alive even
+        # when the transport type is memory/ild/json (no hardware push).
+        # Previously the early-return below meant _state_frames_sent
+        # stayed 0 forever in file-playback / preview-only modes, and
+        # the watchdog blackouts fired in a tight loop.
+        self._state_frames_sent += 1
+
         if (
             self.config.transport_type != "ether_dream"
             or not self.config.enabled
