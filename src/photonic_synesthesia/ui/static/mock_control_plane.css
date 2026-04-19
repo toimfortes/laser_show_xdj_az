@@ -1070,3 +1070,86 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* Operator workspace (Task 4 staging lane) ---------------------------- */
+.operator-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 6px;
+}
+.operator-banks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+}
+.operator-bank {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.operator-bank-label {
+  margin: 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.6);
+}
+.operator-bank-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.operator-bank-button {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 120ms ease, border 120ms ease;
+}
+.operator-bank-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.operator-bank-button.active {
+  background: rgba(82, 173, 247, 0.25);
+  border-color: rgba(82, 173, 247, 0.7);
+  font-weight: 600;
+}
+.operator-empty {
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+}
+.operator-commit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.operator-staged-hint {
+  font-size: 0.78rem;
+  color: rgba(82, 173, 247, 0.95);
+}
+#operator-commit {
+  padding: 6px 14px;
+  background: rgba(98, 196, 116, 0.18);
+  color: #fff;
+  border: 1px solid rgba(98, 196, 116, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+}
+#operator-commit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+#operator-commit:hover:not(:disabled) {
+  background: rgba(98, 196, 116, 0.32);
+}

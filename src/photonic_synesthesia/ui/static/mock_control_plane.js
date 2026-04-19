@@ -3780,7 +3780,133 @@ async function boot() {
   connectWebSocket();
   startUniversePolling();
   startPlaybackPolling();
+  startOperatorWorkspacePolling();
   window.requestAnimationFrame(renderStage);
+}
+
+// --- Operator workspace (Task 4 staging lane) -----------------------------
+// Cycle-3 panel 3C-H1: read /api/operator/workspace which returns
+// `{banks: [...], active_scene_id: "..."}`. The active_scene_id comes
+// from PlaybackContext.snapshot()'s per-call live overlay (cycle-1 panel
+// UF-7), so it follows the playhead without authored-cache invalidation.
+
+let operatorStagedSectionId = null;
+
+async function fetchOperatorWorkspace() {
+  try {
+    const response = await fetch("/api/operator/workspace");
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error("operator workspace fetch failed", error);
+    return null;
+  }
+}
+
+function renderOperatorWorkspace(payload) {
+  const root = document.getElementById("operator-workspace");
+  if (!root) return;
+  if (!payload || !Array.isArray(payload.banks) || payload.banks.length === 0) {
+    root.innerHTML = '<div class="operator-empty">No active session — load a track to populate banks.</div>';
+    return;
+  }
+  const activeSceneId = payload.active_scene_id || "";
+  const html = payload.banks
+    .map((bank) => {
+      const buttons = (bank.buttons || [])
+        .map((btn) => {
+          const buttonId = String(btn.id || "");
+          const buttonLabel = String(btn.label || buttonId);
+          // For the "scene" bank, mark the button matching active_scene_id.
+          const isActive =
+            bank.id === "scene" && buttonId === `scene:${activeSceneId}`;
+          // For the "scene" bank, attach a stage-look click handler.
+          const dataAction = bank.id === "scene" ? "operator-stage" : "";
+          const dataSection = bank.id === "scene" ? buttonId.replace(/^scene:/, "") : "";
+          return `<button class="operator-bank-button${isActive ? " active" : ""}"
+            data-action="${dataAction}"
+            data-section="${dataSection}"
+            data-bank="${bank.id}"
+            data-button="${buttonId}"
+            type="button">${buttonLabel}</button>`;
+        })
+        .join("");
+      return `<div class="operator-bank">
+        <h3 class="operator-bank-label">${String(bank.id || "").toUpperCase()}</h3>
+        <div class="operator-bank-buttons">${buttons || '<div class="operator-empty">empty</div>'}</div>
+      </div>`;
+    })
+    .join("");
+  const commitDisabled = operatorStagedSectionId ? "" : "disabled";
+  const stagedHint = operatorStagedSectionId
+    ? `<span class="operator-staged-hint">staged: ${operatorStagedSectionId}</span>`
+    : '<span class="operator-staged-hint muted-small">no look staged</span>';
+  root.innerHTML = `
+    <div class="operator-banks">${html}</div>
+    <div class="operator-commit-row">
+      ${stagedHint}
+      <button id="operator-commit" type="button" ${commitDisabled}>Commit Staged Look</button>
+    </div>
+  `;
+  // Wire up handlers.
+  root.querySelectorAll('[data-action="operator-stage"]').forEach((el) => {
+    el.addEventListener("click", () => stageOperatorLook(el.dataset.section));
+  });
+  const commitBtn = document.getElementById("operator-commit");
+  if (commitBtn) commitBtn.addEventListener("click", commitOperatorLook);
+}
+
+async function stageOperatorLook(sectionId) {
+  if (!sectionId) return;
+  // Stage with empty overrides — operator can extend the UI later to
+  // edit cue_recipe / laser_program before staging. For now this just
+  // pins the staged_section so the commit button activates.
+  try {
+    const response = await fetch("/api/operator/stage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        section_id: sectionId,
+        cue_recipe: {},
+        laser_program: {},
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: response.statusText }));
+      console.warn("stage failed", detail);
+      return;
+    }
+    operatorStagedSectionId = sectionId;
+    refreshOperatorWorkspace();
+  } catch (error) {
+    console.error("stage error", error);
+  }
+}
+
+async function commitOperatorLook() {
+  if (!operatorStagedSectionId) return;
+  try {
+    const response = await fetch("/api/operator/commit", { method: "POST" });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: response.statusText }));
+      console.warn("commit failed", detail);
+      return;
+    }
+    operatorStagedSectionId = null;
+    refreshOperatorWorkspace();
+  } catch (error) {
+    console.error("commit error", error);
+  }
+}
+
+async function refreshOperatorWorkspace() {
+  const payload = await fetchOperatorWorkspace();
+  renderOperatorWorkspace(payload);
+}
+
+function startOperatorWorkspacePolling() {
+  refreshOperatorWorkspace();
+  setInterval(refreshOperatorWorkspace, 2000);
 }
 
 window.addEventListener("DOMContentLoaded", () => {

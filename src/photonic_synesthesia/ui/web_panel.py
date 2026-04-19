@@ -699,6 +699,16 @@ def _render_control_plane_html() -> str:
                         </div>
                     </section>
 
+                    <section class="panel stack" aria-label="Operator workspace">
+                        <div class="panel-header">
+                            <h2>Operator Workspace</h2>
+                            <p class="muted-small">Direct-select scene / safety / tag banks (Task 4 staging lane).</p>
+                        </div>
+                        <div id="operator-workspace" class="operator-workspace">
+                            Loading workspace banks…
+                        </div>
+                    </section>
+
                     <section class="panel stack" aria-label="Inspector">
                         <div class="panel-header">
                             <h2>Fixture Inspector</h2>
@@ -830,6 +840,14 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         speed: float = 1.0
         selection_mode: str | None = None
         selection_variance: float | None = None
+
+    class PlaybackStagedLookRequest(BaseModel):
+        """Cycle-1 panel UF-11 preview-only contract: section_id required;
+        partial cue_recipe / laser_program overrides are deep-merged into
+        the authored section at commit time (cycle-1 panel UF-12)."""
+        section_id: str
+        cue_recipe: dict[str, Any]
+        laser_program: dict[str, Any]
 
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
@@ -1006,6 +1024,66 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/operator/workspace")
+    async def operator_workspace() -> dict[str, Any]:
+        """Return the operator workspace banks + live active scene id.
+
+        Cycle-3 panel 3C-H1: reads `operator_workspace_banks` (the
+        cycle-2 cache key) — NOT `operator_workspace` (the cycle-1 key
+        the cycle-2 plan accidentally still wrote into one snippet).
+        Overlays `active_scene_id` from the snapshot's per-call live
+        overlay so the UI renders the active scene button without
+        depending on the authored cache.
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            return {"banks": [], "active_scene_id": ""}
+        snap = playback_context.snapshot()
+        body = dict(snap.get("operator_workspace_banks") or {"banks": []})
+        body["active_scene_id"] = snap.get("active_scene_id", "")
+        return body
+
+    @app.post("/api/operator/stage")
+    async def stage_operator_look(
+        request: PlaybackStagedLookRequest,
+    ) -> dict[str, Any]:
+        """Stage an operator look for preview (cycle-1 panel UF-11).
+
+        Returns the staged_look dict. The runtime graph still reads
+        authored `show_sections` only — the stage surfaces in
+        `playback_snapshot["staged_look"]` for UI preview.
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback session is active")
+        try:
+            return playback_context.set_staged_look(
+                section_id=request.section_id,
+                cue_recipe=request.cue_recipe,
+                laser_program=request.laser_program,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/operator/commit")
+    async def commit_operator_look() -> dict[str, Any]:
+        """Commit the currently-staged look into the authored section.
+
+        Cycle-1 panel UF-12 deep-merge: operator-supplied keys override
+        authored values; every other authored field on the section
+        survives. Cycle-1 panel SF-1: fails closed if the playhead
+        advanced past the staged section's end (returns 409).
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback session is active")
+        try:
+            return playback_context.commit_staged_look()
+        except RuntimeError as exc:
+            # "No staged look" → 400; "Playhead advanced past..." → 409.
+            status = 409 if "playhead" in str(exc).lower() else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/pro-dj-link/track")
     async def bind_playback_pro_dj_link_track(
