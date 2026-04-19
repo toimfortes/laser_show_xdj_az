@@ -15,6 +15,12 @@ from uuid import uuid4
 
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.platform.operator_workspace import build_operator_workspace_banks
+from photonic_synesthesia.platform.staging_lane import (
+    commit_staged_look as _commit_staged_look_helper,
+)
+from photonic_synesthesia.platform.staging_lane import (
+    stage_look as _stage_look_helper,
+)
 from photonic_synesthesia.platform.runtime_context_normalization import (
     clamp as _clamp,
 )
@@ -97,6 +103,37 @@ def _flags_equivalent(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> bool:
     """Flags equal under id + kind + at_seconds + payload, order-insensitive."""
     key = lambda f: (str(f.get("id") or ""), str(f.get("kind") or ""), float(f.get("at_seconds", 0.0)))
     return sorted(a, key=key) == sorted(b, key=key)
+
+
+def _deep_overlay(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    """Recursive overlay: nested dicts merge by key; everything else replaces.
+
+    Cycle-1 panel UF-12 fix: cycle-1 plan used `dict.update()` which is
+    shallow — it overwrote authored nested dicts wholesale. This walks
+    the two key paths the stage can touch (`cue_recipe`, `laser_program`)
+    and overlays only the keys the operator supplied. Lists are treated
+    as full replacement when the stage explicitly provides one (matches
+    operator UI semantics where a list edit is always explicit).
+    """
+    out = dict(base)
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_overlay(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def _deep_merge_section(
+    authored: dict[str, Any],
+    stage_cue_recipe: dict[str, Any],
+    stage_laser_program: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge an operator stage into an authored section without data loss."""
+    merged = copy.deepcopy(authored)
+    merged["cue_recipe"] = _deep_overlay(merged.get("cue_recipe") or {}, stage_cue_recipe)
+    merged["laser_program"] = _deep_overlay(merged.get("laser_program") or {}, stage_laser_program)
+    return merged
 
 
 def _resolve_active_scene_id(show_sections: list[dict[str, Any]], playhead: float) -> str:
@@ -725,6 +762,87 @@ class PlaybackContext:
             payload = self._show_plan_payload_locked()
             self._persist_show_plan_locked(payload)
         return self.snapshot()
+
+    # --- Task 4: operator preview/commit staging lane ---------------------
+
+    def set_staged_look(
+        self,
+        *,
+        section_id: str,
+        cue_recipe: dict[str, Any],
+        laser_program: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Stage a look for operator preview.
+
+        Cycle-1 panel UF-11 preview-only contract: the runtime graph reads
+        `show_sections` ONLY; `staged_look` surfaces in `playback_snapshot`
+        for UI preview and nowhere else. Bumps `_authored_hash` (cache
+        invalidation) but NOT `_flags_hash` (trigger-router ledger
+        preserved — cycle-2 panel NC-3 split). Cycle-1 panel UF-6:
+        `_recompute_authored_hash_locked` is the explicit invalidation
+        signal so the next `snapshot()` call rebuilds the authored cache.
+        """
+        if not isinstance(cue_recipe, dict) or not isinstance(laser_program, dict):
+            raise RuntimeError("Invalid staged look payload")
+        with self._lock, self._persistence_lock:
+            if not any(str(section.get("id")) == section_id for section in self.show_sections):
+                raise RuntimeError("Unknown section id")
+            self.staged_look = _stage_look_helper(
+                section_id=section_id,
+                cue_recipe=cue_recipe,
+                laser_program=laser_program,
+            )
+            self.server_time = time.time()
+            self.transport_revision += 1
+            self._recompute_authored_hash_locked()
+            payload = self._show_plan_payload_locked()
+            staged = copy.deepcopy(self.staged_look)
+            self._persist_show_plan_locked(payload)
+        return staged
+
+    def commit_staged_look(self) -> dict[str, Any]:
+        """Commit `staged_look` into the authored section.
+
+        Cycle-1 panel SF-1 fix: recompute target section by id AND fail
+        closed if the playhead has advanced past the staged section's
+        end (operator must re-stage against current authored state).
+        Cycle-1 panel UF-12 fix: use `_deep_merge_section` (not
+        `dict.update`) so deeply-nested authored fields survive
+        operator overrides for the keys they didn't touch. After commit,
+        `staged_look` is cleared and the merged section becomes the new
+        authored state.
+        """
+        with self._lock, self._persistence_lock:
+            if not self.staged_look:
+                raise RuntimeError("No staged look")
+            committed = _commit_staged_look_helper(self.staged_look)
+            target_id = str(committed["section_id"])
+            target_index: int | None = None
+            for idx, section in enumerate(self._base_show_sections):
+                if str(section.get("id")) == target_id:
+                    target_index = idx
+                    break
+            if target_index is None:
+                raise RuntimeError("Staged section no longer exists; please re-stage")
+            target_section = self._base_show_sections[target_index]
+            section_end = float(target_section.get("end_seconds", 0.0))
+            if self.playhead_seconds > section_end:
+                raise RuntimeError(
+                    "Playhead advanced past staged section; please re-stage against the current section"
+                )
+            updated_sections = copy.deepcopy(self._base_show_sections)
+            updated_sections[target_index] = _deep_merge_section(
+                authored=updated_sections[target_index],
+                stage_cue_recipe=copy.deepcopy(committed["cue_recipe"]),
+                stage_laser_program=copy.deepcopy(committed["laser_program"]),
+            )
+            # Clear staged_look BEFORE the authored-state commit so the
+            # canonical helper's hash recomputation sees the cleared stage.
+            self.staged_look = None
+            self._replace_show_sections_locked(updated_sections)
+            payload = self._show_plan_payload_locked()
+            self._persist_show_plan_locked(payload)
+        return committed
 
 
 def get_shared_control_plane_service(create: bool = False) -> ControlPlaneStateService | None:
