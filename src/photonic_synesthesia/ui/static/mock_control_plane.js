@@ -227,8 +227,44 @@ function shiftColor(hex, shifts = {}) {
   };
 }
 
+// Mirror of src/photonic_synesthesia/director/palettes.py _PALETTES.
+// The director picks a palette name per phrase (color_theme on the
+// DirectorSummary) and this table maps it to [primary, secondary,
+// accent] hex values so the browser preview can render the same colors
+// the real fixture_control / ilda_output would render from
+// render_rgb(). Keep this in sync with the Python module.
+const DIRECTOR_PALETTES = {
+  neutral: ["#b4b4c8", "#5a648c", "#ffffff"],
+  warm: ["#ff8c28", "#c83c78", "#ffe6b4"],
+  cool: ["#288cff", "#5ae6ff", "#f0f0ff"],
+  white_hot: ["#ffffff", "#ffd278", "#ffffff"],
+  cyan_magenta: ["#28dcff", "#f028c8", "#ffffff"],
+  deep_blue: ["#143cc8", "#7828dc", "#b4c8ff"],
+  amber_cyan: ["#ffaa28", "#28d2dc", "#ffffff"],
+  emerald_violet: ["#28dc78", "#a028dc", "#f0ffdc"],
+  breakdown_blue: ["#2864dc", "#50c8ff", "#dce6ff"],
+  poison: ["#008080", "#4b0082", "#adff2f"],
+};
+
+function directorPaletteFor(visual) {
+  const theme = String(visual?.director?.color_theme ?? "")
+    .replace(/-/g, "_")
+    .trim()
+    .toLowerCase();
+  if (!theme) return null;
+  if (theme === "white_hot") return DIRECTOR_PALETTES.white_hot;
+  return DIRECTOR_PALETTES[theme] || null;
+}
+
 function paletteColor(visual, index, fallback) {
-  const palette = Array.isArray(visual?.scene?.palette) ? visual.scene.palette.filter(Boolean) : [];
+  // Prefer the director's live palette (matches real-hardware render).
+  // Fall back to the scene's palette list (pure-mock / no-graph mode).
+  const directorPalette = directorPaletteFor(visual);
+  const palette = directorPalette
+    ? directorPalette
+    : Array.isArray(visual?.scene?.palette)
+      ? visual.scene.palette.filter(Boolean)
+      : [];
   if (palette.length === 0) {
     return colorObject(fallback);
   }
@@ -2144,6 +2180,7 @@ function runtimeVisualState(timeSeconds) {
     dropTransitionHot,
     dropIntensityEnvelope: resolvedDropIntensity,
     dropAccentGate: dropEnvelope.accent,
+    director,
   };
 }
 
