@@ -2487,7 +2487,24 @@ function fixtureOutput(fixture, visual) {
     motionGate *= 0.45;
   }
   const intensity = appState.blackout || !fixtureEnabled ? 0 : clamp(baseIntensity * intensityBoost * sectionGate, 0, 1);
-  const color = fixture.color;
+  const directorPalette = directorPaletteFor(visual);
+  const defaultPaletteIndex = fixture.type === "moving_head"
+    ? 0
+    : fixture.type === "wash"
+      ? 1
+      : fixture.type === "led_bar"
+        ? 2
+        : 0;
+  const dropLike = fixtureMode === "peak_return" || fixtureMode === "rebuild" || visual.structure === "drop" || visual.structure === "build";
+  const rotationStep = directorPalette && dropLike
+    ? Math.floor((visual.beatPhase * 2) + (fixture.phaseOffset * 0.5))
+    : 0;
+  const paletteIndex = directorPalette
+    ? (((defaultPaletteIndex + rotationStep) % directorPalette.length) + directorPalette.length) % directorPalette.length
+    : defaultPaletteIndex;
+  const color = directorPalette
+    ? paletteColor(visual, paletteIndex, fixture.color)
+    : fixture.color;
 
   if (fixture.type === "laser") {
     const dropMode = fixtureMode === "peak_return" || visual.structure === "drop";
