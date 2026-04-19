@@ -203,6 +203,20 @@ def _scene_mix(scene: dict[str, Any], time_seconds: float) -> float:
     ) * 0.35
 
 
+def _palette_pick(palette: list[str], phase: float, offset: float) -> str:
+    """Choose a hex color from the scene palette that cycles with phase.
+
+    Each fixture gets a different palette index driven by the scene
+    rate, so the mock rig visibly sweeps through the scene's colors
+    instead of holding whatever hex the fixture was created with.
+    """
+    if not palette:
+        return "#ffffff"
+    swept = (math.sin(phase * 0.45 + offset) + 1.0) * 0.5  # 0..1
+    index = int(round(swept * (len(palette) - 1))) % len(palette)
+    return palette[index]
+
+
 def _fixture_output(
     fixture: dict[str, Any],
     scene: dict[str, Any],
@@ -218,7 +232,14 @@ def _fixture_output(
     )
     base_intensity = float(fixture["intensity"]) * master_intensity * mix
     intensity = 0.0 if blackout else _clamp(base_intensity, 0.0, 1.0)
-    color = _normalize_color(fixture["color"])
+    # The fixture's "color" hex is a starting bias; during play we cycle
+    # through the scene's palette. On blackout/black-out-intense fixtures
+    # the caller has already zeroed intensity, so the hex doesn't matter.
+    scene_palette = list(scene.get("palette") or [])
+    if scene_palette:
+        color = _palette_pick(scene_palette, phase, float(fixture["phaseOffset"]))
+    else:
+        color = _normalize_color(fixture["color"])
     red, green, blue = _hex_to_rgb(color)
 
     if fixture["type"] == "laser":
