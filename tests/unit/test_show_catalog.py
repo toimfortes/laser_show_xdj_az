@@ -321,7 +321,9 @@ def test_catalog_model_payload_includes_selected_patterns_in_candidates() -> Non
         venue_mode="medium_room_150_400",
     )
 
-    payload = cli_module._build_catalog_model_payload(
+    from photonic_synesthesia.showplan.model_payloads import build_catalog_model_payload
+
+    payload = build_catalog_model_payload(
         track_key="artist|song",
         track_title="Song",
         track_artist="Artist",

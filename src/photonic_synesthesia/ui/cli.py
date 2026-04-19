@@ -25,15 +25,6 @@ from click.core import ParameterSource
 from photonic_synesthesia import __version__
 from photonic_synesthesia.core.logging import configure_logging, get_logger
 from photonic_synesthesia.showplan import (
-    build_catalog_model_payload as _build_catalog_model_payload,
-)
-from photonic_synesthesia.showplan import (
-    build_cue_recipe as _cue_recipe,
-)
-from photonic_synesthesia.showplan import (
-    build_laser_program as _laser_program,
-)
-from photonic_synesthesia.showplan import (
     build_show_catalog_entry as _showplan_build_show_catalog_entry,
 )
 from photonic_synesthesia.showplan import (
@@ -47,33 +38,6 @@ from photonic_synesthesia.showplan._patterns import (
 )
 from photonic_synesthesia.showplan._patterns import (
     select_pattern as _select_pattern,
-)
-from photonic_synesthesia.showplan._variants import (
-    auto_markers_for_duration as _auto_markers_for_duration,
-)
-from photonic_synesthesia.showplan._variants import (
-    fixture_enablement as _fixture_enablement,
-)
-from photonic_synesthesia.showplan._variants import (
-    laser_expression as _laser_expression,
-)
-from photonic_synesthesia.showplan._variants import (
-    laser_variant as _laser_variant,
-)
-from photonic_synesthesia.showplan._variants import (
-    led_variant as _led_variant,
-)
-from photonic_synesthesia.showplan._variants import (
-    mover_variant as _mover_variant,
-)
-from photonic_synesthesia.showplan._variants import (
-    section_levels as _section_levels,
-)
-from photonic_synesthesia.showplan._variants import (
-    strobe_profile as _strobe_profile,
-)
-from photonic_synesthesia.showplan._variants import (
-    wash_variant as _wash_variant,
 )
 from photonic_synesthesia.showplan.creative_profiles import (
     CREATIVE_PROFILES as _CREATIVE_PROFILES,
@@ -109,16 +73,10 @@ from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
 )
 from photonic_synesthesia.showplan.types import (
-    cue_family_id as _cue_family_id,
-)
-from photonic_synesthesia.showplan.types import (
     normalize_venue_mode as _normalize_venue_mode,
 )
 from photonic_synesthesia.showplan.validation import (
     anti_template_validation as _showplan_anti_template_validation,
-)
-from photonic_synesthesia.showplan.validation import (
-    show_fingerprint as _show_fingerprint,
 )
 
 logger = get_logger(__name__)
@@ -915,6 +873,10 @@ def _default_show_sections(
     venue_mode: str = "small_room_50_100",
     metadata_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    # Thin back-compat wrapper: showplan.default_show_sections owns the
+    # planner behaviour outright now; this shim exists because a few tests
+    # still import it as cli._default_show_sections. New code should import
+    # from photonic_synesthesia.showplan directly.
     return _showplan_default_show_sections(
         markers,
         duration_seconds,
@@ -924,24 +886,6 @@ def _default_show_sections(
         selection_variance=selection_variance,
         venue_mode=venue_mode,
         metadata_confidence=metadata_confidence,
-        normalize_selection_mode_fn=_normalize_selection_mode,
-        normalize_selection_variance_fn=_normalize_selection_variance,
-        normalize_venue_mode_fn=_normalize_venue_mode,
-        creative_profile_fn=_creative_profile,
-        decorate_show_sections_with_motifs_fn=_decorate_show_sections_with_motifs,
-        select_section_patterns_fn=_select_section_patterns,
-        cue_recipe_fn=_cue_recipe,
-        laser_program_fn=_laser_program,
-        auto_markers_fn=_auto_markers_for_duration,
-        section_levels_fn=_section_levels,
-        strobe_profile_fn=_strobe_profile,
-        fixture_enablement_fn=_fixture_enablement,
-        laser_variant_fn=_laser_variant,
-        laser_expression_fn=_laser_expression,
-        mover_variant_fn=_mover_variant,
-        wash_variant_fn=_wash_variant,
-        led_variant_fn=_led_variant,
-        cue_family_id_fn=_cue_family_id,
     )
 
 
@@ -1981,22 +1925,12 @@ def analyze(ctx: click.Context, duration: float) -> None:
 
 
 def _build_show_catalog_entry(**kwargs: Any) -> dict[str, Any]:
+    # showplan.catalog owns the planner behaviour and calls its sibling
+    # showplan modules directly; the CLI injects only true external
+    # dependencies — catalog-directory I/O and ollama provenance lookup.
     return _showplan_build_show_catalog_entry(
         **kwargs,
-        normalize_selection_mode=_normalize_selection_mode,
-        normalize_selection_variance=_normalize_selection_variance,
-        normalize_venue_mode=_normalize_venue_mode,
-        metadata_confidence_fn=_metadata_confidence,
-        build_semantic_profile_fn=_build_semantic_profile,
-        default_show_sections_fn=_default_show_sections,
-        decorate_show_sections_with_motifs_fn=_decorate_show_sections_with_motifs,
         recent_catalog_entries_fn=_recent_catalog_entries,
-        show_fingerprint_fn=_show_fingerprint,
-        anti_template_validation_fn=_anti_template_validation,
-        motif_registry_fn=_motif_registry,
-        scorer_bundle_fn=_scorer_bundle,
-        preview_artifacts_fn=_preview_artifacts,
-        build_catalog_model_payload_fn=_build_catalog_model_payload,
         ollama_model_name_fn=_ollama_model_name,
         ollama_num_gpu_option_fn=_ollama_num_gpu_option,
         catalog_version=_CATALOG_VERSION,
@@ -2027,10 +1961,6 @@ def _resolve_show_sections(
         selection_variance=selection_variance,
         venue_mode=venue_mode,
         metadata_confidence=metadata_confidence,
-        normalize_selection_mode=_normalize_selection_mode,
-        normalize_selection_variance=_normalize_selection_variance,
-        normalize_venue_mode=_normalize_venue_mode,
-        default_show_sections_fn=_default_show_sections,
         laser_program_version=_LASER_PROGRAM_VERSION,
         show_section_generator_version=_SHOW_SECTION_GENERATOR_VERSION,
         cue_recipe_version=_CUE_RECIPE_VERSION,

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 from typing import Any
 
-from photonic_synesthesia.core.exceptions import ShowplanError
 from photonic_synesthesia.showplan._patterns import (
     LASER_PATTERN_GEOMETRY as _LASER_PATTERN_GEOMETRY,
 )
@@ -37,27 +35,6 @@ from photonic_synesthesia.showplan.types import (
 from photonic_synesthesia.showplan.types import (
     pattern_stage as _pattern_stage,
 )
-
-
-def _identity_selection_mode(selection_mode: str | None) -> str:
-    if selection_mode is None:
-        return "procedural"
-    return str(selection_mode)
-
-
-def _identity_selection_variance(value: Any | None) -> float:
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _identity_venue_mode(value: str | None) -> str:
-    if value is None:
-        return "small_room_50_100"
-    return str(value)
 
 
 def _single_auto_intro_fallback(
@@ -103,10 +80,6 @@ def resolve_show_sections(
     selection_variance: float | None = None,
     venue_mode: str | None = None,
     metadata_confidence: dict[str, Any] | None = None,
-    normalize_selection_mode: Callable[[str | None], str] | None = None,
-    normalize_selection_variance: Callable[[Any | None], float] | None = None,
-    normalize_venue_mode: Callable[[str | None], str] | None = None,
-    default_show_sections_fn: Callable[..., list[dict[str, Any]]] | None = None,
     allow_minimal_fallback: bool = False,
     laser_program_version: int = _LASER_PROGRAM_VERSION,
     show_section_generator_version: int = _SHOW_SECTION_GENERATOR_VERSION,
@@ -114,24 +87,22 @@ def resolve_show_sections(
 ) -> list[dict[str, Any]]:
     """Load persisted sections when sane, otherwise rebuild a dynamic default plan.
 
-    Raises:
-        ShowplanError: when ``default_show_sections_fn`` is not provided and
-            ``allow_minimal_fallback`` is False. This is the production-safe
-            default — a missing builder is a wiring bug, not a degradation path.
+    ``allow_minimal_fallback=True`` swaps the real builder for a demo stub
+    that returns a single "Auto Intro" section — test/demo callers only.
     """
-    _normalize_selection_mode = normalize_selection_mode or _identity_selection_mode
-    _normalize_selection_variance = normalize_selection_variance or _identity_selection_variance
-    _normalize_venue_mode = normalize_venue_mode or _identity_venue_mode
-    if default_show_sections_fn is not None:
-        _default_show_sections = default_show_sections_fn
-    elif allow_minimal_fallback:
-        _default_show_sections = _single_auto_intro_fallback
-    else:
-        raise ShowplanError(
-            "resolve_show_sections requires default_show_sections_fn "
-            "(or allow_minimal_fallback=True for test/demo callers). "
-            "Returning a one-section fallback in production would mask wiring bugs."
-        )
+    from photonic_synesthesia.showplan.types import (
+        normalize_selection_mode as _normalize_selection_mode,
+    )
+    from photonic_synesthesia.showplan.types import (
+        normalize_selection_variance as _normalize_selection_variance,
+    )
+    from photonic_synesthesia.showplan.types import (
+        normalize_venue_mode as _normalize_venue_mode,
+    )
+
+    _default_show_sections = (
+        _single_auto_intro_fallback if allow_minimal_fallback else default_show_sections
+    )
 
     resolved_selection_mode = _normalize_selection_mode(
         selection_mode
@@ -821,36 +792,73 @@ def default_show_sections(
     selection_variance: float = 0.0,
     venue_mode: str = "small_room_50_100",
     metadata_confidence: dict[str, Any] | None = None,
-    normalize_selection_mode_fn: Callable[[str | None], str],
-    normalize_selection_variance_fn: Callable[[Any | None], float],
-    normalize_venue_mode_fn: Callable[[str | None], str],
-    creative_profile_fn: Callable[[str | None, list[dict[str, Any]]], tuple[str, dict[str, Any]]],
-    decorate_show_sections_with_motifs_fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
-    select_section_patterns_fn: Callable[..., dict[str, str]],
-    cue_recipe_fn: Callable[..., dict[str, Any]],
-    laser_program_fn: Callable[..., dict[str, Any]],
-    auto_markers_fn: Callable[[float], list[dict[str, Any]]],
-    section_levels_fn: Callable[..., tuple[float, float, float]],
-    strobe_profile_fn: Callable[..., dict[str, Any]],
-    fixture_enablement_fn: Callable[..., tuple[bool, bool, bool, bool]],
-    laser_variant_fn: Callable[..., dict[str, Any]],
-    laser_expression_fn: Callable[..., dict[str, Any]],
-    mover_variant_fn: Callable[..., dict[str, Any]],
-    wash_variant_fn: Callable[..., dict[str, Any]],
-    led_variant_fn: Callable[..., dict[str, Any]],
-    cue_family_id_fn: Callable[[str, str, str], str],
     show_section_generator_version: int = _SHOW_SECTION_GENERATOR_VERSION,
 ) -> list[dict[str, Any]]:
+    from photonic_synesthesia.showplan._variants import (
+        auto_markers_for_duration as _auto_markers_for_duration,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        fixture_enablement as _fixture_enablement,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        laser_expression as _laser_expression,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        laser_variant as _laser_variant,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        led_variant as _led_variant,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        mover_variant as _mover_variant,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        section_levels as _section_levels,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        strobe_profile as _strobe_profile,
+    )
+    from photonic_synesthesia.showplan._variants import (
+        wash_variant as _wash_variant,
+    )
+    from photonic_synesthesia.showplan.creative_profiles import (
+        creative_profile as _creative_profile,
+    )
+    from photonic_synesthesia.showplan.cue_recipe import (
+        build_cue_recipe as _build_cue_recipe,
+    )
+    from photonic_synesthesia.showplan.laser_program import (
+        build_laser_program as _build_laser_program,
+    )
+    from photonic_synesthesia.showplan.motifs import (
+        decorate_show_sections_with_motifs as _decorate_show_sections_with_motifs,
+    )
+    from photonic_synesthesia.showplan.selection import (
+        select_section_patterns as _select_section_patterns,
+    )
+    from photonic_synesthesia.showplan.types import (
+        cue_family_id as _cue_family_id,
+    )
+    from photonic_synesthesia.showplan.types import (
+        normalize_selection_mode as _normalize_selection_mode,
+    )
+    from photonic_synesthesia.showplan.types import (
+        normalize_selection_variance as _normalize_selection_variance,
+    )
+    from photonic_synesthesia.showplan.types import (
+        normalize_venue_mode as _normalize_venue_mode,
+    )
+
     if not markers:
-        markers = auto_markers_fn(duration_seconds)
+        markers = _auto_markers_for_duration(duration_seconds)
 
     seed = track_seed or "unknown-track"
-    selection_mode = normalize_selection_mode_fn(selection_mode)
-    selection_variance = normalize_selection_variance_fn(selection_variance)
-    venue_mode = normalize_venue_mode_fn(venue_mode)
+    selection_mode = _normalize_selection_mode(selection_mode)
+    selection_variance = _normalize_selection_variance(selection_variance)
+    venue_mode = _normalize_venue_mode(venue_mode)
     venue_profile_value = venue_profile(venue_mode)
     capability_graph = fixture_capability_graph(venue_mode)
-    _, profile = creative_profile_fn(seed, markers)
+    _, profile = _creative_profile(seed, markers)
     total_counts: dict[str, int] = {}
     for marker in markers:
         marker_kind = str(marker["kind"])
@@ -883,7 +891,7 @@ def default_show_sections(
         )
         energy_hint = marker.get("energy_hint")
         energy_scale = max(0.25, min(1.0, float(energy_hint or 6) / 8.0))
-        intensity_multiplier, motion_multiplier, strobe_level = section_levels_fn(
+        intensity_multiplier, motion_multiplier, strobe_level = _section_levels(
             kind=kind,
             context=context,
             energy_scale=energy_scale,
@@ -902,7 +910,7 @@ def default_show_sections(
             _clamp(float(strobe_level) * float(venue_profile_value["strobe_scale"]), 0.0, 1.0),
             3,
         )
-        strobe_profile_value = strobe_profile_fn(
+        strobe_profile_value = _strobe_profile(
             kind=kind,
             context=context,
             track_seed=seed,
@@ -916,7 +924,7 @@ def default_show_sections(
             ordinal=ordinal,
             total_of_kind=total_counts.get(kind, 1),
         )
-        section_patterns = select_section_patterns_fn(
+        section_patterns = _select_section_patterns(
             kind=kind,
             context=context,
             profile=profile,
@@ -954,7 +962,7 @@ def default_show_sections(
         for family, pattern in section_patterns.items():
             pattern_history[family].append(pattern)
             usage_count_by_family[family][pattern] = usage_count_by_family[family].get(pattern, 0) + 1
-        laser_enabled, movers_enabled, washes_enabled, leds_enabled = fixture_enablement_fn(
+        laser_enabled, movers_enabled, washes_enabled, leds_enabled = _fixture_enablement(
             kind=kind,
             context=context,
             profile=profile,
@@ -995,43 +1003,43 @@ def default_show_sections(
             previous_role=previous_section_role,
             next_role=next_section_role,
         )
-        cue_family_id_value = cue_family_id_fn(section_role, lead_family, venue_mode)
-        laser_variant_value = laser_variant_fn(
+        cue_family_id_value = _cue_family_id(section_role, lead_family, venue_mode)
+        laser_variant_value = _laser_variant(
             track_seed=seed,
             base_pattern=laser_pattern,
             kind=kind,
             context=context,
             ordinal=ordinal,
         )
-        laser_expression_value = laser_expression_fn(
+        laser_expression_value = _laser_expression(
             track_seed=seed,
             base_pattern=laser_pattern,
             kind=kind,
             context=context,
             ordinal=ordinal,
         )
-        mover_variant_value = mover_variant_fn(
+        mover_variant_value = _mover_variant(
             track_seed=seed,
             base_pattern=mover_pattern,
             kind=kind,
             context=context,
             ordinal=ordinal,
         )
-        wash_variant_value = wash_variant_fn(
+        wash_variant_value = _wash_variant(
             track_seed=seed,
             base_pattern=wash_pattern,
             kind=kind,
             context=context,
             ordinal=ordinal,
         )
-        led_variant_value = led_variant_fn(
+        led_variant_value = _led_variant(
             track_seed=seed,
             base_pattern=led_pattern,
             kind=kind,
             context=context,
             ordinal=ordinal,
         )
-        cue_recipe_value = cue_recipe_fn(
+        cue_recipe_value = _build_cue_recipe(
             kind=kind,
             context=context,
             laser_pattern=laser_pattern,
@@ -1079,7 +1087,7 @@ def default_show_sections(
                 "laser_pattern": laser_pattern,
                 "laser_variant": laser_variant_value,
                 "laser_expression": laser_expression_value,
-                "laser_program": laser_program_fn(
+                "laser_program": _build_laser_program(
                     track_seed=seed,
                     base_pattern=laser_pattern,
                     kind=kind,
@@ -1103,4 +1111,4 @@ def default_show_sections(
         )
         previous_section_role = section_role
     validated_sections = apply_show_section_validators(sections, venue_mode=venue_mode)
-    return decorate_show_sections_with_motifs_fn(validated_sections)
+    return _decorate_show_sections_with_motifs(validated_sections)
