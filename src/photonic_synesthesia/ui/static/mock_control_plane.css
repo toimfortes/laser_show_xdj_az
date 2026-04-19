@@ -133,9 +133,16 @@ select {
   max-height: calc(100vh - 160px);
   overflow-y: auto;
   scrollbar-gutter: stable;
+  /* Prevent intrinsic-min-content (e.g. <audio controls>) from pushing a
+     grid column wider than its minmax() cap and spilling over its
+     neighbour — this is what caused subsequent waveform-canvas clicks
+     to miss, because the canvas visually overlapped the next column
+     and document.elementsFromPoint returned the neighbour's text. */
+  min-width: 0;
 }
 
-.show-editor-panel {
+.show-editor-panel,
+.track-preview-panel {
   grid-column: 1 / -1;
 }
 
@@ -689,6 +696,10 @@ select {
 
 .preview-panel {
   background: linear-gradient(180deg, rgba(9, 13, 20, 0.96), rgba(6, 10, 16, 0.96));
+}
+
+.track-preview-panel #waveform-canvas {
+  height: 180px;
 }
 
 #stage-canvas {

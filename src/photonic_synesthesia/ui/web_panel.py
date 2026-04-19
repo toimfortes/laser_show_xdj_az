@@ -646,15 +646,6 @@ def _render_control_plane_html() -> str:
                         </div>
 
                         <details open>
-                            <summary><div class="subhead"><h3>Track Preview</h3></div></summary>
-                            <div class="details-body">
-                                <div id="playback-panel" class="playback-panel empty">
-                                    Start a file-backed session with web mode to expose the current track here.
-                                </div>
-                            </div>
-                        </details>
-
-                        <details open>
                             <summary><div class="subhead"><h3>Rig</h3></div></summary>
                             <div class="details-body">
                                 <div id="fixture-list" class="fixture-list"></div>
@@ -723,6 +714,18 @@ def _render_control_plane_html() -> str:
                                 <div id="dmx-monitor" class="dmx-monitor"></div>
                             </div>
                         </details>
+                    </section>
+
+                    <section class="panel stack track-preview-panel" aria-label="Track preview">
+                        <div class="panel-header wide">
+                            <div>
+                                <h2>Track Preview</h2>
+                                <p>Scrub the waveform to jump the playhead. Full session audio, BPM, and section map.</p>
+                            </div>
+                        </div>
+                        <div id="playback-panel" class="playback-panel empty">
+                            Start a file-backed session with web mode to expose the current track here.
+                        </div>
                     </section>
 
                     <section class="panel stack show-editor-panel" aria-label="Agentic show editor">
