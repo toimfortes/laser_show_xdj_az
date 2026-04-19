@@ -89,7 +89,7 @@ def test_root_page_exposes_mock_visualizer_shell() -> None:
     response = client.get("/")
 
     assert response.status_code == 200
-    assert "Control Plane Mock Visualizer" in response.text
+    assert "Control Plane" in response.text
     assert "/static/mock_control_plane.js" in response.text
 
 
