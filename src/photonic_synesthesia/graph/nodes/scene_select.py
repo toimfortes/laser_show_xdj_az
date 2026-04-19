@@ -188,6 +188,47 @@ class SceneSelectNode:
             scene_start_time=state["scene_state"]["scene_start_time"],
         )
 
+        # =================================================================
+        # Apply Scene Overrides to Director State
+        # =================================================================
+        # Scenes may carry a "director_overrides" block that patches a
+        # small whitelisted set of DirectorState fields after
+        # director_intent has run. Whitelisting keeps the TypedDict
+        # contract intact (mypy won't accept dynamic key assignment on a
+        # TypedDict) and prevents scene JSON from mutating unrelated
+        # director state.
+        _OVERRIDABLE_KEYS = {
+            "color_theme",
+            "movement_style",
+            "laser_aggression",
+            "color_drive",
+            "laser_motion_energy",
+            "laser_color_energy",
+            "strobe_budget_hz",
+        }
+        if current_scene in self.scenes:
+            overrides = self.scenes[current_scene].get("director_overrides", {})
+            if overrides:
+                director_state = state["director_state"]
+                for key, value in overrides.items():
+                    if key not in _OVERRIDABLE_KEYS:
+                        continue
+                    if key == "color_theme":
+                        director_state["color_theme"] = str(value)
+                    elif key == "movement_style":
+                        director_state["movement_style"] = str(value)
+                    elif key == "laser_aggression":
+                        director_state["laser_aggression"] = float(value)
+                    elif key == "color_drive":
+                        director_state["color_drive"] = float(value)
+                    elif key == "laser_motion_energy":
+                        director_state["laser_motion_energy"] = float(value)
+                    elif key == "laser_color_energy":
+                        director_state["laser_color_energy"] = float(value)
+                    elif key == "strobe_budget_hz":
+                        director_state["strobe_budget_hz"] = float(value)
+                    logger.debug("Applied scene override", key=key, value=value)
+
         # Record processing time
         state["processing_times"]["scene_select"] = time.time() - start_time
 

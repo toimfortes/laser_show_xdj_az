@@ -16,11 +16,11 @@ from photonic_synesthesia.core.state import (
 # same section shows the same palette across replays, but different
 # phrases within a track still get variety. Palettes themselves live in
 # director.palettes; this module only holds the policy.
-_DROP_PALETTES = ("white_hot", "cyan_magenta", "amber_cyan", "emerald_violet")
-_BUILDUP_PALETTES = ("warm", "cyan_magenta", "emerald_violet")
+_DROP_PALETTES = ("white_hot", "cyan_magenta", "amber_cyan", "emerald_violet", "poison")
+_BUILDUP_PALETTES = ("warm", "cyan_magenta", "emerald_violet", "poison")
 _BREAKDOWN_PALETTES = ("breakdown_blue", "deep_blue", "cool")
 _INTRO_OUTRO_PALETTES = ("cool", "neutral", "deep_blue")
-_DEFAULT_PALETTES = ("neutral", "warm", "cool")
+_DEFAULT_PALETTES = ("neutral", "warm", "cool", "poison")
 
 
 def _pick_palette(pool: tuple[str, ...], seed_tokens: tuple[str, ...]) -> str:

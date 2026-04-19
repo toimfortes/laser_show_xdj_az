@@ -88,6 +88,12 @@ _PALETTES: dict[str, Palette] = {
         accent=(220, 230, 255),
         name="breakdown_blue",
     ),
+    "poison": Palette(
+        primary=(0, 128, 128),    # Deep Teal
+        secondary=(75, 0, 130),   # Indigo/Deep Purple
+        accent=(173, 255, 47),    # Green Yellow / Lime
+        name="poison",
+    ),
 }
 
 

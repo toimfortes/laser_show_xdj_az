@@ -1,0 +1,36 @@
+{
+  "name": "poison",
+  "description": "Deep Progressive House look inspired by Paradoks - Poison",
+  "priority": 110,
+  "pad_trigger": 48,
+  "triggers": {
+    "structure": ["drop", "buildup"],
+    "energy_threshold": 0.6
+  },
+  "director_overrides": {
+    "color_theme": "poison",
+    "movement_style": "aggressive",
+    "laser_aggression": 0.85
+  },
+  "fixtures": {
+    "lasers": {
+      "mode": "dmx_control",
+      "pattern": {
+        "mode": "oscillate",
+        "range": [10, 40],
+        "rate": "beat_sync"
+      }
+    },
+    "moving_heads": {
+      "pan": {
+        "mode": "lissajous",
+        "scale": 1.2
+      },
+      "tilt": {
+        "mode": "beat_pulse",
+        "min": 128,
+        "max": 220
+      }
+    }
+  }
+}
