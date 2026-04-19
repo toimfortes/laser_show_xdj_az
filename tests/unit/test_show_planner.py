@@ -589,7 +589,13 @@ def test_local_ollama_cpu_mode_uses_section_level_choices(monkeypatch) -> None:
             "led": "fade",
         }
 
-    monkeypatch.setattr(cli_module, "_ollama_section_selection", _fake_ollama_section_selection)
+    # Patch at the showplan.selection module level — that's where
+    # default_show_sections calls into. The cli_module._ollama_section_selection
+    # name is a legacy passthrough kept for the CLI interactive picker.
+    from photonic_synesthesia.showplan import selection as _selection_module
+    monkeypatch.setattr(
+        _selection_module, "_default_ollama_section_selection", _fake_ollama_section_selection
+    )
 
     sections = _default_show_sections(
         _markers(),
@@ -605,9 +611,10 @@ def test_local_ollama_cpu_mode_uses_section_level_choices(monkeypatch) -> None:
 
 
 def test_local_ollama_cpu_mode_falls_back_to_procedural_when_invalid(monkeypatch) -> None:
+    from photonic_synesthesia.showplan import selection as _selection_module
     monkeypatch.setattr(
-        cli_module,
-        "_ollama_section_selection",
+        _selection_module,
+        "_default_ollama_section_selection",
         lambda **kwargs: {"laser": "not_in_candidates"},
     )
 

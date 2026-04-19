@@ -28,6 +28,7 @@ CATALOG_VERSION = 7
 
 # --- Domain constants -------------------------------------------------------
 VENUE_MODES: frozenset[str] = frozenset({"small_room_50_100", "medium_room_150_400"})
+SELECTION_MODES: frozenset[str] = frozenset({"procedural", "ai_assisted", "local_ollama_cpu"})
 
 
 # --- Shared numeric helpers -------------------------------------------------
@@ -50,6 +51,23 @@ def normalize_venue_mode(value: str | None) -> str:
     """Normalize a venue mode string; fall back to the small-room default."""
     normalized = str(value or "small_room_50_100").strip().lower().replace("-", "_")
     return normalized if normalized in VENUE_MODES else "small_room_50_100"
+
+
+def normalize_selection_mode(selection_mode: str | None) -> str:
+    """Normalize a selection-mode string; fall back to procedural."""
+    value = str(selection_mode or "procedural").strip().lower().replace("-", "_")
+    return value if value in SELECTION_MODES else "procedural"
+
+
+def normalize_selection_variance(value: Any | None) -> float:
+    """Coerce variance input to a float in [0, 1], rounded to 3dp."""
+    if value is None:
+        return 0.0
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return round(clamp(normalized, 0.0, 1.0), 3)
 
 
 def apply_venue_laser_zone_policy(venue_mode: str, zone_policy: str) -> str:

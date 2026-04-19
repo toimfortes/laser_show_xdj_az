@@ -1,8 +1,5 @@
-import pytest
-
 import photonic_synesthesia.showplan as showplan
 import photonic_synesthesia.showplan.types as showplan_types
-from photonic_synesthesia.core.exceptions import ShowplanError
 from photonic_synesthesia.showplan import (
     build_semantic_profile,
     build_show_catalog_entry,
@@ -34,7 +31,6 @@ def test_showplan_sections_resolve_show_sections_matches_existing_shape() -> Non
         [],
         64.0,
         track_seed="fixture",
-        allow_minimal_fallback=True,
     )
     assert isinstance(resolved, list)
     assert resolved
@@ -55,15 +51,54 @@ def test_cli_and_model_payloads_share_creative_profiles_source() -> None:
     assert model_payloads_ref is CREATIVE_PROFILES
 
 
-def test_showplan_sections_resolve_raises_when_no_builder_injected() -> None:
-    """Missing default_show_sections_fn is a wiring bug, not a degradation path."""
-    with pytest.raises(ShowplanError):
-        resolve_show_sections(
-            None,
-            [],
-            64.0,
-            track_seed="fixture",
-        )
+def test_showplan_sections_default_path_is_not_the_demo_stub() -> None:
+    """PR A / Finding #2: the default facade call must return a real multi-
+    section plan, not the one "Auto Intro" stub. That stub is reserved for
+    explicit ``allow_minimal_fallback=True`` callers.
+    """
+    resolved = resolve_show_sections(
+        None,
+        [],
+        180.0,
+        track_seed="fixture-track",
+    )
+    # default_show_sections auto-generates markers for tracks without any,
+    # so the returned plan should always contain several sections with
+    # distinct roles — not a single Auto Intro.
+    assert len(resolved) > 1
+    labels = [str(section.get("label") or "") for section in resolved]
+    assert labels != ["Auto Intro"]
+
+
+def test_showplan_sections_allow_minimal_fallback_returns_stub() -> None:
+    """The stub path stays available behind the explicit opt-in flag."""
+    resolved = resolve_show_sections(
+        None,
+        [],
+        64.0,
+        track_seed="fixture",
+        allow_minimal_fallback=True,
+    )
+    assert len(resolved) == 1
+    assert resolved[0].get("label") == "Auto Intro"
+
+
+def test_showplan_does_not_import_ui_cli() -> None:
+    """The showplan package is the planning domain boundary and must
+    stand on its own — an import of showplan must not transitively pull
+    in photonic_synesthesia.ui.cli.
+    """
+    import sys
+
+    # Best-effort: purge any previously-loaded showplan modules so we see
+    # a clean import from scratch.
+    for name in list(sys.modules):
+        if name.startswith("photonic_synesthesia.showplan") or name == "photonic_synesthesia.ui.cli":
+            del sys.modules[name]
+
+    import photonic_synesthesia.showplan  # noqa: F401
+
+    assert "photonic_synesthesia.ui.cli" not in sys.modules
 
 
 def test_showplan_build_show_catalog_entry_is_callable() -> None:

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from photonic_synesthesia.showplan._patterns import _stable_digest
+
 CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
     "festival_peak": {
         "strobe_bias": 0.22,
@@ -127,3 +129,23 @@ CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+
+def creative_profile(
+    track_seed: str | None,
+    markers: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any]]:
+    """Pick a deterministic creative profile for a track.
+
+    The profile is hashed from (track_seed, marker signature) so identical
+    inputs always yield the same profile — catalog runs stay reproducible
+    across processes.
+    """
+    names = sorted(CREATIVE_PROFILES)
+    marker_signature = "|".join(
+        f"{marker.get('kind','?')}@{round(float(marker.get('start_seconds', 0.0)), 1)}"
+        for marker in markers
+    )
+    digest = _stable_digest(f"{track_seed or 'unknown'}::{marker_signature}")
+    profile_name = names[int.from_bytes(digest[:2], "big") % len(names)]
+    return profile_name, CREATIVE_PROFILES[profile_name]
