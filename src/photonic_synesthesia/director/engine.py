@@ -3,12 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha1
 
 from photonic_synesthesia.core.state import (
     MLStreamState,
     MusicStructure,
     PhotonicState,
 )
+
+# Structure → palette pool. The director picks from each pool
+# deterministically per phrase (seeded by structure + bar index) so the
+# same section shows the same palette across replays, but different
+# phrases within a track still get variety. Palettes themselves live in
+# director.palettes; this module only holds the policy.
+_DROP_PALETTES = ("white_hot", "cyan_magenta", "amber_cyan", "emerald_violet")
+_BUILDUP_PALETTES = ("warm", "cyan_magenta", "emerald_violet")
+_BREAKDOWN_PALETTES = ("breakdown_blue", "deep_blue", "cool")
+_INTRO_OUTRO_PALETTES = ("cool", "neutral", "deep_blue")
+_DEFAULT_PALETTES = ("neutral", "warm", "cool")
+
+
+def _pick_palette(pool: tuple[str, ...], seed_tokens: tuple[str, ...]) -> str:
+    """Deterministic palette pick keyed on the joined seed tokens."""
+    digest = sha1("|".join(seed_tokens).encode("utf-8")).digest()
+    idx = int.from_bytes(digest[:2], "big") % len(pool)
+    return pool[idx]
 
 
 @dataclass
@@ -64,9 +83,36 @@ class DirectorEngine:
         else:
             self._last_target_scene = target_scene
 
-        color_theme = "warm" if rule["low_band"] >= rule["high_band"] else "cool"
+        # Choose a palette from the structure-appropriate pool, keyed on
+        # (structure, bar index, ml hint) so the pick is stable per phrase
+        # but varies across phrases and tracks.
+        bar_position = int(state["beat_info"]["bar_position"])
+        ml_confidence = float(ml.get("confidence", 0.0) or 0.0)
+        ml_scene = str(ml.get("predicted_scene", "") or "")
+        seed_tokens = (
+            structure.value if isinstance(structure, MusicStructure) else str(structure),
+            str(bar_position // max(1, self.phrase_bars)),
+            ml_scene if ml_confidence >= 0.4 else "",
+        )
         if structure == MusicStructure.DROP:
-            color_theme = "white-hot"
+            color_theme = _pick_palette(_DROP_PALETTES, seed_tokens)
+        elif structure == MusicStructure.BUILDUP:
+            # Low-band dominant builds lean warm; bright builds lean contrast.
+            if rule["low_band"] >= rule["high_band"]:
+                color_theme = _pick_palette(("warm", "amber_cyan"), seed_tokens)
+            else:
+                color_theme = _pick_palette(_BUILDUP_PALETTES, seed_tokens)
+        elif structure == MusicStructure.BREAKDOWN:
+            color_theme = _pick_palette(_BREAKDOWN_PALETTES, seed_tokens)
+        elif structure in (MusicStructure.INTRO, MusicStructure.OUTRO):
+            color_theme = _pick_palette(_INTRO_OUTRO_PALETTES, seed_tokens)
+        else:
+            # Fall back to the old warm/cool split for everything else
+            # (verse/chorus/etc.) and add a neutral option for calmer mixes.
+            if rule["low_band"] >= rule["high_band"]:
+                color_theme = _pick_palette(("warm", "amber_cyan", "neutral"), seed_tokens)
+            else:
+                color_theme = _pick_palette(("cool", "cyan_magenta", "neutral"), seed_tokens)
 
         if structure in (MusicStructure.BUILDUP, MusicStructure.DROP):
             movement_style = "aggressive"

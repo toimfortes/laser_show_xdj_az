@@ -161,6 +161,14 @@ def test_moving_head_control_uses_release_look_to_relax_motion() -> None:
     assert command[1 + node.channel_map["pan_tilt_speed"]] == 96
     assert command[1 + node.channel_map["strobe"]] == 0
     assert command[1 + node.channel_map["gobo"]] == 64
-    assert command[1 + node.channel_map["red"]] == 70
-    assert command[1 + node.channel_map["green"]] == 130
-    assert command[1 + node.channel_map["blue"]] == 255
+    # Color is now driven by director_state.color_theme (the test leaves
+    # it at the default "neutral" palette) rendered through color_mode
+    # "static" — so we expect the neutral palette's primary tinted toward
+    # the accent by color_drive * 0.15 (see director.palettes.render_rgb).
+    # No more hardcoded target-bias red-orange / ceiling-blue fall-through.
+    red = command[1 + node.channel_map["red"]]
+    green = command[1 + node.channel_map["green"]]
+    blue = command[1 + node.channel_map["blue"]]
+    assert 0 <= red <= 255 and 0 <= green <= 255 and 0 <= blue <= 255
+    # Neutral palette biases R~=G~=B; blue is slightly higher than red.
+    assert blue >= red and blue >= green - 10

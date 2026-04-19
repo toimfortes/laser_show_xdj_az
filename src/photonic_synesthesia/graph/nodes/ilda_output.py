@@ -12,6 +12,12 @@ from typing import Any
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, MusicStructure, PhotonicState
+from photonic_synesthesia.director.palettes import (
+    DEFAULT_PALETTE,
+    Palette,
+    render_rgb,
+    resolve_palette,
+)
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.laser.ether_dream import EtherDreamClient
 from photonic_synesthesia.laser.ilda_file import encode_ild
@@ -32,21 +38,24 @@ def _rgb_from_mode(
     phase: float,
     color_drive: float,
     harshness: float,
+    palette: Palette | None = None,
 ) -> tuple[int, int, int]:
-    if color_mode == "white_hits":
-        peak = int(140 + 115 * max(color_drive, harshness))
-        return peak, peak, peak
-    if color_mode == "dual_cycle":
-        red = int(90 + 165 * (0.5 + 0.5 * math.sin(phase)))
-        blue = int(90 + 165 * (0.5 + 0.5 * math.sin(phase + math.pi)))
-        green = int(30 + 100 * color_drive)
-        return red, green, blue
-    if color_mode == "morph":
-        red = int(60 + 195 * (0.5 + 0.5 * math.sin(phase)))
-        green = int(60 + 195 * (0.5 + 0.5 * math.sin(phase + 2.1)))
-        blue = int(60 + 195 * (0.5 + 0.5 * math.sin(phase + 4.2)))
-        return red, green, blue
-    return 0, int(160 + 95 * color_drive), 255
+    """Render a laser RGB from (color_mode style × palette hue set).
+
+    When ``palette`` is provided, the director's color theme drives the
+    hue selection and ``color_mode`` is just the rendering style. When
+    absent (legacy callers / tests), falls back to the neutral palette.
+    ``harshness`` feeds into ``white_hits`` brightness biasing.
+    """
+    effective_palette = palette if palette is not None else DEFAULT_PALETTE
+    drive_bias = max(0.0, min(1.0, color_drive + harshness * 0.25))
+    return render_rgb(
+        effective_palette,
+        color_mode,
+        phase=phase,
+        beat_hit=False,
+        color_drive=drive_bias,
+    )
 
 
 def _program_color_mode(color_mode: str | None, color_strategy: str | None, fallback: str) -> str:
@@ -212,6 +221,7 @@ class ILDAOutputNode:
                 structure,
             )
         )
+        palette = resolve_palette(str(director.get("color_theme") or "neutral"))
         points = self._build_points(
             point_count=max(24, self.config.points_per_frame),
             geometry_family=geometry_family,
@@ -233,6 +243,7 @@ class ILDAOutputNode:
             motion_energy=director["laser_motion_energy"],
             color_energy=director["laser_color_energy"],
             program_look=program_look,
+            palette=palette,
         )
         return ILDAFrame(
             fixture_id=fixture.id,
@@ -432,6 +443,7 @@ class ILDAOutputNode:
         motion_energy: float,
         color_energy: float,
         program_look: dict[str, Any] | None,
+        palette: Palette = DEFAULT_PALETTE,
     ) -> list[ILDAPoint]:
         sweep_phase = timestamp * max(0.25, bpm / 60.0) * (0.5 + aggression * 1.8)
         density_scale = float(program_look.get("density", 1.0)) if program_look else 1.0
@@ -511,7 +523,13 @@ class ILDAOutputNode:
                 y = y_offset + abs(math.sin(shape_phase * 0.9)) * amplitude_y
 
             color_phase = shape_phase + harmonic_change * 5.0 + color_energy * 2.0
-            r, g, b = _rgb_from_mode(color_mode, color_phase, color_drive + color_energy * 0.25, harshness)
+            r, g, b = _rgb_from_mode(
+                color_mode,
+                color_phase,
+                color_drive + color_energy * 0.25,
+                harshness,
+                palette=palette,
+            )
             blanked = False
             blanking_density = max(1, int(round(8 - min(6, density_scale * 3.2))))
             if geometry_family == "burst" and aggression > 0.72:
