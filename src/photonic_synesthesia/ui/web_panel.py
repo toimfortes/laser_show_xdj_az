@@ -604,25 +604,22 @@ def _render_control_plane_html() -> str:
         <body>
             <div id="app">
                 <header class="hero">
-                    <div>
+                    <div class="hero-copy">
                         <p class="eyebrow">Photonic Synesthesia</p>
-                        <h1>Control Plane Mock Visualizer</h1>
-                        <p class="lede">
-                            Create fake lasers, movers, washes, and LED bars, then preview the scene in-browser before
-                            touching real fixtures.
-                        </p>
+                        <h1>Control Plane</h1>
+                        <p class="lede">Mock rig preview — add fixtures and watch them respond to live runtime.</p>
                     </div>
                     <div class="hero-metrics">
                         <div class="metric-card">
-                            <span>WebSocket</span>
+                            <span>WS</span>
                             <strong id="ws-status">connecting</strong>
                         </div>
                         <div class="metric-card">
-                            <span>Runtime Scene</span>
+                            <span>Scene</span>
                             <strong id="runtime-scene">idle</strong>
                         </div>
                         <div class="metric-card">
-                            <span>Fixture Count</span>
+                            <span>Fixtures</span>
                             <strong id="fixture-count">0</strong>
                         </div>
                     </div>
@@ -632,7 +629,6 @@ def _render_control_plane_html() -> str:
                     <section class="panel stack" aria-label="Show controls">
                         <div class="panel-header">
                             <h2>Show Controls</h2>
-                            <p>Mock rig controls inspired by lighting desks and virtual consoles.</p>
                         </div>
 
                         <div class="stack compact">
@@ -649,39 +645,35 @@ def _render_control_plane_html() -> str:
                             <button id="blackout-toggle" class="panic">Blackout Off</button>
                         </div>
 
-                        <div class="stack compact">
-                            <div class="subhead">
-                                <h3>Scene Bank</h3>
-                                <p>Trigger fake looks locally while still observing live runtime telemetry.</p>
+                        <details open>
+                            <summary><div class="subhead"><h3>Track Preview</h3></div></summary>
+                            <div class="details-body">
+                                <div id="playback-panel" class="playback-panel empty">
+                                    Start a file-backed session with web mode to expose the current track here.
+                                </div>
                             </div>
-                            <div id="scene-bank" class="scene-bank"></div>
-                        </div>
+                        </details>
 
-                        <div class="stack compact">
-                            <div class="subhead">
-                                <h3>Track Preview</h3>
-                                <p>Hear the active file-backed session and watch a lightweight waveform preview.</p>
+                        <details open>
+                            <summary><div class="subhead"><h3>Rig</h3></div></summary>
+                            <div class="details-body">
+                                <div id="fixture-list" class="fixture-list"></div>
                             </div>
-                            <div id="playback-panel" class="playback-panel empty">
-                                Start a file-backed session with web mode to expose the current track here.
-                            </div>
-                        </div>
+                        </details>
 
-                        <div class="stack compact">
-                            <div class="subhead">
-                                <h3>Fixture Library</h3>
-                                <p>Add simulated fixtures to the preview rig.</p>
+                        <details>
+                            <summary><div class="subhead"><h3>Scene Bank</h3></div></summary>
+                            <div class="details-body">
+                                <div id="scene-bank" class="scene-bank"></div>
                             </div>
-                            <div id="fixture-library" class="fixture-library"></div>
-                        </div>
+                        </details>
 
-                        <div class="stack compact">
-                            <div class="subhead">
-                                <h3>Rig</h3>
-                                <p>Select a fixture to tune position, color, and behavior.</p>
+                        <details>
+                            <summary><div class="subhead"><h3>Fixture Library</h3></div></summary>
+                            <div class="details-body">
+                                <div id="fixture-library" class="fixture-library"></div>
                             </div>
-                            <div id="fixture-list" class="fixture-list"></div>
-                        </div>
+                        </details>
                     </section>
 
                     <section class="panel preview-panel" aria-label="Stage preview">
@@ -719,20 +711,18 @@ def _render_control_plane_html() -> str:
                     <section class="panel stack" aria-label="Inspector">
                         <div class="panel-header">
                             <h2>Fixture Inspector</h2>
-                            <p>Per-fixture settings and a DMX-style monitor for the mock rig.</p>
                         </div>
 
                         <div id="fixture-inspector" class="inspector-empty">
                             Select a fixture to edit its mock parameters.
                         </div>
 
-                        <div class="stack compact">
-                            <div class="subhead">
-                                <h3>Mock DMX Monitor</h3>
-                                <p>Fixture-oriented synthetic channel output for the browser preview.</p>
+                        <details>
+                            <summary><div class="subhead"><h3>Mock DMX Monitor</h3></div></summary>
+                            <div class="details-body">
+                                <div id="dmx-monitor" class="dmx-monitor"></div>
                             </div>
-                            <div id="dmx-monitor" class="dmx-monitor"></div>
-                        </div>
+                        </details>
                     </section>
 
                     <section class="panel stack show-editor-panel" aria-label="Agentic show editor">

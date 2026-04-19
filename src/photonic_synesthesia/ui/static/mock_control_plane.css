@@ -45,17 +45,26 @@ select {
 .hero {
   display: flex;
   justify-content: space-between;
-  gap: 24px;
-  align-items: end;
-  margin-bottom: 24px;
+  gap: 20px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.hero-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .eyebrow {
-  margin: 0 0 10px;
+  margin: 0;
   color: var(--accent);
-  font-size: 0.78rem;
+  font-size: 0.7rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .hero h1,
@@ -66,23 +75,22 @@ select {
 
 .hero h1 {
   margin: 0;
-  font-size: clamp(2.3rem, 4vw, 4.2rem);
-  line-height: 0.94;
-  max-width: 12ch;
+  font-size: clamp(1.2rem, 1.4vw, 1.6rem);
+  line-height: 1.1;
 }
 
 .lede {
-  max-width: 62ch;
-  margin: 12px 0 0;
+  margin: 0;
   color: var(--muted);
-  font-size: 1.05rem;
+  font-size: 0.82rem;
+  max-width: 48ch;
 }
 
 .hero-metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 1fr));
-  gap: 12px;
-  min-width: min(100%, 420px);
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .metric-card,
@@ -94,28 +102,37 @@ select {
 }
 
 .metric-card {
-  padding: 16px;
-  border-radius: 18px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 120px;
 }
 
 .metric-card span {
-  display: block;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .metric-card strong {
-  display: block;
-  margin-top: 8px;
-  font-size: 1.2rem;
+  font-size: 0.92rem;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(300px, 360px) minmax(420px, 1fr) minmax(320px, 380px);
-  gap: 18px;
+  grid-template-columns: minmax(280px, 340px) minmax(420px, 1fr) minmax(300px, 360px);
+  grid-auto-rows: min-content;
+  align-items: start;
+  gap: 14px;
+}
+
+.layout > .panel:not(.show-editor-panel) {
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .show-editor-panel {
@@ -894,31 +911,110 @@ select {
 
 .monitor-channel-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 4px;
 }
 
 .channel-cell {
-  padding: 10px;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.72);
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 6px;
+  align-items: baseline;
 }
 
-.channel-cell small,
-.channel-cell span {
-  display: block;
+.channel-cell small {
+  grid-row: 1;
+  grid-column: 1;
   color: var(--muted);
+  font-size: 0.62rem;
+  line-height: 1;
 }
 
 .channel-cell strong {
-  display: block;
-  margin: 6px 0;
-  font-size: 1.05rem;
+  grid-row: 1;
+  grid-column: 2;
+  justify-self: end;
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+.channel-cell span {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 0.6rem;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-row {
+  padding: 10px;
+}
+
+.monitor-summary {
+  margin-bottom: 6px;
 }
 
 .monitor-fixture-list {
   display: grid;
+  gap: 6px;
+}
+
+.panel details {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 0;
+}
+
+.panel details > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.panel details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel details > summary::before {
+  content: "▸";
+  color: var(--muted);
+  font-size: 0.8rem;
+  transition: transform 120ms ease;
+}
+
+.panel details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.panel details > summary h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.panel details > summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.panel details > .details-body {
+  padding: 4px 14px 14px;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 
@@ -934,6 +1030,12 @@ select {
 
   .hero-metrics {
     width: 100%;
+    justify-content: flex-start;
+  }
+
+  .layout > .panel:not(.show-editor-panel) {
+    max-height: none;
+    overflow-y: visible;
   }
 }
 
