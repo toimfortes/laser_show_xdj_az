@@ -1,10 +1,11 @@
 """Catalog model payload builder for the showplan facade.
 
 Assembles the per-section model payload that downstream consumers (recent
-catalog, audit tooling) use to review selection decisions. Constants and
-helpers here are duplicated from the CLI's pattern tables so this module
-stays free of `photonic_synesthesia.ui.*` and `platform.runtime_context*`
-imports. If these drift from the CLI's copies, tests will catch it.
+catalog, audit tooling) use to review selection decisions. Shared
+heuristic tables live in ``showplan.creative_profiles`` so this module
+stays free of ``photonic_synesthesia.ui.*`` and
+``platform.runtime_context*`` imports without maintaining duplicate
+copies.
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ from photonic_synesthesia.showplan._patterns import (
     pattern_candidates,
     pattern_stage,
 )
+from photonic_synesthesia.showplan.creative_profiles import (
+    CREATIVE_PROFILES as _CREATIVE_PROFILES,
+)
 from photonic_synesthesia.showplan.types import (
     clamp as _clamp,
 )
@@ -26,118 +30,6 @@ from photonic_synesthesia.showplan.types import (
 
 _OLLAMA_CPU_MAX_CANDIDATES = 6
 
-_CREATIVE_PROFILES: dict[str, dict[str, Any]] = {
-    "festival_peak": {
-        "strobe_bias": 0.22,
-        "motion_bias": 0.18,
-        "intensity_bias": 0.08,
-        "allow_intro_lasers": False,
-        "allow_breakdown_lasers": False,
-        "allow_intro_leds": True,
-        "patterns": {
-            "laser": {
-                "build": ["vertical_rake", "horizontal_rake", "rotor", "cone", "scan_slice", "spiral_tunnel"],
-                "drop": ["shutter_hits", "burst_fan", "starburst", "alternating_beam_groups", "split_zone_beams", "target_rotate_chase", "sheet", "mixed_beam_fx"],
-            },
-            "mover": {
-                "build": ["rise", "mirror_fan", "figure_eight", "circle"],
-                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "square", "diamond"],
-            },
-            "wash": {
-                "drop": ["white_peak", "drop_slam", "downbeat_hit", "punch"],
-            },
-            "led": {
-                "drop": ["chase", "fizzle", "audio_spectrum", "rotating_line", "snake"],
-            },
-        },
-    },
-    "euphoric_arc": {
-        "strobe_bias": 0.08,
-        "motion_bias": 0.12,
-        "intensity_bias": 0.04,
-        "allow_intro_lasers": True,
-        "allow_breakdown_lasers": True,
-        "allow_intro_leds": False,
-        "patterns": {
-            "laser": {
-                "intro": ["fan", "beam_fan_narrow", "liquid_sky", "wave", "circle_trace"],
-                "build": ["cone", "wave", "vertical_rake", "rotor", "loop_trace", "spiral_tunnel"],
-                "drop": ["burst_fan", "tunnel", "starburst", "crisscross", "beam_fan_wide", "point_array"],
-                "breakdown": ["liquid_sky", "thin_scan", "fan", "spirograph", "circle_trace"],
-            },
-            "mover": {
-                "build": ["mirror_fan", "figure_eight", "rise", "circle"],
-                "drop": ["cross_sweep", "diamond", "square", "snap_hits"],
-            },
-            "wash": {
-                "intro": ["ambient", "breath", "center_out"],
-                "build": ["bloom", "build_ramp", "outside_in"],
-                "drop": ["white_peak", "punch", "drop_slam"],
-                "breakdown": ["breakdown_glow", "fade", "ambient"],
-            },
-            "led": {
-                "build": ["vertical_build", "ramp", "snake"],
-                "drop": ["audio_spectrum", "rotating_line", "chase"],
-            },
-        },
-    },
-    "percussive_driver": {
-        "strobe_bias": 0.18,
-        "motion_bias": 0.1,
-        "intensity_bias": 0.06,
-        "allow_intro_lasers": False,
-        "allow_breakdown_lasers": False,
-        "allow_intro_leds": True,
-        "patterns": {
-            "laser": {
-                "build": ["vertical_rake", "horizontal_rake", "cone", "scan_slice", "target_step_chase"],
-                "drop": ["shutter_hits", "alternating_beam_groups", "burst_fan", "starburst", "split_zone_beams", "target_rotate_chase", "beam_sequence_counterclockwise"],
-            },
-            "mover": {
-                "drop": ["snap_hits", "cross_sweep", "ping_pong_tilt", "line_bounce"],
-            },
-            "wash": {
-                "drop": ["downbeat_hit", "drop_slam", "punch", "white_peak"],
-            },
-            "led": {
-                "build": ["vertical_offset", "vertical_build", "ramp"],
-                "drop": ["chase", "fizzle", "snake", "audio_spectrum"],
-            },
-        },
-    },
-    "hypnotic_motorik": {
-        "strobe_bias": -0.04,
-        "motion_bias": 0.14,
-        "intensity_bias": -0.02,
-        "allow_intro_lasers": True,
-        "allow_breakdown_lasers": True,
-        "allow_intro_leds": False,
-        "patterns": {
-            "laser": {
-                "intro": ["wave", "liquid_sky", "fan", "wave_trace", "circle_trace"],
-                "build": ["rotor", "cone", "wave", "vertical_rake", "loop_trace", "target_bounce_chase"],
-                "drop": ["tunnel", "crisscross", "rotor", "burst_fan", "spiral_tunnel", "sheet"],
-                "breakdown": ["liquid_sky", "wave", "thin_scan", "helix", "spirograph"],
-            },
-            "mover": {
-                "intro": ["drift", "circle", "leaf"],
-                "build": ["figure_eight", "circle", "mirror_fan"],
-                "drop": ["cross_sweep", "square", "diamond", "ping_pong_tilt"],
-                "breakdown": ["hold", "leaf", "drift"],
-            },
-            "wash": {
-                "intro": ["ambient", "gradient_roll", "breath"],
-                "build": ["gradient_roll", "bloom", "center_out"],
-                "drop": ["punch", "white_peak", "downbeat_hit"],
-            },
-            "led": {
-                "intro": ["pulse", "horizontal_lines", "fade"],
-                "build": ["rotating_line", "ramp", "vertical_offset"],
-                "drop": ["rotating_line", "audio_spectrum", "snake", "chase"],
-            },
-        },
-    },
-}
 
 
 
