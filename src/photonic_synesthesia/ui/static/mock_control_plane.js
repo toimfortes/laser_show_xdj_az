@@ -772,11 +772,33 @@ function renderShowEditor() {
 
   const activeSection = currentShowSection();
   const jumpToSection = (sectionId) => {
-    if (!appState.playback?.seekable) {
-      return;
-    }
     const section = sections.find((item) => item.id === sectionId);
     if (!section) {
+      return;
+    }
+    // Scroll the matching section-settings card into view so the user
+    // can edit it without hunting for it in the long phrase timeline.
+    // Do this regardless of seekability so the scroll still works in
+    // no-audio / metadata-only sessions.
+    const card = elements.showEditor?.querySelector(
+      `.show-section-card[data-section-id="${sectionId}"]`,
+    );
+    if (card && typeof card.scrollIntoView === "function") {
+      // Use block: "start" — each section card can be 2000-3000px tall
+      // (all per-section settings inline). "center" would push the
+      // header off-screen. Align the card top to the viewport top so
+      // the user lands on the section's label and can scroll down into
+      // its controls.
+      //
+      // Use behavior: "auto" (instant) — smooth scroll over 15000+px can
+      // be interrupted by the periodic playback-state poll re-rendering
+      // the show-editor DOM, leaving the scroll stranded midway. The
+      // jump-flash animation still gives a visual landing cue.
+      card.scrollIntoView({ behavior: "auto", block: "start" });
+      card.classList.add("jump-flash");
+      window.setTimeout(() => card.classList.remove("jump-flash"), 1200);
+    }
+    if (!appState.playback?.seekable) {
       return;
     }
     seekPlaybackTo(Number(section.start_seconds)).catch((error) => {
@@ -1305,8 +1327,25 @@ function drawPlaybackWaveform() {
   const waveformCanvas = elements.waveformCanvas;
   const ctx = waveformCanvas.getContext("2d");
   const waveform = Array.isArray(appState.playback.waveform) ? appState.playback.waveform : [];
-  const width = waveformCanvas.width;
-  const height = waveformCanvas.height;
+  // Match the canvas backing store to its CSS size × device pixel ratio
+  // so the waveform bars, section labels, and playhead render crisp on
+  // HiDPI displays and at any container width. Without this the canvas
+  // stays at its intrinsic 640×96 attribute size and gets bilinearly
+  // upscaled to the full-width 1657×180 display slot — text goes blurry.
+  const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+  const rect = waveformCanvas.getBoundingClientRect();
+  const cssWidth = Math.max(1, Math.round(rect.width));
+  const cssHeight = Math.max(1, Math.round(rect.height));
+  const backingWidth = Math.round(cssWidth * dpr);
+  const backingHeight = Math.round(cssHeight * dpr);
+  if (waveformCanvas.width !== backingWidth || waveformCanvas.height !== backingHeight) {
+    waveformCanvas.width = backingWidth;
+    waveformCanvas.height = backingHeight;
+  }
+  // Draw in CSS-pixel coordinates; the transform expands to the backing store.
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const width = cssWidth;
+  const height = cssHeight;
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = "rgba(9, 18, 31, 0.88)";
   ctx.fillRect(0, 0, width, height);
@@ -1335,12 +1374,13 @@ function drawPlaybackWaveform() {
     }
     const startX = clamp((Number(section.start_seconds) / duration) * width, 0, width);
     const endX = clamp((Number(section.end_seconds) / duration) * width, startX + 1, width);
-    const stripeColor = index % 2 === 0 ? "rgba(255,255,255,0.05)" : "rgba(255,255,255,0.10)";
+    const stripeColor = index % 2 === 0 ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.12)";
     ctx.fillStyle = stripeColor;
-    ctx.fillRect(startX, 0, Math.max(1, endX - startX), 12);
-    ctx.fillStyle = "rgba(255,255,255,0.78)";
-    ctx.font = "600 10px Trebuchet MS";
-    ctx.fillText(section.kind.toUpperCase(), Math.min(startX + 4, width - 52), 10);
+    ctx.fillRect(startX, 0, Math.max(1, endX - startX), 20);
+    ctx.fillStyle = "rgba(255,255,255,0.92)";
+    ctx.font = "700 13px 'Trebuchet MS', 'Segoe UI', sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(section.kind.toUpperCase(), Math.min(startX + 6, width - 70), 11);
     ctx.strokeStyle = "rgba(255,255,255,0.22)";
     ctx.beginPath();
     ctx.moveTo(startX, 0);
