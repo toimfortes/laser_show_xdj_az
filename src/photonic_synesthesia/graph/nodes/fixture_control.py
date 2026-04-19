@@ -19,6 +19,7 @@ from photonic_synesthesia.core.config import (
 )
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
+from photonic_synesthesia.director.palettes import Palette, render_rgb, resolve_palette
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 
@@ -254,6 +255,9 @@ class MovingHeadControlNode:
         bpm = state["fused_bpm"]
         energy = state["audio_features"]["rms_energy"]
         program_look = self._current_program_look(state)
+        director_state = state["director_state"]
+        palette = resolve_palette(str(director_state.get("color_theme") or "neutral"))
+        color_drive = float(director_state.get("color_drive") or 0.5)
 
         for i, fixture in enumerate(self.fixtures):
             if not fixture.enabled:
@@ -273,6 +277,8 @@ class MovingHeadControlNode:
                 state["timestamp"],
                 phase_offset,
                 program_look=program_look,
+                palette=palette,
+                color_drive=color_drive,
             )
 
             state["fixture_commands"].append(commands)
@@ -293,6 +299,8 @@ class MovingHeadControlNode:
         phase_offset: float,
         *,
         program_look: dict[str, Any] | None = None,
+        palette: Palette,
+        color_drive: float,
     ) -> FixtureCommand:
         """Generate DMX values for a single moving head."""
         base = fixture.start_address
@@ -391,42 +399,24 @@ class MovingHeadControlNode:
 
         # =================================================================
         # Color wheel / RGB
+        #
+        # The palette comes from the director (director_state.color_theme);
+        # the rendering style comes from the laser expression program
+        # (color_mode). target_bias stays advisory for aim, not colour —
+        # see the pan/tilt block above.
         # =================================================================
-        if color_mode == "white_hits" and beat_hit > 0.0:
-            values[base + self.channel_map["red"]] = 255
-            values[base + self.channel_map["green"]] = 255
-            values[base + self.channel_map["blue"]] = 255
-        elif color_mode == "dual_cycle":
-            cycle = (math.sin(current_time * 0.45 + phase_offset) + 1.0) * 0.5
-            values[base + self.channel_map["red"]] = int(90 + cycle * 165)
-            values[base + self.channel_map["green"]] = int(40 + (1.0 - cycle) * 110)
-            values[base + self.channel_map["blue"]] = int(120 + (1.0 - cycle) * 120)
-        elif color_mode == "morph":
-            phase = (current_time * 0.28 + phase_offset * 0.08) % 1
-            values[base + self.channel_map["red"]] = int(80 + 155 * math.sin(phase * math.pi * 2) ** 2)
-            values[base + self.channel_map["green"]] = int(60 + 120 * math.sin((phase * math.pi * 2) + 2.1) ** 2)
-            values[base + self.channel_map["blue"]] = int(90 + 165 * math.sin((phase * math.pi * 2) + 4.2) ** 2)
-        elif target_bias == "ceiling":
-            values[base + self.channel_map["red"]] = 70
-            values[base + self.channel_map["green"]] = 130
-            values[base + self.channel_map["blue"]] = 255
-        elif target_bias == "crowd":
-            values[base + self.channel_map["red"]] = 255
-            values[base + self.channel_map["green"]] = 148
-            values[base + self.channel_map["blue"]] = 68
-        elif structure == MusicStructure.BREAKDOWN:
-            values[base + self.channel_map["red"]] = 50
-            values[base + self.channel_map["green"]] = 100
-            values[base + self.channel_map["blue"]] = 255
-        else:
-            phase = (current_time * 0.2) % 1
-            values[base + self.channel_map["red"]] = int(128 + 127 * math.sin(phase * math.pi * 2))
-            values[base + self.channel_map["green"]] = int(
-                128 + 127 * math.sin(phase * math.pi * 2 + 2)
-            )
-            values[base + self.channel_map["blue"]] = int(
-                128 + 127 * math.sin(phase * math.pi * 2 + 4)
-            )
+        effective_mode = color_mode or "static"
+        phase = current_time * 0.45 + phase_offset
+        rgb = render_rgb(
+            palette,
+            effective_mode,
+            phase=phase,
+            beat_hit=bool(beat_hit > 0.0),
+            color_drive=color_drive,
+        )
+        values[base + self.channel_map["red"]] = rgb[0]
+        values[base + self.channel_map["green"]] = rgb[1]
+        values[base + self.channel_map["blue"]] = rgb[2]
 
         # =================================================================
         # Gobo
