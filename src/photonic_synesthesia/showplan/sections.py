@@ -6,6 +6,7 @@ import copy
 from collections.abc import Callable
 from typing import Any
 
+from photonic_synesthesia.core.exceptions import ShowplanError
 from photonic_synesthesia.showplan._patterns import (
     LASER_PATTERN_GEOMETRY as _LASER_PATTERN_GEOMETRY,
 )
@@ -59,7 +60,7 @@ def _identity_venue_mode(value: str | None) -> str:
     return str(value)
 
 
-def _default_minimal_show_sections(
+def _single_auto_intro_fallback(
     markers: list[dict[str, Any]],
     duration_seconds: float,
     *,
@@ -70,11 +71,13 @@ def _default_minimal_show_sections(
     venue_mode: str = "small_room_50_100",
     metadata_confidence: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Fallback used when no CLI-backed builder is injected.
+    """Demo-only stub: one Auto Intro section covering the full duration.
 
-    Returns a single Auto section covering the full track duration so callers
-    always receive a non-empty list. Production code always injects the real
-    `_default_show_sections` builder from the CLI module.
+    This is NOT a production-safe default. Downstream cue generation, validation,
+    and editing treat the section list as authoritative. A silently returned
+    one-section fake plan masks wiring bugs. Only callers that explicitly opt in
+    via `allow_minimal_fallback=True` on `resolve_show_sections` should see this
+    shape — tests and local demo only.
     """
     duration = max(0.001, float(duration_seconds))
     return [
@@ -104,15 +107,31 @@ def resolve_show_sections(
     normalize_selection_variance: Callable[[Any | None], float] | None = None,
     normalize_venue_mode: Callable[[str | None], str] | None = None,
     default_show_sections_fn: Callable[..., list[dict[str, Any]]] | None = None,
+    allow_minimal_fallback: bool = False,
     laser_program_version: int = _LASER_PROGRAM_VERSION,
     show_section_generator_version: int = _SHOW_SECTION_GENERATOR_VERSION,
     cue_recipe_version: int = _CUE_RECIPE_VERSION,
 ) -> list[dict[str, Any]]:
-    """Load persisted sections when sane, otherwise rebuild a dynamic default plan."""
+    """Load persisted sections when sane, otherwise rebuild a dynamic default plan.
+
+    Raises:
+        ShowplanError: when ``default_show_sections_fn`` is not provided and
+            ``allow_minimal_fallback`` is False. This is the production-safe
+            default — a missing builder is a wiring bug, not a degradation path.
+    """
     _normalize_selection_mode = normalize_selection_mode or _identity_selection_mode
     _normalize_selection_variance = normalize_selection_variance or _identity_selection_variance
     _normalize_venue_mode = normalize_venue_mode or _identity_venue_mode
-    _default_show_sections = default_show_sections_fn or _default_minimal_show_sections
+    if default_show_sections_fn is not None:
+        _default_show_sections = default_show_sections_fn
+    elif allow_minimal_fallback:
+        _default_show_sections = _single_auto_intro_fallback
+    else:
+        raise ShowplanError(
+            "resolve_show_sections requires default_show_sections_fn "
+            "(or allow_minimal_fallback=True for test/demo callers). "
+            "Returning a one-section fallback in production would mask wiring bugs."
+        )
 
     resolved_selection_mode = _normalize_selection_mode(
         selection_mode

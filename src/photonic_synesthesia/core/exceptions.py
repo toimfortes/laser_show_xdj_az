@@ -244,3 +244,19 @@ class EdgeConditionError(GraphError):
     def __init__(self, edge: str, reason: str):
         super().__init__(f"Edge condition '{edge}' failed: {reason}")
         self.edge = edge
+
+
+# =============================================================================
+# Showplan Errors
+# =============================================================================
+
+
+class ShowplanError(PhotonicError):
+    """Raised when showplan facade cannot produce a valid plan.
+
+    Prefer failing loud to returning a degraded one-section fake plan —
+    downstream cue generation, validation, and editing treat a ShowSection
+    list as authoritative, and a silent fallback masks wiring bugs.
+    """
+
+    pass

@@ -31,9 +31,25 @@ def test_showplan_sections_resolve_show_sections_matches_existing_shape() -> Non
         [],
         64.0,
         track_seed="fixture",
+        allow_minimal_fallback=True,
     )
     assert isinstance(resolved, list)
     assert resolved
+
+
+def test_showplan_sections_resolve_raises_when_no_builder_injected() -> None:
+    """Missing default_show_sections_fn is a wiring bug, not a degradation path."""
+    from photonic_synesthesia.core.exceptions import ShowplanError
+
+    import pytest
+
+    with pytest.raises(ShowplanError):
+        resolve_show_sections(
+            None,
+            [],
+            64.0,
+            track_seed="fixture",
+        )
 
 
 def test_showplan_build_show_catalog_entry_is_callable() -> None:
