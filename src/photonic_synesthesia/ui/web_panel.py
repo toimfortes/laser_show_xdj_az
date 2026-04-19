@@ -204,17 +204,58 @@ def _scene_mix(scene: dict[str, Any], time_seconds: float) -> float:
 
 
 def _palette_pick(palette: list[str], phase: float, offset: float) -> str:
-    """Choose a hex color from the scene palette that cycles with phase.
-
-    Each fixture gets a different palette index driven by the scene
-    rate, so the mock rig visibly sweeps through the scene's colors
-    instead of holding whatever hex the fixture was created with.
-    """
+    """Choose a hex color from a scene palette that cycles with phase."""
     if not palette:
         return "#ffffff"
-    swept = (math.sin(phase * 0.45 + offset) + 1.0) * 0.5  # 0..1
+    swept = (math.sin(phase * 0.45 + offset) + 1.0) * 0.5
     index = int(round(swept * (len(palette) - 1))) % len(palette)
     return palette[index]
+
+
+def _rgb_to_hex(rgb: tuple[int, int, int]) -> str:
+    return f"#{max(0, min(255, rgb[0])):02x}{max(0, min(255, rgb[1])):02x}{max(0, min(255, rgb[2])):02x}"
+
+
+def _director_color_snapshot() -> tuple[str, float, str, float, str] | None:
+    """Return (color_theme, color_drive, structure, strobe_budget_hz, subphrase_role)
+    from the live graph's director, or None when no graph is running.
+
+    The web panel runs in the same process as the graph when
+    `photonic run-file --web` (or `photonic run --web`) is used, so the
+    shared ControlPlaneStateService and its DirectorSummary are reachable
+    from here. Falls back to None in pure-mock environments.
+    """
+    try:
+        from photonic_synesthesia.platform import get_shared_control_plane_service
+    except Exception:  # pragma: no cover - platform always importable in prod
+        return None
+    try:
+        service = get_shared_control_plane_service(create=False)
+    except Exception:
+        return None
+    if service is None:
+        return None
+    try:
+        snap = service.snapshot()
+    except Exception:
+        return None
+    director = snap.director_summary
+    semantic = snap.semantic_frame
+    color_theme = getattr(director, "color_theme", "") or ""
+    color_drive = float(getattr(director, "color_drive", 0.5) or 0.5)
+    structure = getattr(semantic, "structure", "") or ""
+    strobe_budget = float(getattr(director, "strobe_budget_hz", 0.0) or 0.0)
+    subphrase_role = getattr(director, "subphrase_role", "") or ""
+    return color_theme, color_drive, structure, strobe_budget, subphrase_role
+
+
+def _mode_for_structure(structure: str) -> str:
+    """Match fixture_control's color_mode policy for visual parity."""
+    if structure in ("drop", "buildup"):
+        return "dual_cycle"
+    if structure == "breakdown":
+        return "morph"
+    return "static"
 
 
 def _fixture_output(
@@ -232,14 +273,36 @@ def _fixture_output(
     )
     base_intensity = float(fixture["intensity"]) * master_intensity * mix
     intensity = 0.0 if blackout else _clamp(base_intensity, 0.0, 1.0)
-    # The fixture's "color" hex is a starting bias; during play we cycle
-    # through the scene's palette. On blackout/black-out-intense fixtures
-    # the caller has already zeroed intensity, so the hex doesn't matter.
-    scene_palette = list(scene.get("palette") or [])
-    if scene_palette:
-        color = _palette_pick(scene_palette, phase, float(fixture["phaseOffset"]))
+
+    # Prefer live director state from the running graph so the preview
+    # matches whatever real fixtures would render for this track. This
+    # keeps the mock rig usable for show-planning decisions: the UI
+    # shows the actual palette (poison, cyan_magenta, amber_cyan, etc.)
+    # the director is picking per phrase.
+    director_snapshot = _director_color_snapshot()
+    if director_snapshot is not None:
+        from photonic_synesthesia.director.palettes import render_rgb, resolve_palette
+
+        color_theme, color_drive, structure, _strobe_budget, _subphrase_role = director_snapshot
+        palette = resolve_palette(color_theme)
+        render_mode = _mode_for_structure(structure)
+        rgb = render_rgb(
+            palette,
+            render_mode,
+            phase=phase,
+            beat_hit=False,
+            color_drive=color_drive,
+        )
+        color = _rgb_to_hex(rgb)
     else:
-        color = _normalize_color(fixture["color"])
+        # Fallback: sweep the scene's own palette (pure-mock mode, no
+        # graph attached). Keeps the preview animated even when there's
+        # no music source.
+        scene_palette = list(scene.get("palette") or [])
+        if scene_palette:
+            color = _palette_pick(scene_palette, phase, float(fixture["phaseOffset"]))
+        else:
+            color = _normalize_color(fixture["color"])
     red, green, blue = _hex_to_rgb(color)
 
     if fixture["type"] == "laser":
