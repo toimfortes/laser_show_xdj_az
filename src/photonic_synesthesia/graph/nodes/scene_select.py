@@ -188,6 +188,17 @@ class SceneSelectNode:
             scene_start_time=state["scene_state"]["scene_start_time"],
         )
 
+        # =================================================================
+        # Apply Scene Overrides to Director State
+        # =================================================================
+        if current_scene in self.scenes:
+            overrides = self.scenes[current_scene].get("director_overrides", {})
+            if overrides and "director_state" in state:
+                for key, value in overrides.items():
+                    if key in state["director_state"]:
+                        state["director_state"][key] = value
+                        logger.debug("Applied scene override", key=key, value=value)
+
         # Record processing time
         state["processing_times"]["scene_select"] = time.time() - start_time
 

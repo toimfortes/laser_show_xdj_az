@@ -404,9 +404,32 @@ class MovingHeadControlNode:
         # the rendering style comes from the laser expression program
         # (color_mode). target_bias stays advisory for aim, not colour —
         # see the pan/tilt block above.
+        #
+        # When the expression picked "static" (or no explicit mode), the
+        # laser side has a color_strategy fallback in ilda_output that
+        # animates it anyway. The mover has no such fallback, so we
+        # provide one here: on high-energy structures (drop/buildup),
+        # default to beat-synced dual_cycle so the mover breathes with
+        # the music instead of holding one hue for the whole phrase.
         # =================================================================
-        effective_mode = color_mode or "static"
-        phase = current_time * 0.45 + phase_offset
+        mode_from_look = (color_mode or "").strip().lower()
+        if mode_from_look in ("", "static"):
+            if structure in (MusicStructure.DROP, MusicStructure.BUILDUP):
+                effective_mode = "dual_cycle"
+            elif structure == MusicStructure.BREAKDOWN:
+                effective_mode = "morph"
+            else:
+                effective_mode = "static"
+        else:
+            effective_mode = mode_from_look
+
+        # Beat-synced phase: one full cycle per 2 beats on drops/builds,
+        # slower on calmer sections. phase_offset desynchronises multiple
+        # movers for a wave effect.
+        beats_per_cycle = 2.0 if structure in (MusicStructure.DROP, MusicStructure.BUILDUP) else 4.0
+        beat_clock = bar_position + beat_phase
+        phase = (beat_clock / beats_per_cycle) * 2.0 * math.pi + phase_offset
+
         rgb = render_rgb(
             palette,
             effective_mode,
@@ -418,7 +441,27 @@ class MovingHeadControlNode:
         values[base + self.channel_map["green"]] = rgb[1]
         values[base + self.channel_map["blue"]] = rgb[2]
 
-        # =================================================================
+        # Color wheel logic (fallback for non-RGB movers)
+        # 0 is usually White/Open. We force it to 0 if RGB is used.
+        # But if the user's movers only use the wheel, we should map the theme.
+        color_wheel_val = 0
+        if palette.name == "warm":
+            color_wheel_val = 15  # Red
+        elif palette.name == "cool":
+            color_wheel_val = 60  # Blue
+        elif palette.name == "poison":
+            color_wheel_val = 45  # Green/Cyan
+        elif palette.name == "cyan_magenta":
+            color_wheel_val = 75  # Magenta
+        elif palette.name == "deep_blue":
+            color_wheel_val = 60  # Blue
+        elif palette.name == "amber_cyan":
+            color_wheel_val = 25  # Orange
+
+        # If the mover is RGB-capable, color wheel MUST be 0 (Open).
+        # We set both so it works on either fixture type.
+        values[base + self.channel_map["color"]] = color_wheel_val if rgb[0] < 10 and rgb[1] < 10 and rgb[2] < 10 else 0
+
         # Gobo
         # =================================================================
         if mover_family == "hits":
@@ -647,8 +690,14 @@ class PanelControlNode:
 
         structure = state["current_structure"]
         beat_phase = state["beat_info"]["beat_phase"]
+        bar_position = state["beat_info"]["bar_position"]
         energy = state["audio_features"]["rms_energy"]
         time_since_drop = state["time_since_last_drop"]
+        director_state = state["director_state"]
+        palette = resolve_palette(str(director_state.get("color_theme") or "neutral"))
+        color_drive = float(director_state.get("color_drive") or 0.5)
+        strobe_budget_hz = float(director_state.get("strobe_budget_hz") or 0.0)
+        subphrase_role = str(director_state.get("subphrase_role") or "")
 
         for fixture in self.fixtures:
             if not fixture.enabled:
@@ -658,9 +707,14 @@ class PanelControlNode:
                 fixture,
                 structure,
                 beat_phase,
+                bar_position,
                 energy,
                 time_since_drop,
                 state["timestamp"],
+                palette=palette,
+                color_drive=color_drive,
+                strobe_budget_hz=strobe_budget_hz,
+                subphrase_role=subphrase_role,
             )
 
             state["fixture_commands"].append(commands)
@@ -673,57 +727,82 @@ class PanelControlNode:
         fixture: FixtureConfig,
         structure: MusicStructure,
         beat_phase: float,
+        bar_position: int,
         energy: float,
         time_since_drop: float,
         current_time: float,
+        *,
+        palette: Palette,
+        color_drive: float,
+        strobe_budget_hz: float,
+        subphrase_role: str,
     ) -> FixtureCommand:
-        """Generate DMX values for a single LED panel."""
+        """Generate DMX values for a single LED panel / bar.
+
+        Color comes from the director's palette, animated beat-synced.
+        Strobe is driven from the director's strobe_budget_hz (mapped
+        onto the fixture's 1-240 strobe-rate range). The launch subphrase
+        of each drop gets a short extra-fast blinder pulse on top of the
+        baseline palette render.
+        """
         base = fixture.start_address
         values: dict[int, int] = {}
 
-        # =================================================================
-        # Blinder effect on drop
-        # =================================================================
-        if structure == MusicStructure.DROP and time_since_drop < 0.5:
-            # Full white blinder
-            values[base + self.channel_map["dimmer"]] = 255
-            values[base + self.channel_map["red"]] = 255
-            values[base + self.channel_map["green"]] = 255
-            values[base + self.channel_map["blue"]] = 255
-            values[base + self.channel_map["strobe"]] = 0
-
-        elif structure == MusicStructure.DROP:
-            # Beat-synced strobe
-            if beat_phase < 0.15:
-                values[base + self.channel_map["dimmer"]] = 255
-                values[base + self.channel_map["red"]] = 255
-                values[base + self.channel_map["green"]] = 255
-                values[base + self.channel_map["blue"]] = 255
-            else:
-                values[base + self.channel_map["dimmer"]] = 0
-                values[base + self.channel_map["red"]] = 0
-                values[base + self.channel_map["green"]] = 0
-                values[base + self.channel_map["blue"]] = 0
-            values[base + self.channel_map["strobe"]] = 0
-
+        # -- Baseline palette color, beat-synced dual_cycle on energy ---
+        beats_per_cycle = 2.0 if structure in (MusicStructure.DROP, MusicStructure.BUILDUP) else 4.0
+        beat_clock = bar_position + beat_phase
+        phase = (beat_clock / beats_per_cycle) * 2.0 * math.pi
+        beat_hit = beat_phase < 0.15
+        if structure in (MusicStructure.DROP, MusicStructure.BUILDUP):
+            render_mode = "dual_cycle"
         elif structure == MusicStructure.BREAKDOWN:
-            # Slow color wash
-            phase = (current_time * 0.1) % 1
-            values[base + self.channel_map["dimmer"]] = int(100 + 50 * energy)
-            values[base + self.channel_map["red"]] = int(50 + 50 * math.sin(phase * math.pi * 2))
-            values[base + self.channel_map["green"]] = 100
-            values[base + self.channel_map["blue"]] = int(
-                200 + 55 * math.sin(phase * math.pi * 2 + 1)
-            )
-            values[base + self.channel_map["strobe"]] = 0
-
+            render_mode = "morph"
         else:
-            # Energy-linked ambient
-            values[base + self.channel_map["dimmer"]] = int(150 * energy + 50)
-            values[base + self.channel_map["red"]] = 200
-            values[base + self.channel_map["green"]] = 150
-            values[base + self.channel_map["blue"]] = 100
-            values[base + self.channel_map["strobe"]] = 0
+            render_mode = "static"
+        rgb = render_rgb(
+            palette,
+            render_mode,
+            phase=phase,
+            beat_hit=beat_hit,
+            color_drive=color_drive,
+        )
+
+        # -- Dimmer: energy + launch blinder ----------------------------
+        if (
+            structure == MusicStructure.DROP
+            and subphrase_role == "launch"
+            and time_since_drop < 0.9
+        ):
+            # Punch the dimmer to full so the launch blinder reads hard.
+            dimmer = 255
+            # Bias color toward accent (white on most palettes) for the
+            # blinder hit. color_drive saturated.
+            rgb = render_rgb(palette, "white_hits", phase=phase, beat_hit=True, color_drive=1.0)
+        elif structure == MusicStructure.DROP:
+            dimmer = int(200 + 55 * max(0.0, min(1.0, energy)))
+        elif structure == MusicStructure.BUILDUP:
+            dimmer = int(160 + 80 * max(0.0, min(1.0, energy)))
+        elif structure == MusicStructure.BREAKDOWN:
+            dimmer = int(90 + 60 * max(0.0, min(1.0, energy)))
+        else:
+            dimmer = int(60 + 120 * max(0.0, min(1.0, energy)))
+
+        # -- Strobe channel ----------------------------------------------
+        # strobe_budget_hz is 0..~12 Hz from director. Map to the
+        # fixture's standard strobe-rate band (DMX 16..240 is typical
+        # "slow..fast"). Values below the cut-in threshold stay 0 so the
+        # fixture is fully open rather than chattering at near-zero Hz.
+        if strobe_budget_hz >= 0.6:
+            strobe_ratio = max(0.0, min(1.0, strobe_budget_hz / 12.0))
+            strobe_value = int(16 + round(strobe_ratio * (240 - 16)))
+        else:
+            strobe_value = 0
+        values[base + self.channel_map["strobe"]] = strobe_value
+
+        values[base + self.channel_map["dimmer"]] = max(0, min(255, dimmer))
+        values[base + self.channel_map["red"]] = rgb[0]
+        values[base + self.channel_map["green"]] = rgb[1]
+        values[base + self.channel_map["blue"]] = rgb[2]
 
         return FixtureCommand(
             fixture_id=fixture.id,
