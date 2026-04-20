@@ -8,6 +8,7 @@ to understand DJ intent and enable manual lighting overrides.
 from __future__ import annotations
 
 import queue
+import threading
 import time
 from typing import cast
 
@@ -81,6 +82,12 @@ class MidiSenseNode:
         # MIDI port handle
         self._port = None
         self._running = False
+        # Cycle-6 C1: serialize stop() with the rtmidi callback thread's
+        # put-to-queue path. `_on_message` runs on an internal mido
+        # reader thread; without this lock stop() could release the
+        # port while a callback was mid-put, leaving the queue with a
+        # message whose handle was already freed.
+        self._lifecycle_lock = threading.Lock()
 
         # Current state cache
         self._fader_values: dict[int, float] = {1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0}
@@ -114,7 +121,17 @@ class MidiSenseNode:
         return None
 
     def _on_message(self, msg: mido.Message) -> None:
-        """Callback for incoming MIDI messages."""
+        """Callback for incoming MIDI messages.
+
+        Cycle-6 C1: `_running` gate discards messages that arrive AFTER
+        stop() flipped the flag but BEFORE the rtmidi reader thread
+        fully shut down. Without it, late messages accumulate on a
+        queue no one will drain — harmless for one shutdown but
+        exactly the "ghost events after teardown" class that made
+        yesterday's leak visible only at hour 3.
+        """
+        if not self._running:
+            return
         try:
             self._message_queue.put_nowait(msg)
         except queue.Full:
@@ -126,24 +143,48 @@ class MidiSenseNode:
             logger.warning("mido not available, MIDI disabled")
             return
 
-        port_name = self._find_port()
-        if not port_name:
-            logger.warning("XDJ-AZ MIDI port not found")
-            return
+        with self._lifecycle_lock:
+            if self._port is not None:
+                # Idempotent start — mirror cycle-6 A1/B1 double-start
+                # guards: if the port is live, refuse rather than leak
+                # a second mido reader thread.
+                raise RuntimeError(
+                    "MIDI input already running; refusing to double-start. "
+                    "A previous stop() likely did not complete."
+                )
 
-        try:
-            self._port = mido.open_input(port_name, callback=self._on_message)
-            self._running = True
-            logger.info("MIDI input started", port=port_name)
-        except Exception as e:
-            logger.error("Failed to open MIDI port", error=str(e))
+            port_name = self._find_port()
+            if not port_name:
+                logger.warning("XDJ-AZ MIDI port not found")
+                return
+
+            try:
+                self._port = mido.open_input(port_name, callback=self._on_message)
+                self._running = True
+                logger.info("MIDI input started", port=port_name)
+            except Exception as e:
+                logger.error("Failed to open MIDI port", error=str(e))
 
     def stop(self) -> None:
-        """Stop MIDI input capture."""
-        if self._port:
-            self._port.close()
-            self._port = None
-        self._running = False
+        """Stop MIDI input capture.
+
+        Cycle-6 C1: order is now `_running=False` → `port.close()` →
+        `_port=None`, guarded by `_lifecycle_lock`. Pre-C1 the order
+        was `port.close()` first, which meant the rtmidi reader thread
+        could still be mid-callback (holding a `mido.Message` whose
+        underlying buffer was about to be freed) when `_on_message`
+        called `put_nowait` — enqueueing a message with a stale
+        handle. Setting `_running=False` first makes the callback
+        branch to a cheap return before touching the queue.
+        """
+        with self._lifecycle_lock:
+            self._running = False
+            if self._port is not None:
+                try:
+                    self._port.close()
+                except Exception as exc:
+                    logger.warning("MIDI port close failed", error=str(exc))
+                self._port = None
         logger.info("MIDI input stopped")
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
