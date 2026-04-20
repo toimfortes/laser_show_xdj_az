@@ -8,6 +8,7 @@ sensor acquisition, analysis, and fixture control nodes.
 from __future__ import annotations
 
 import copy
+import threading
 from threading import Lock
 from typing import Any
 
@@ -177,12 +178,33 @@ class PhotonicGraph:
                     except Exception:  # pragma: no cover — defensive
                         logger.exception("watchdog_sigusr1_handler_failed")
 
-        try:
-            _signal.signal(_signal.SIGUSR1, _on_sigusr1)
-        except (OSError, ValueError) as exc:
-            # Windows / non-main-thread context. Log + continue;
-            # SIGKILL path still works via the watchdog.
-            logger.warning("sigusr1_install_failed", error=str(exc))
+        # Cycle-6 B5: signal.signal() only works in the main thread of
+        # the main interpreter. Non-main-thread installation raises
+        # ValueError with a confusing message; explicitly detect the
+        # case and log at ERROR so the dropped signal channel is
+        # visible in audit (vs the prior WARN that blended into
+        # normal startup noise). Graceful-degrade behavior unchanged —
+        # the SIGKILL path via the watchdog still works without the
+        # in-process SIGUSR1 handler.
+        if threading.current_thread() is not threading.main_thread():
+            logger.error(
+                "sigusr1_install_skipped_non_main_thread",
+                thread=threading.current_thread().name,
+                note=(
+                    "_start_out_of_process_watchdog must run in the main "
+                    "thread for the SIGUSR1 soft-escalation handler to "
+                    "install. Hard-stall SIGKILL via watchdog is still "
+                    "functional, but soft-stall blackout is degraded."
+                ),
+            )
+        else:
+            try:
+                _signal.signal(_signal.SIGUSR1, _on_sigusr1)
+            except (OSError, ValueError) as exc:
+                # Windows or a restricted runtime (Docker with some
+                # syscall filters) — the SIGKILL path still works via
+                # the watchdog.
+                logger.warning("sigusr1_install_failed", error=str(exc))
 
         ctx = multiprocessing.get_context("spawn")
         self._watchdog_proc = ctx.Process(
