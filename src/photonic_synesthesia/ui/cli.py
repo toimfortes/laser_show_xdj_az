@@ -1346,9 +1346,21 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
     playback_context: PlaybackContext | None = None
 
     def _shutdown(signum: int, frame: object) -> None:
-        """Signal handler: ask the graph to stop cleanly."""
+        """Signal handler: flag the graph to stop cleanly.
+
+        Cycle-6 E1/C1: async-signal-safe — flips a single attribute
+        ONLY. Pre-E1 this handler called `graph.stop()` inline, which
+        tore down every node from signal context. That could deadlock
+        against the locks cycle-6 B6 added (e.g., shmem `_local_lock`
+        held by the tick that the signal interrupted — stop() then
+        called shmem.close() which tries to re-acquire the same
+        non-reentrant lock). Now the signal just flips `_running`;
+        run_loop sees False on the next tick boundary and exits
+        naturally, and the finally block below calls `graph.stop()`
+        from normal control flow where lock acquisition is safe.
+        """
         if graph is not None:
-            graph.stop()
+            graph._running = False
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -1610,8 +1622,11 @@ def run_file(
     control_plane_service = set_shared_control_plane_service(ControlPlaneStateService())
 
     def _shutdown(signum: int, frame: object) -> None:
+        """Cycle-6 E1/C1: async-signal-safe handler — flips the run
+        flag so the main loop exits naturally. See the matching
+        comment in the `run` command for full reasoning."""
         if graph is not None:
-            graph.stop()
+            graph._running = False
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)

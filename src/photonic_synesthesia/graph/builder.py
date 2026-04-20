@@ -159,24 +159,46 @@ class PhotonicGraph:
 
         # Install SIGUSR1 handler: watchdog's soft-escalation path.
         # Runs in the Python interpreter thread when it next reaches
-        # a bytecode boundary. Triggers emergency_blackout on every
+        # a bytecode boundary. Triggers request_blackout on every
         # output node that supports it.
+        #
+        # Cycle-6 E1/C2: this handler is async-signal-safe.
+        #   - Uses `os.write(2, ...)` instead of `logger.warning`
+        #     because structlog acquires internal locks. A signal
+        #     landing mid-emit would deadlock if the handler then
+        #     tried to re-acquire the same lock.
+        #   - Prefers `request_blackout` (pure flag-set) over
+        #     `emergency_blackout` (does socket IO on the ILDA DAC).
+        #     The ILDA emergency_loop polls the flag every ~50ms and
+        #     does the actual hardware actuation there — no need to
+        #     do IO from signal context. Shmem `blackout_requested`
+        #     poll (set by the watchdog before raising SIGUSR1) is
+        #     the backstop if this handler can't run for any reason.
+        _SIGUSR1_MSG = b"[signal] SIGUSR1 received: watchdog soft-stall escalation\n"
+        _SIGUSR1_ERR = b"[signal] SIGUSR1 handler failed\n"
+
         def _on_sigusr1(signum: int, frame: Any) -> None:
-            logger.warning("watchdog_sigusr1_received_emergency_blackout")
+            try:
+                os.write(2, _SIGUSR1_MSG)
+            except OSError:
+                pass
             for node_name in ("dmx_output", "ilda_output", "ilda_transport"):
                 node = self.nodes.get(node_name)
                 if node is None:
                     continue
                 handler = (
-                    getattr(node, "emergency_blackout", None)
-                    or getattr(node, "request_blackout", None)
+                    getattr(node, "request_blackout", None)
+                    or getattr(node, "emergency_blackout", None)
                     or getattr(node, "blackout", None)
                 )
                 if callable(handler):
                     try:
                         handler()
                     except Exception:  # pragma: no cover — defensive
-                        logger.exception("watchdog_sigusr1_handler_failed")
+                        try:
+                            os.write(2, _SIGUSR1_ERR)
+                        except OSError:
+                            pass
 
         # Cycle-6 B5: signal.signal() only works in the main thread of
         # the main interpreter. Non-main-thread installation raises
