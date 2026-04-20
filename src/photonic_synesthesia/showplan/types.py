@@ -11,12 +11,51 @@ both sides of the CLI / showplan boundary.
 
 from __future__ import annotations
 
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, TypedDict
 
 ShowSection: TypeAlias = dict[str, Any]
 StructureMarker: TypeAlias = dict[str, Any]
 SemanticProfile: TypeAlias = dict[str, Any]
 ModelPayload: TypeAlias = dict[str, Any]
+
+
+# --- Professional rollout authored types (Task 1) ---------------------------
+
+class TimelineFlag(TypedDict, total=False):
+    id: str
+    kind: str
+    at_seconds: float
+    payload: dict[str, Any]
+
+
+class LaserZoneRule(TypedDict, total=False):
+    zone_id: str
+    mode: str
+    brightness_cap: float
+    protected: bool
+    allow_position_fx: bool
+
+
+class StagedLook(TypedDict, total=False):
+    id: str
+    source: str
+    section_id: str
+    cue_recipe: dict[str, Any]
+    laser_program: dict[str, Any]
+    committed: bool
+
+
+# Single authoritative safety-mode list (cycle-1 panel UF-29 fix). All
+# consumers (workspace builder, _ZONE_POLICY_RULES, recipe bundle) import
+# from here. Tuple, not list, so no consumer can mutate it in place.
+SAFETY_MODES: tuple[str, ...] = (
+    "overhead_only",
+    "overhead_bias",
+    "mixed_air",
+    "crowd_punctuate",
+    "laser_off",
+    "balanced",
+)
 
 # --- Version constants ------------------------------------------------------
 # Owned here; CLI and showplan leaves import from this module.

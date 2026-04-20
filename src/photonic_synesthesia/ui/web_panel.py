@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import functools
 import math
 import os
 import random
@@ -19,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from photonic_synesthesia import __version__
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.platform import (
     CommandType,
     ControlPlaneStateService,
@@ -30,6 +32,113 @@ from photonic_synesthesia.platform import (
     get_shared_control_plane_service,
     get_shared_playback_context,
 )
+from photonic_synesthesia.platform import rig_storage
+
+logger = get_logger(__name__)
+
+# Cycle-3-rev-2 R6 (Codex + Gemini): fields that MUST NOT be logged
+# verbatim. `session_id` is the credential `require_control()` checks
+# (logging it leaks a replayable control token); `issuer_id` is the
+# operator's identifier (PII for audit-trail compliance). Other secrets
+# go here as they're added.
+#
+# `cue_recipe` and `laser_program` are also redacted because they can be
+# multi-KB nested dicts that drown out the actual operation context.
+_LOG_REDACTED_FIELDS = frozenset({
+    "session_id",
+    "issuer_id",
+})
+_LOG_TRUNCATED_FIELDS = frozenset({
+    "cue_recipe",
+    "laser_program",
+    "show_sections",
+    "timeline_flags",
+    "metadata",
+})
+
+
+def _redact_log_payload(data: Any) -> Any:
+    """Return a copy of `data` with secret fields hashed and large
+    payloads replaced with their type+size summary.
+
+    `session_id` and `issuer_id` are turned into `"<redacted:8-char-hash>"`
+    so the log retains correlatability across requests in the same
+    session without leaking the raw credential.
+    """
+    if not isinstance(data, dict):
+        return data
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in _LOG_REDACTED_FIELDS and value is not None:
+            try:
+                import hashlib
+                digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8]
+                out[key] = f"<redacted:{digest}>"
+            except Exception:
+                out[key] = "<redacted>"
+        elif key in _LOG_TRUNCATED_FIELDS and value is not None:
+            type_name = type(value).__name__
+            size_hint = len(value) if hasattr(value, "__len__") else "?"
+            out[key] = f"<{type_name}:len={size_hint}>"
+        elif isinstance(value, dict):
+            out[key] = _redact_log_payload(value)
+        else:
+            out[key] = value
+    return out
+
+
+def log_endpoint(op: str):
+    """Decorator: log endpoint entry, exit-with-duration, and exceptions.
+
+    Cycle-3 destructive review D1 fix: previously 0/36 endpoints had any
+    logging; debugging the catastrophic crash was impossible because no
+    application telemetry survived the failure. This decorator emits:
+        - INFO at entry with the operation name + redacted request fields
+        - INFO at exit with `op` + `duration_ms`
+        - ERROR with full exception context if the handler raises
+
+    Cycle-3-rev-2 R6 fix: request payloads run through
+    `_redact_log_payload` to hash credentials (`session_id`, `issuer_id`)
+    and truncate large nested fields (`cue_recipe`, `laser_program`).
+
+    Uses the in-repo `get_logger` (structlog-style kwargs, falls back to
+    stdlib logging when structlog isn't installed).
+    """
+    def decorator(handler):
+        @functools.wraps(handler)
+        async def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            # Best-effort capture of the first BaseModel arg for context.
+            req_summary = None
+            for value in (*args, *kwargs.values()):
+                if isinstance(value, BaseModel):
+                    try:
+                        raw = value.model_dump(exclude_none=True)
+                        req_summary = _redact_log_payload(raw)
+                    except Exception as exc:
+                        # Cycle-3-rev-2 Gemini D5: don't silently swallow
+                        # — log the failure type so the missing payload
+                        # is debuggable.
+                        req_summary = f"<serialization_failed:{type(exc).__name__}>"
+                    break
+            logger.info("endpoint_request", op=op, request=req_summary)
+            try:
+                result = await handler(*args, **kwargs)
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                logger.exception(
+                    "endpoint_error", op=op, duration_ms=round(duration_ms, 2),
+                    error_type=type(exc).__name__, error=str(exc)[:200],
+                ) if hasattr(logger, "exception") else logger.error(
+                    "endpoint_error", op=op, duration_ms=round(duration_ms, 2),
+                    error_type=type(exc).__name__, error=str(exc)[:200],
+                )
+                raise
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info("endpoint_response", op=op, duration_ms=round(duration_ms, 2))
+            return result
+        return wrapper
+    return decorator
 
 MOCK_FIXTURE_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -187,12 +296,20 @@ def _build_mock_fixture(
     defaults = copy.deepcopy(template["defaults"])
     defaults["x"] = _clamp(float(defaults["x"]) + same_type_count * 0.07, 0.08, 0.92)
     defaults["address"] = int(defaults["address"]) + same_type_count * 20
+    # Cycle-1 panel resolution: every freshly-built fixture gets a default
+    # `profile` (per `DEFAULT_PROFILE_BY_TYPE`) and `enabled=True` so the
+    # rig-storage save path's type-profile invariant doesn't reject the
+    # default rig (closes Kilo CRITICAL#3 + the snapshot UX).
+    from photonic_synesthesia.platform.rig_storage import DEFAULT_PROFILE_BY_TYPE
+    profile_default = DEFAULT_PROFILE_BY_TYPE.get(template["type"])
     return {
         "id": f"{template_slug}-{uuid.uuid4().hex[:8]}",
         "templateSlug": template["slug"],
         "type": template["type"],
         "label": label_override or f"{template['label']} {same_type_count + 1}",
         **defaults,
+        "profile": profile_default,
+        "enabled": True,
         "phaseOffset": random.random() * math.pi * 2.0,
     }
 
@@ -360,13 +477,32 @@ def _fixture_output(
 class MockRigStore:
     """Server-owned mock rig state for the browser preview."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, initial_fixtures: list[dict[str, Any]] | None = None) -> None:
+        """Construct a MockRigStore.
+
+        Cycle-1 panel rig-storage Phase A: if `initial_fixtures` is
+        supplied (e.g. from an active rig hydration in `create_app`),
+        skip `_seed_default_rig` and use the provided list directly.
+        Falls back to defaults on validation failure (caller logs the
+        warning) so the UI is never empty.
+        """
         self._lock = threading.Lock()
         self._fixtures: list[dict[str, Any]] = []
         self._scene_id = MOCK_SCENE_TEMPLATES[0]["scene_id"]
         self._master_intensity = 0.82
         self._master_speed = 1.0
         self._blackout = False
+        if initial_fixtures is not None:
+            try:
+                self._validate_fixture_list(initial_fixtures)
+                self._fixtures = copy.deepcopy(initial_fixtures)
+                return
+            except ValueError as exc:
+                logger.warning(
+                    "mock_rig_initial_fixtures_invalid",
+                    error=str(exc),
+                    fallback="default_rig",
+                )
         self._seed_default_rig()
 
     def _seed_default_rig(self) -> None:
@@ -375,6 +511,45 @@ class MockRigStore:
             self._fixtures.append(
                 _build_mock_fixture(entry["template"], self._fixtures, label_override=entry["label"])
             )
+
+    @staticmethod
+    def _validate_fixture_list(fixtures: list[dict[str, Any]]) -> None:
+        """Cycle-1 panel Claude M5: validate ID uniqueness + basic
+        structural invariants BEFORE swap so partial bad data cannot
+        replace a good in-memory state."""
+        if not isinstance(fixtures, list):
+            raise ValueError("fixtures payload must be a list")
+        seen: set[str] = set()
+        for fixture in fixtures:
+            if not isinstance(fixture, dict):
+                raise ValueError("each fixture must be a dict")
+            fid = fixture.get("id")
+            if not isinstance(fid, str) or not fid:
+                raise ValueError(f"fixture must have non-empty string id; got {fid!r}")
+            if fid in seen:
+                raise ValueError(f"duplicate fixture id {fid!r}")
+            seen.add(fid)
+            if "type" not in fixture:
+                raise ValueError(f"fixture {fid!r} missing `type`")
+
+    def replace_all(self, fixtures: list[dict[str, Any]]) -> None:
+        """Atomically replace the in-memory fixture list under `_lock`.
+
+        Cycle-1 panel Claude M5: validates BEFORE swap; on any failure
+        the prior state is preserved (no partial replace). After swap,
+        the UI MUST clear `selectedFixtureId` (the load endpoint hands
+        that out in its response payload).
+        """
+        self._validate_fixture_list(fixtures)
+        deep = copy.deepcopy(fixtures)
+        with self._lock:
+            self._fixtures = deep
+
+    def dump(self) -> list[dict[str, Any]]:
+        """Return a deep-copy of the current fixtures list (cycle-1
+        panel A7 — caller may mutate without touching internal state)."""
+        with self._lock:
+            return copy.deepcopy(self._fixtures)
 
     def catalog(self) -> dict[str, Any]:
         return {
@@ -467,6 +642,17 @@ class MockRigStore:
                     fixture["width"] = _normalize_float(value, 0.08, 0.35)
                 elif key == "pixel_count" and fixture["type"] == "led_bar":
                     fixture["pixel_count"] = _normalize_int(value, 2, 16)
+                # Cycle-1 panel Kilo CRITICAL#3 + Codex H#3: profile and
+                # enabled MUST be persistable via PATCH so the inspector's
+                # new fields actually save. Previously, the whitelist
+                # silently dropped these keys, making PATCH a no-op.
+                elif key == "profile":
+                    if value is None:
+                        fixture["profile"] = None
+                    else:
+                        fixture["profile"] = str(value).strip() or None
+                elif key == "enabled":
+                    fixture["enabled"] = bool(value)
 
             return copy.deepcopy(fixture)
 
@@ -665,6 +851,15 @@ def _render_control_plane_html() -> str:
                                 <div id="fixture-library" class="fixture-library"></div>
                             </div>
                         </details>
+
+                        <details open>
+                            <summary><div class="subhead"><h3>Saved Rigs</h3></div></summary>
+                            <div class="details-body">
+                                <div id="rig-controls" class="rig-controls">
+                                    Loading saved rigs…
+                                </div>
+                            </div>
+                        </details>
                     </section>
 
                     <section class="panel preview-panel" aria-label="Stage preview">
@@ -696,6 +891,16 @@ def _render_control_plane_html() -> str:
                                     Waiting for fixture output…
                                 </div>
                             </div>
+                        </div>
+                    </section>
+
+                    <section class="panel stack" aria-label="Operator workspace">
+                        <div class="panel-header">
+                            <h2>Operator Workspace</h2>
+                            <p class="muted-small">Direct-select scene / safety / tag banks (Task 4 staging lane).</p>
+                        </div>
+                        <div id="operator-workspace" class="operator-workspace">
+                            Loading workspace banks…
                         </div>
                     </section>
 
@@ -752,8 +957,24 @@ def _render_control_plane_html() -> str:
     """
 
 
-def create_app(services: ControlPlaneStateService | None = None) -> Any:
-    """Create the FastAPI control-plane application."""
+def create_app(
+    services: ControlPlaneStateService | None = None,
+    *,
+    fixtures_dir: Path | None = None,
+) -> Any:
+    """Create the FastAPI control-plane application.
+
+    `fixtures_dir` is the directory containing fixture profile YAMLs.
+    Cycle-1 panel Codex H#3: this MUST match the runtime's effective
+    `Settings.fixtures_dir` so the UI's profile dropdown lists the
+    same profiles the graph will actually load. Default is `Settings()`'s
+    default (`config/fixtures`); CLI passes the actual settings value.
+    """
+    if fixtures_dir is None:
+        from photonic_synesthesia.core.config import Settings as _Settings
+        fixtures_dir = _Settings().fixtures_dir
+    fixtures_dir = Path(fixtures_dir)
+
     (
         FastAPI,
         HTTPException,
@@ -831,6 +1052,14 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         selection_mode: str | None = None
         selection_variance: float | None = None
 
+    class PlaybackStagedLookRequest(BaseModel):
+        """Cycle-1 panel UF-11 preview-only contract: section_id required;
+        partial cue_recipe / laser_program overrides are deep-merged into
+        the authored section at commit time (cycle-1 panel UF-12)."""
+        section_id: str
+        cue_recipe: dict[str, Any]
+        laser_program: dict[str, Any]
+
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
         version=__version__,
@@ -842,7 +1071,26 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
-    app.state.mock_rig = MockRigStore()
+    # Cycle-1 panel C1 + Phase A startup wiring: hydrate MockRigStore from
+    # the active rig if one exists. `get_active_rig_name()` auto-clears a
+    # stale pointer so we never crash on a missing target. Any load
+    # failure (corrupt JSON, missing fixtures key, ValueError) is caught
+    # and the canvas falls back to defaults.
+    initial_fixtures: list[dict[str, Any]] | None = None
+    active_rig_name = rig_storage.get_active_rig_name()
+    if active_rig_name:
+        try:
+            initial_fixtures = list(rig_storage.load_rig(active_rig_name).get("fixtures", []) or [])
+        except (FileNotFoundError, ValueError, KeyError, OSError) as exc:
+            logger.warning(
+                "active_rig_load_failed",
+                name=active_rig_name,
+                error=str(exc),
+                fallback="default_rig",
+            )
+            initial_fixtures = None
+    app.state.mock_rig = MockRigStore(initial_fixtures=initial_fixtures)
+    app.state.fixtures_dir = fixtures_dir
     app.state.playback_context = get_shared_playback_context()
     mock_rig: MockRigStore = app.state.mock_rig
 
@@ -862,10 +1110,12 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return _render_control_plane_html()
 
     @app.get("/healthz")
+    @log_endpoint("GET:/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/api/live/health")
+    @log_endpoint("GET:/api/live/health")
     async def live_health() -> dict[str, Any]:
         return services.health(
             version=__version__,
@@ -883,6 +1133,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         ).model_dump(mode="json")
 
     @app.get("/api/live/state")
+    @log_endpoint("GET:/api/live/state")
     async def live_state() -> dict[str, Any]:
         services.publish_event(
             PlatformEventType.LIVE_STATE_PUBLISHED,
@@ -891,6 +1142,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return services.snapshot().model_dump(mode="json")
 
     @app.get("/api/live/safety")
+    @log_endpoint("GET:/api/live/safety")
     async def live_safety() -> dict[str, Any]:
         snapshot = services.snapshot()
         return {
@@ -904,18 +1156,22 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         }
 
     @app.get("/api/mock/catalog")
+    @log_endpoint("GET:/api/mock/catalog")
     async def mock_catalog() -> dict[str, Any]:
         return mock_rig.catalog()
 
     @app.get("/api/mock/state")
+    @log_endpoint("GET:/api/mock/state")
     async def mock_state() -> dict[str, Any]:
         return mock_rig.snapshot()
 
     @app.get("/api/mock/universes")
+    @log_endpoint("GET:/api/mock/universes")
     async def mock_universes() -> dict[str, Any]:
         return mock_rig.universe_snapshot()
 
     @app.get("/api/mock/playback")
+    @log_endpoint("GET:/api/mock/playback")
     async def mock_playback() -> dict[str, Any]:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -923,6 +1179,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.get("/api/mock/playback/audio")
+    @log_endpoint("GET:/api/mock/playback/audio")
     async def mock_playback_audio(session: str | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -940,6 +1197,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.get("/api/mock/playback/ilda-export")
+    @log_endpoint("GET:/api/mock/playback/ilda-export")
     async def mock_playback_ilda_export(session: str | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -954,6 +1212,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return FileResponse(export_path, media_type=media_type, filename=filename)
 
     @app.patch("/api/mock/playback/show-sections/{section_id}")
+    @log_endpoint("PATCH:/api/mock/playback/show-sections/{section_id}")
     async def update_playback_show_section(
         section_id: str, request: PlaybackShowSectionUpdateRequest
     ) -> dict[str, Any]:
@@ -966,30 +1225,58 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.patch("/api/mock/playback/selection-mode")
+    @log_endpoint("PATCH:/api/mock/playback/selection-mode")
     async def update_playback_selection_mode(
         request: PlaybackSelectionModeRequest,
     ) -> dict[str, Any]:
+        """Cycle-3-rev-2 R2 fix (Kilo CRIT-2 + Codex HIGH + Gemini): the
+        regen calls into AI scoring and was blocking the uvicorn worker
+        thread on `future.result(timeout=5.0)`. The handler is `async def`,
+        but a sync call inside an async function still consumes the
+        thread for the duration. Bridge to asyncio properly via
+        `run_in_executor` so the event loop can serve other requests
+        (WebSocket frames, GET /api/mock/state, etc.) while the regen
+        runs on the dedicated `_REGEN_EXECUTOR` thread.
+        """
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
+        loop = asyncio.get_running_loop()
         try:
-            return playback_context.set_selection_mode(request.selection_mode)
+            return await loop.run_in_executor(
+                None,  # default executor — the call is non-blocking; PlaybackContext serializes via _REGEN_INFLIGHT
+                playback_context.set_selection_mode,
+                request.selection_mode,
+            )
         except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # `regeneration already in flight` → 409 Conflict (cycle-3-rev-2 R7)
+            # Other RuntimeErrors (timeout, invalid mode) → 400 Bad Request.
+            status = 409 if "already in flight" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.patch("/api/mock/playback/selection-variance")
+    @log_endpoint("PATCH:/api/mock/playback/selection-variance")
     async def update_playback_selection_variance(
         request: PlaybackSelectionVarianceRequest,
     ) -> dict[str, Any]:
+        """Cycle-3-rev-2 R2: same pattern as selection-mode (regen is
+        equally heavy)."""
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
+        loop = asyncio.get_running_loop()
         try:
-            return playback_context.set_selection_variance(request.selection_variance)
+            return await loop.run_in_executor(
+                None,
+                playback_context.set_selection_variance,
+                request.selection_variance,
+            )
         except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            status = 409 if "already in flight" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/operator-intents")
+    @log_endpoint("POST:/api/mock/playback/operator-intents")
     async def apply_playback_operator_intent(
         request: PlaybackOperatorIntentRequest,
     ) -> dict[str, Any]:
@@ -1007,7 +1294,71 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get("/api/operator/workspace")
+    @log_endpoint("GET:/api/operator/workspace")
+    async def operator_workspace() -> dict[str, Any]:
+        """Return the operator workspace banks + live active scene id.
+
+        Cycle-3 panel 3C-H1: reads `operator_workspace_banks` (the
+        cycle-2 cache key) — NOT `operator_workspace` (the cycle-1 key
+        the cycle-2 plan accidentally still wrote into one snippet).
+        Overlays `active_scene_id` from the snapshot's per-call live
+        overlay so the UI renders the active scene button without
+        depending on the authored cache.
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            return {"banks": [], "active_scene_id": ""}
+        snap = playback_context.snapshot()
+        body = dict(snap.get("operator_workspace_banks") or {"banks": []})
+        body["active_scene_id"] = snap.get("active_scene_id", "")
+        return body
+
+    @app.post("/api/operator/stage")
+    @log_endpoint("POST:/api/operator/stage")
+    async def stage_operator_look(
+        request: PlaybackStagedLookRequest,
+    ) -> dict[str, Any]:
+        """Stage an operator look for preview (cycle-1 panel UF-11).
+
+        Returns the staged_look dict. The runtime graph still reads
+        authored `show_sections` only — the stage surfaces in
+        `playback_snapshot["staged_look"]` for UI preview.
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback session is active")
+        try:
+            return playback_context.set_staged_look(
+                section_id=request.section_id,
+                cue_recipe=request.cue_recipe,
+                laser_program=request.laser_program,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/operator/commit")
+    @log_endpoint("POST:/api/operator/commit")
+    async def commit_operator_look() -> dict[str, Any]:
+        """Commit the currently-staged look into the authored section.
+
+        Cycle-1 panel UF-12 deep-merge: operator-supplied keys override
+        authored values; every other authored field on the section
+        survives. Cycle-1 panel SF-1: fails closed if the playhead
+        advanced past the staged section's end (returns 409).
+        """
+        playback_context: PlaybackContext | None = get_shared_playback_context()
+        if playback_context is None:
+            raise HTTPException(status_code=404, detail="No playback session is active")
+        try:
+            return playback_context.commit_staged_look()
+        except RuntimeError as exc:
+            # "No staged look" → 400; "Playhead advanced past..." → 409.
+            status = 409 if "playhead" in str(exc).lower() else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
     @app.post("/api/mock/playback/pro-dj-link/track")
+    @log_endpoint("POST:/api/mock/playback/pro-dj-link/track")
     async def bind_playback_pro_dj_link_track(
         request: PlaybackProDJLinkTrackRequest,
     ) -> dict[str, Any]:
@@ -1035,6 +1386,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/seek")
+    @log_endpoint("POST:/api/mock/playback/seek")
     async def seek_playback(request: PlaybackSeekRequest) -> dict[str, Any]:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -1046,6 +1398,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.post("/api/mock/fixtures")
+    @log_endpoint("POST:/api/mock/fixtures")
     async def create_mock_fixture(request: MockFixtureCreateRequest) -> dict[str, Any]:
         if request.template_slug not in _FIXTURE_TEMPLATE_INDEX:
             raise HTTPException(status_code=404, detail="Unknown fixture template")
@@ -1053,6 +1406,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.patch("/api/mock/fixtures/{fixture_id}")
+    @log_endpoint("PATCH:/api/mock/fixtures/{fixture_id}")
     async def update_mock_fixture(
         fixture_id: str, request: MockFixtureUpdateRequest
     ) -> dict[str, Any]:
@@ -1062,6 +1416,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.post("/api/mock/fixtures/{fixture_id}/duplicate")
+    @log_endpoint("POST:/api/mock/fixtures/{fixture_id}/duplicate")
     async def duplicate_mock_fixture(fixture_id: str) -> dict[str, Any]:
         fixture = mock_rig.duplicate_fixture(fixture_id)
         if fixture is None:
@@ -1069,18 +1424,237 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.delete("/api/mock/fixtures/{fixture_id}")
+    @log_endpoint("DELETE:/api/mock/fixtures/{fixture_id}")
     async def delete_mock_fixture(fixture_id: str) -> dict[str, Any]:
         if not mock_rig.delete_fixture(fixture_id):
             raise HTTPException(status_code=404, detail="Fixture not found")
         return {"deleted": True, "state": mock_rig.snapshot()}
 
+    # ------------------------------------------------------------------
+    # Rig storage (Phase A — named rig presets)
+    #
+    # Cycle-1 panel resolution:
+    #   - C1: get_active_rig_name auto-clears stale pointers; load_rig
+    #     wrapped in try/except at every read site; missing files surface
+    #     as 404 not 500.
+    #   - H1: rig_storage._validate_name enforced AT THE STORAGE LAYER
+    #     (not just UI); reserved names rejected by the function itself.
+    #   - H2: A8 literal-1 fallback enforced inside load_rig; pinned by
+    #     test_load_rig_missing_schema_key_treated_as_v1...
+    #   - H4: empty-materialize policy decided by Phase B caller, not
+    #     this module.
+    #   - H5: profile/enabled persistence is closed by the elif branches
+    #     added to MockRigStore.update_fixture above.
+    #   - A10: PUT strips client-supplied schema_version/saved_at via
+    #     rig_storage._strip_server_fields; re-stamps server-side.
+
+    class RigPutRequest(BaseModel):
+        # Round-trip-symmetric (closes Codex H#2): accepts the same
+        # shape GET returns. Server-stamped fields (`_schema_version`,
+        # `saved_at`) are stripped + re-stamped (closes A10).
+        fixtures: list[dict[str, Any]]
+
+    def _conflicts_to_payload(rig_fixtures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Run conflict detection against `app.state.fixtures_dir` and
+        return a JSON-serializable list (empty = clean)."""
+        return [
+            {
+                "universe": c.universe,
+                "channel": c.channel,
+                "fixture_a_id": c.fixture_a_id,
+                "fixture_b_id": c.fixture_b_id,
+                "description": c.describe(),
+            }
+            for c in rig_storage.detect_address_conflicts(rig_fixtures, fixtures_dir)
+        ]
+
+    def _bad_request(detail: str, **extra: Any) -> "HTTPException":
+        # Helper for 400 with structured body.
+        body = {"detail": detail, **extra}
+        return HTTPException(status_code=400, detail=body)
+
+    @app.get("/api/mock/rigs")
+    @log_endpoint("GET:/api/mock/rigs")
+    async def list_mock_rigs() -> dict[str, Any]:
+        return {
+            "rigs": rig_storage.list_rigs(),
+            "active": rig_storage.get_active_rig_name(),
+        }
+
+    @app.get("/api/mock/rigs/{name}")
+    @log_endpoint("GET:/api/mock/rigs/{name}")
+    async def get_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        except ValueError as exc:
+            # Includes "schema newer than build" → 422 to distinguish from
+            # malformed-on-disk; both are unrecoverable for this build.
+            msg = str(exc)
+            if "newer than this build" in msg:
+                raise HTTPException(status_code=422, detail={"detail": "schema_too_new", "reason": msg})
+            raise _bad_request("rig_corrupt", reason=msg)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        return rig
+
+    @app.put("/api/mock/rigs/{name}")
+    @log_endpoint("PUT:/api/mock/rigs/{name}")
+    async def put_mock_rig(name: str, request: RigPutRequest) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        # Strip client-supplied server fields (closes A10). Note the
+        # request model already lacks those keys, but defensive in case
+        # the schema is later loosened.
+        fixtures = list(request.fixtures or [])
+        try:
+            saved_path = rig_storage.save_rig(name, fixtures)
+        except ValueError as exc:
+            msg = str(exc)
+            if "MUST have a non-null profile" in msg:
+                raise _bad_request("type_profile_required", reason=msg)
+            if "duplicate fixture id" in msg:
+                raise _bad_request("duplicate_fixture_id", reason=msg)
+            raise _bad_request("rig_invalid", reason=msg)
+        rig = rig_storage.load_rig(name)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        rig["saved_path"] = str(saved_path)
+        return rig
+
+    @app.post("/api/mock/rigs/{name}/snapshot")
+    @log_endpoint("POST:/api/mock/rigs/{name}/snapshot")
+    async def snapshot_mock_rig(name: str) -> dict[str, Any]:
+        """Cycle-1 panel Codex H#2: separate from PUT. This is the
+        "save what's currently on the canvas" path. UI's [Save] button
+        calls this; PUT is for explicit document upload."""
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        fixtures = mock_rig.dump()
+        try:
+            saved_path = rig_storage.save_rig(name, fixtures)
+        except ValueError as exc:
+            msg = str(exc)
+            if "MUST have a non-null profile" in msg:
+                raise _bad_request("type_profile_required", reason=msg)
+            if "duplicate fixture id" in msg:
+                raise _bad_request("duplicate_fixture_id", reason=msg)
+            raise _bad_request("rig_invalid", reason=msg)
+        rig = rig_storage.load_rig(name)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        rig["saved_path"] = str(saved_path)
+        return rig
+
+    @app.post("/api/mock/rigs/{name}/load")
+    @log_endpoint("POST:/api/mock/rigs/{name}/load")
+    async def load_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        except ValueError as exc:
+            raise _bad_request("rig_corrupt", reason=str(exc))
+        try:
+            mock_rig.replace_all(rig.get("fixtures", []) or [])
+        except ValueError as exc:
+            raise _bad_request("rig_fixtures_invalid", reason=str(exc))
+        # Cycle-1 panel Claude M5: response includes `clear_selection: true`
+        # so the UI knows to drop selectedFixtureId + pending PATCH timers.
+        return {
+            "loaded": name,
+            "state": mock_rig.snapshot(),
+            "clear_selection": True,
+            "conflicts": _conflicts_to_payload(rig.get("fixtures", [])),
+        }
+
+    @app.post("/api/mock/rigs/{name}/activate")
+    @log_endpoint("POST:/api/mock/rigs/{name}/activate")
+    async def activate_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig_storage.set_active_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        return {"active": name}
+
+    @app.post("/api/mock/rigs/{name}/duplicate")
+    @log_endpoint("POST:/api/mock/rigs/{name}/duplicate")
+    async def duplicate_mock_rig(name: str, as_name: str = "") -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        if not as_name:
+            raise _bad_request("missing_as_name", reason="?as=<newname> query param required")
+        try:
+            rig_storage._validate_name(as_name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            source = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        try:
+            rig_storage.save_rig(as_name, source.get("fixtures", []))
+        except ValueError as exc:
+            raise _bad_request("rig_invalid", reason=str(exc))
+        return {"duplicated_to": as_name}
+
+    @app.delete("/api/mock/rigs/{name}")
+    @log_endpoint("DELETE:/api/mock/rigs/{name}")
+    async def delete_mock_rig(name: str, force: bool = False) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        active_before = rig_storage.get_active_rig_name()
+        if name == active_before and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": "rig_is_active",
+                    "reason": "Use ?force=true to delete the active rig (active pointer will be cleared atomically).",
+                },
+            )
+        deleted = rig_storage.delete_rig(name, force=force)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        return {"deleted": name, "active": rig_storage.get_active_rig_name()}
+
+    @app.get("/api/mock/fixture-profiles")
+    @log_endpoint("GET:/api/mock/fixture-profiles")
+    async def list_fixture_profiles() -> dict[str, Any]:
+        # Cycle-1 panel Codex H#3: uses the same fixtures_dir the runtime
+        # graph reads, so the dropdown CANNOT list profiles the runtime
+        # won't actually load.
+        return {
+            "profiles": rig_storage.list_available_profiles(fixtures_dir),
+            "fixtures_dir": str(fixtures_dir),
+        }
+
     @app.post("/api/mock/scene")
+    @log_endpoint("POST:/api/mock/scene")
     async def update_mock_scene(request: MockSceneStateRequest) -> dict[str, Any]:
         if not mock_rig.update_scene(request.scene_id):
             raise HTTPException(status_code=404, detail="Unknown mock scene")
         return mock_rig.snapshot()
 
     @app.post("/api/mock/masters")
+    @log_endpoint("POST:/api/mock/masters")
     async def update_mock_masters(request: MockMasterStateRequest) -> dict[str, Any]:
         return mock_rig.update_masters(
             master_intensity=request.master_intensity,
@@ -1089,11 +1663,13 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/lease/acquire")
+    @log_endpoint("POST:/api/control/lease/acquire")
     async def acquire_control_lease(request: LeaseAcquireRequest) -> dict[str, Any]:
         response = services.acquire_control_lease(request)
         return response.model_dump(mode="json")
 
     @app.post("/api/control/lease/release")
+    @log_endpoint("POST:/api/control/lease/release")
     async def release_control_lease(request: ReleaseLeaseRequest) -> dict[str, Any]:
         released = services.release_control_lease(request.session_id, force=request.force)
         if not released:
@@ -1104,6 +1680,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         }
 
     @app.post("/api/control/arm")
+    @log_endpoint("POST:/api/control/arm")
     async def arm_live(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1116,6 +1693,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/disarm")
+    @log_endpoint("POST:/api/control/disarm")
     async def disarm_live(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1128,6 +1706,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/blackout")
+    @log_endpoint("POST:/api/control/blackout")
     async def activate_blackout(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1140,6 +1719,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/clear-blackout")
+    @log_endpoint("POST:/api/control/clear-blackout")
     async def clear_blackout(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1152,6 +1732,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/intensity")
+    @log_endpoint("POST:/api/control/intensity")
     async def set_intensity(request: IntensityCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1165,6 +1746,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/speed")
+    @log_endpoint("POST:/api/control/speed")
     async def set_speed(request: SpeedCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1178,6 +1760,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/launch")
+    @log_endpoint("POST:/api/control/scenes/launch")
     async def launch_scene(request: SceneCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1191,6 +1774,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/hold")
+    @log_endpoint("POST:/api/control/scenes/hold")
     async def hold_scene(request: SceneCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1204,6 +1788,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/release-hold")
+    @log_endpoint("POST:/api/control/scenes/release-hold")
     async def release_scene_hold(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1247,8 +1832,14 @@ def serve_in_thread(
     services: ControlPlaneStateService | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    fixtures_dir: Path | None = None,
 ) -> tuple[Any, threading.Thread]:
-    """Start the control-plane app in a background thread."""
+    """Start the control-plane app in a background thread.
+
+    Cycle-1 panel Codex H#3: `fixtures_dir` is plumbed through so the
+    web UI's profile dropdown lists the same profiles the runtime graph
+    will load. CLI passes `settings.fixtures_dir`.
+    """
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
@@ -1256,7 +1847,7 @@ def serve_in_thread(
             "uvicorn is required for embedded web serving. Install with: pip install -e '.[web]'"
         ) from exc
 
-    app = create_app(services=services)
+    app = create_app(services=services, fixtures_dir=fixtures_dir)
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="photonic-web", daemon=True)

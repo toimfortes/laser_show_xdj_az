@@ -12,8 +12,23 @@ from photonic_synesthesia.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA_KEY = "_schema_version"
+
+
+def _migrate_show_plan_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add v2 fields with empty defaults and stamp the new schema version.
+
+    Cycle-1 panel UF-2 fix: stamps the LITERAL `2`, not `SCHEMA_VERSION`,
+    so a future v3 bump does not re-run this migration on valid v2 plans.
+    Cycle-3 panel NC-7: persisted `operator_intents` is added at v2 — v1
+    plans get an empty list (intent state was never a v1 contract).
+    """
+    payload.setdefault("timeline_flags", [])
+    payload.setdefault("staged_look", None)
+    payload.setdefault("operator_intents", [])
+    payload[_SCHEMA_KEY] = 2  # literal, not SCHEMA_VERSION
+    return payload
 
 
 def show_plan_root() -> Path:
@@ -91,13 +106,34 @@ def load_show_plan(track_key: str) -> dict[str, Any] | None:
             stored=stored_version,
             local=SCHEMA_VERSION,
         )
+    # v1→v2 migration. Use literal `== 1` (cycle-1 panel UF-2): a future v3
+    # bump adds its own `elif version == 2:` branch; this gate cannot
+    # accidentally re-fire on valid v2 plans.
+    version = int(payload.get(_SCHEMA_KEY, 1) or 1)
+    if version == 1:
+        payload = _migrate_show_plan_v1_to_v2(payload)
     return payload
 
 
 def save_show_plan(track_key: str, payload: dict[str, Any]) -> Path:
-    """Persist a show plan JSON payload for the given track key."""
+    """Persist a show plan JSON payload for the given track key.
+
+    Atomic-write contract (cycle-1 panel SF-2): writes to a `.tmp` sibling
+    in the same directory, then `os.replace`s into place. On failure, the
+    temp file is removed and the previous payload (if any) remains intact.
+    Atomic on POSIX and on Windows NTFS for files in the same directory.
+    """
     path = show_plan_path(track_key)
     path.parent.mkdir(parents=True, exist_ok=True)
     stamped = {_SCHEMA_KEY: SCHEMA_VERSION, **payload}
-    path.write_text(json.dumps(stamped, indent=2, sort_keys=True), encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps(stamped, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
     return path

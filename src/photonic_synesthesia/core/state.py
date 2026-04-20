@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -255,6 +255,17 @@ class PhotonicState(TypedDict):
     sensor_status: dict[str, bool]  # Which sensors are active
     processing_times: dict[str, float]  # Node timing for profiling
 
+    # Professional-rollout execution artifacts (Task 1)
+    # Frame-local fields populated/reset by _publish_playback_snapshot()
+    # at the top of each graph tick. NOT authored data — readers must
+    # treat the snapshot as the authoritative source of authored sections,
+    # and use these scratch fields for the current tick's derived state.
+    playback_snapshot: dict[str, Any]
+    trigger_events: list[dict[str, Any]]
+    preposition_targets: list[dict[str, Any]]
+    surface_layers: list[dict[str, Any]]
+    laser_zone_rules: dict[str, dict[str, Any]]
+
 
 def create_initial_state() -> PhotonicState:
     """Create a fresh PhotonicState with default values."""
@@ -394,6 +405,12 @@ def create_initial_state() -> PhotonicState:
             "ml": False,
         },
         processing_times={},
+        # Professional-rollout execution artifacts
+        playback_snapshot={},
+        trigger_events=[],
+        preposition_targets=[],
+        surface_layers=[],
+        laser_zone_rules={},
     )
 
 

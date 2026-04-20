@@ -12,6 +12,15 @@ const appState = {
   playback: null,
   wsStatus: "connecting",
   dragFixtureId: null,
+  // Cycle-1 panel rig-storage Phase A — UI state for saved rigs.
+  // `rigs` and `activeRig` are server-owned (refreshed via metadata-only
+  // polling every 5s, closes Codex M1 / Gemini M2 / Claude M9). `selectedRig`
+  // is purely client-side (which rig is currently shown in the dropdown).
+  // `fixtureProfiles` caches `/api/mock/fixture-profiles` for the inspector.
+  rigs: [],
+  activeRig: null,
+  selectedRig: "",
+  fixtureProfiles: [],
 };
 
 const elements = {};
@@ -272,6 +281,14 @@ function paletteColor(visual, index, fallback) {
 }
 
 async function api(path, options = {}) {
+  // Cycle-3-rev-2 R4 fix (Kilo CRITICAL-1): every fetch gets a 10s
+  // hard timeout via AbortController. Without this, a backend stall
+  // hangs the UI forever (buttons stay disabled, polling stops, etc.).
+  // Caller can override via `options.timeout`.
+  const timeoutMs = options.timeout ?? 10000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   const request = {
     method: options.method || "GET",
     headers: {
@@ -280,26 +297,36 @@ async function api(path, options = {}) {
       ...(options.headers || {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: controller.signal,
   };
 
-  const response = await fetch(path, request);
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const payload = await response.json();
-      if (payload.detail) {
-        detail = String(payload.detail);
+  try {
+    const response = await fetch(path, request);
+    if (!response.ok) {
+      let detail = `${response.status} ${response.statusText}`;
+      try {
+        const payload = await response.json();
+        if (payload.detail) {
+          detail = String(payload.detail);
+        }
+      } catch {
+        // Keep the HTTP detail.
       }
-    } catch {
-      // Keep the HTTP detail.
+      throw new Error(detail);
     }
-    throw new Error(detail);
-  }
 
-  if (response.status === 204) {
-    return null;
+    if (response.status === 204) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.json();
 }
 
 async function loadCatalog() {
@@ -505,6 +532,40 @@ function renderPlayback() {
   const selectionVariancePercent = Math.round(selectionVariance * 100);
   const hasAudio = Boolean(playback.audio_url);
   const seekable = Boolean(playback.seekable);
+
+  // Cycle-3 destructive review F-AUDIO fix: every prior renderPlayback()
+  // call rewrote `playbackPanel.innerHTML`, which DESTROYS the
+  // `<audio id="track-audio">` element. Operator selection-mode and
+  // exploration changes therefore stopped browser audio deterministically
+  // even when the backend regen succeeded. Detach the existing audio
+  // element BEFORE the innerHTML rewrite, reattach it AFTER, so its
+  // playback state (src, currentTime, paused) survives the re-render.
+  //
+  // Cycle-3-rev-2 R5 fix (Codex + Claude + Gemini): the equality check
+  // `preservedAudio.src !== playback.audio_url` ALWAYS evaluated true
+  // because `audio.src` returns a normalized absolute URL
+  // (`http://host:port/api/...`) while `playback.audio_url` is the
+  // raw relative URL (`/api/...`). The fix was a no-op in the browser.
+  // Compare on URL.pathname + search instead so the test is
+  // protocol/host-independent.
+  let preservedAudio = elements.playbackPanel.querySelector("#track-audio");
+  if (preservedAudio) {
+    let sameTrack = false;
+    if (hasAudio) {
+      try {
+        const existing = new URL(preservedAudio.src, window.location.href);
+        const next = new URL(playback.audio_url, window.location.href);
+        sameTrack = existing.pathname === next.pathname && existing.search === next.search;
+      } catch {
+        sameTrack = false;  // malformed URL → safer to rebuild
+      }
+    }
+    if (!sameTrack) {
+      preservedAudio = null;  // src changed (new track) or audio gone — let render rebuild
+    } else {
+      preservedAudio.remove();  // detach so innerHTML rewrite doesn't destroy it
+    }
+  }
   elements.playbackPanel.innerHTML = `
     <div class="playback-meta">
       <div>
@@ -557,6 +618,17 @@ function renderPlayback() {
     <canvas id="waveform-canvas" width="640" height="96"></canvas>`
       : `<div class="playback-live-note">Live metadata session: track binding and phrase timeline are active without local browser audio.</div>`}
   `;
+
+  // F-AUDIO: if we preserved the prior audio element, swap it in for the
+  // freshly-rendered placeholder so playback state continues uninterrupted.
+  if (preservedAudio) {
+    const placeholder = elements.playbackPanel.querySelector("#track-audio");
+    if (placeholder) {
+      placeholder.replaceWith(preservedAudio);
+    } else {
+      elements.playbackPanel.appendChild(preservedAudio);
+    }
+  }
 
   const audio = elements.playbackPanel.querySelector("#track-audio");
   const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");
@@ -2450,6 +2522,45 @@ function renderInspector() {
     );
   }
 
+  // Cycle-1 panel Kilo CRITICAL#3 + Codex H#3: profile + enabled live in
+  // the inspector for laser fixtures. Profile dropdown is sourced from
+  // `/api/mock/fixture-profiles` (cached in appState.fixtureProfiles) so
+  // it lists the same profiles the runtime graph actually loads.
+  // Greyed out for non-laser types (no runtime path today).
+  const isLaser = fixture.type === "laser";
+  const profileOptions = appState.fixtureProfiles || [];
+  const profileSelectMarkup = (() => {
+    const opts = [`<option value="">— None (visual only)</option>`];
+    for (const prof of profileOptions) {
+      const sel = (fixture.profile || "") === prof.slug ? " selected" : "";
+      const channelHint = prof.channels ? ` (${prof.channels}ch)` : " (ILDA)";
+      opts.push(
+        `<option value="${prof.slug}"${sel}>${prof.slug}${channelHint}</option>`,
+      );
+    }
+    const disabledAttr = isLaser ? "" : " disabled";
+    const hintHtml = isLaser
+      ? ""
+      : `<small class="muted-small">No runtime profile available for ${fixture.type}.</small>`;
+    return `
+      <div class="field">
+        <label for="field-profile">Runtime Profile</label>
+        <select id="field-profile" data-key="profile"${disabledAttr}>${opts.join("")}</select>
+        ${hintHtml}
+      </div>
+    `;
+  })();
+
+  const enabledChecked = fixture.enabled === false ? "" : " checked";
+  const enabledMarkup = `
+    <div class="field">
+      <label for="field-enabled">
+        <input id="field-enabled" type="checkbox" data-key="enabled"${enabledChecked} />
+        Enabled (sends DMX)
+      </label>
+    </div>
+  `;
+
   elements.fixtureInspector.className = "inspector-grid";
   elements.fixtureInspector.innerHTML = `
     <div class="subhead">
@@ -2457,14 +2568,26 @@ function renderInspector() {
       <p>${safeText(fixture.type)} fixture · drag it on the stage to repatch quickly</p>
     </div>
     ${[...commonFields, ...typeFields].join("")}
+    ${profileSelectMarkup}
+    ${enabledMarkup}
     <button type="button" class="danger" id="duplicate-fixture">Duplicate Fixture</button>
   `;
 
   elements.fixtureInspector.querySelectorAll("input").forEach((input) => {
+    const key = input.dataset.key;
+    if (!key) return;
+    if (input.type === "checkbox") {
+      input.addEventListener("change", (event) => {
+        const value = event.currentTarget.checked;
+        updateFixtureLocal(fixture.id, { [key]: value });
+        renderFixtureList();
+        scheduleFixturePatch(fixture.id, { [key]: value });
+      });
+      return;
+    }
     const eventName = input.type === "range" || input.type === "color" ? "input" : "change";
     input.addEventListener(eventName, (event) => {
       const target = event.currentTarget;
-      const key = target.dataset.key;
       let value = target.value;
       if (target.type === "number" || target.type === "range") {
         value = Number(value);
@@ -2474,6 +2597,15 @@ function renderInspector() {
       scheduleFixturePatch(fixture.id, { [key]: value });
     });
   });
+
+  const profileSelect = elements.fixtureInspector.querySelector('select[data-key="profile"]');
+  if (profileSelect) {
+    profileSelect.addEventListener("change", (event) => {
+      const value = event.currentTarget.value || null;
+      updateFixtureLocal(fixture.id, { profile: value });
+      scheduleFixturePatch(fixture.id, { profile: value });
+    });
+  }
 
   elements.fixtureInspector.querySelector("#duplicate-fixture").addEventListener("click", async () => {
     const response = await api(`/api/mock/fixtures/${fixture.id}/duplicate`, { method: "POST" });
@@ -3381,21 +3513,26 @@ function drawWashIcon(ctx, x, y, r, fillColor, strokeColor) {
   ctx.fill();
 }
 
-function drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor) {
-  // Long horizontal strip + pixel dots
-  const barW = r * 2.4;
-  const barH = r * 0.55;
+function drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor, barWidth, pixelCount) {
+  // Long horizontal strip + pixel dots. Caller passes the fixture's real
+  // rendered width (in canvas pixels) so the icon length matches the
+  // actual lit strip rendered by drawLedBar — otherwise a 0.40-wide
+  // bar with 24 pixels would show as the same tiny icon as a 0.10-wide
+  // 6-pixel bar, and the two look identical on the stage.
+  const barW = Math.max(r * 1.6, barWidth || r * 2.4);
+  const barH = Math.max(r * 0.55, Math.min(barW * 0.14, r * 0.85));
   ctx.fillStyle = fillColor;
   ctx.fillRect(x - barW / 2, y - barH / 2, barW, barH);
   ctx.strokeStyle = strokeColor;
   ctx.strokeRect(x - barW / 2, y - barH / 2, barW, barH);
-  // Pixel dots
-  const pixelCount = 6;
-  const pixelSpacing = barW / (pixelCount + 1);
+  // Pixel dots — one per actual LED pixel (capped so dense strips still read)
+  const dots = Math.min(Math.max(2, pixelCount || 6), 32);
+  const pixelSpacing = barW / (dots + 1);
+  const dotRadius = Math.max(r * 0.09, Math.min(pixelSpacing * 0.28, r * 0.18));
   ctx.fillStyle = strokeColor;
-  for (let i = 1; i <= pixelCount; i += 1) {
+  for (let i = 1; i <= dots; i += 1) {
     ctx.beginPath();
-    ctx.arc(x - barW / 2 + i * pixelSpacing, y, r * 0.12, 0, Math.PI * 2);
+    ctx.arc(x - barW / 2 + i * pixelSpacing, y, dotRadius, 0, Math.PI * 2);
     ctx.fill();
   }
 }
@@ -3405,17 +3542,36 @@ function drawFixtureBody(ctx, fixture, width, height) {
   const y = fixture.y * height;
   const selected = fixture.id === appState.selectedFixtureId;
   const r = 14;
+  // LED bars scale to fixture.width × canvas width so the icon matches
+  // the real lit strip. Everything else uses the fixed icon radius.
+  const isLedBar = fixture.type === "led_bar";
+  const ledBarPixelLength = isLedBar
+    ? Math.max(0, Number(fixture.width || 0)) * width
+    : 0;
+  const ledBarVisualWidth = isLedBar ? Math.max(r * 1.6, ledBarPixelLength) : 0;
 
   // Selection halo — draws behind the icon so it reads as a soft ring.
+  // For LED bars we draw a rounded rect that wraps the whole strip
+  // length; a small circular halo wouldn't read for a 150-px-wide bar.
   if (selected) {
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, r * 1.7, 0, Math.PI * 2);
     ctx.fillStyle = "rgba(248, 94, 0, 0.18)";
-    ctx.fill();
     ctx.strokeStyle = "rgba(248, 94, 0, 0.75)";
     ctx.lineWidth = 2;
-    ctx.stroke();
+    if (isLedBar) {
+      const pad = 10;
+      const halW = ledBarVisualWidth / 2 + pad;
+      const halH = r * 0.9 + pad;
+      ctx.beginPath();
+      ctx.rect(x - halW, y - halH, halW * 2, halH * 2);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.arc(x, y, r * 1.7, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -3433,7 +3589,13 @@ function drawFixtureBody(ctx, fixture, width, height) {
   } else if (fixture.type === "wash") {
     drawWashIcon(ctx, x, y, r, fillColor, strokeColor);
   } else if (fixture.type === "led_bar") {
-    drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor);
+    // Scale the icon so its strip length matches the actual lit bar
+    // drawn by drawLedBar(). fixture.width is normalised [0, 1] across
+    // the stage canvas; multiply by the stage canvas width to recover
+    // the rendered bar length.
+    const barPixelLength = Math.max(0, Number(fixture.width || 0)) * width;
+    const pixelCount = Math.max(1, Math.round(Number(fixture.pixel_count || 6)));
+    drawLedBarIcon(ctx, x, y, r, fillColor, strokeColor, barPixelLength, pixelCount);
   } else {
     // Unknown type — fall back to the legacy square so it still renders
     ctx.fillStyle = fillColor;
@@ -3443,9 +3605,10 @@ function drawFixtureBody(ctx, fixture, width, height) {
   }
   ctx.restore();
 
-  // Label — nudged right of the icon; widen the offset for the LED bar
-  // since the bar itself extends further horizontally.
-  const labelOffset = fixture.type === "led_bar" ? r * 1.6 : r * 1.4;
+  // Label — nudged right of the icon. For LED bars, land the label past
+  // the actual strip's right edge so it doesn't sit on top of the pixel
+  // dots; for other fixtures, a fixed offset from centre is fine.
+  const labelOffset = isLedBar ? ledBarVisualWidth / 2 + 8 : r * 1.4;
   ctx.fillStyle = "rgba(255,255,255,0.88)";
   ctx.font = "600 12px 'Trebuchet MS', 'Segoe UI', sans-serif";
   ctx.textBaseline = "middle";
@@ -3691,14 +3854,26 @@ function connectWebSocket() {
   });
 }
 
+// Cycle-3-rev-2 R9 fix (Gemini D4): in-flight guard so server stalls
+// don't pile up concurrent fetches in the browser. setInterval-based
+// pollers are vulnerable; recursive-setTimeout pollers like
+// startPlaybackPolling are already self-rate-limiting.
+let universeFetchInFlight = false;
+
 function startUniversePolling() {
   if (universeRefreshTimer) {
     window.clearInterval(universeRefreshTimer);
   }
-  universeRefreshTimer = window.setInterval(() => {
-    refreshUniverseSnapshot().catch((error) => {
+  universeRefreshTimer = window.setInterval(async () => {
+    if (universeFetchInFlight) return;
+    universeFetchInFlight = true;
+    try {
+      await refreshUniverseSnapshot();
+    } catch (error) {
       console.error(error);
-    });
+    } finally {
+      universeFetchInFlight = false;
+    }
   }, 1000);
 }
 
@@ -3731,12 +3906,15 @@ async function boot() {
   elements.playbackPanel = qs("playback-panel");
   elements.showEditor = qs("show-editor");
   elements.fixtureActivity = qs("fixture-activity");
+  elements.rigControls = qs("rig-controls");
 
   await loadCatalog();
   await loadMockState();
   await loadRuntimeSnapshot();
   await refreshUniverseSnapshot();
   await loadPlaybackState();
+  await loadFixtureProfiles();
+  await refreshRigs();
 
   bindControls();
   bindStageInteractions();
@@ -3749,7 +3927,391 @@ async function boot() {
   connectWebSocket();
   startUniversePolling();
   startPlaybackPolling();
+  startOperatorWorkspacePolling();
+  startRigsPolling();
   window.requestAnimationFrame(renderStage);
+}
+
+// --- Operator workspace (Task 4 staging lane) -----------------------------
+// Cycle-3 panel 3C-H1: read /api/operator/workspace which returns
+// `{banks: [...], active_scene_id: "..."}`. The active_scene_id comes
+// from PlaybackContext.snapshot()'s per-call live overlay (cycle-1 panel
+// UF-7), so it follows the playhead without authored-cache invalidation.
+
+let operatorStagedSectionId = null;
+
+async function fetchOperatorWorkspace() {
+  try {
+    const response = await fetch("/api/operator/workspace");
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error("operator workspace fetch failed", error);
+    return null;
+  }
+}
+
+function renderOperatorWorkspace(payload) {
+  const root = document.getElementById("operator-workspace");
+  if (!root) return;
+  if (!payload || !Array.isArray(payload.banks) || payload.banks.length === 0) {
+    root.innerHTML = '<div class="operator-empty">No active session — load a track to populate banks.</div>';
+    return;
+  }
+  const activeSceneId = payload.active_scene_id || "";
+  const html = payload.banks
+    .map((bank) => {
+      const buttons = (bank.buttons || [])
+        .map((btn) => {
+          const buttonId = String(btn.id || "");
+          const buttonLabel = String(btn.label || buttonId);
+          // For the "scene" bank, mark the button matching active_scene_id.
+          const isActive =
+            bank.id === "scene" && buttonId === `scene:${activeSceneId}`;
+          // For the "scene" bank, attach a stage-look click handler.
+          const dataAction = bank.id === "scene" ? "operator-stage" : "";
+          const dataSection = bank.id === "scene" ? buttonId.replace(/^scene:/, "") : "";
+          return `<button class="operator-bank-button${isActive ? " active" : ""}"
+            data-action="${dataAction}"
+            data-section="${dataSection}"
+            data-bank="${bank.id}"
+            data-button="${buttonId}"
+            type="button">${buttonLabel}</button>`;
+        })
+        .join("");
+      return `<div class="operator-bank">
+        <h3 class="operator-bank-label">${String(bank.id || "").toUpperCase()}</h3>
+        <div class="operator-bank-buttons">${buttons || '<div class="operator-empty">empty</div>'}</div>
+      </div>`;
+    })
+    .join("");
+  const commitDisabled = operatorStagedSectionId ? "" : "disabled";
+  const stagedHint = operatorStagedSectionId
+    ? `<span class="operator-staged-hint">staged: ${operatorStagedSectionId}</span>`
+    : '<span class="operator-staged-hint muted-small">no look staged</span>';
+  root.innerHTML = `
+    <div class="operator-banks">${html}</div>
+    <div class="operator-commit-row">
+      ${stagedHint}
+      <button id="operator-commit" type="button" ${commitDisabled}>Commit Staged Look</button>
+    </div>
+  `;
+  // Wire up handlers.
+  root.querySelectorAll('[data-action="operator-stage"]').forEach((el) => {
+    el.addEventListener("click", () => stageOperatorLook(el.dataset.section));
+  });
+  const commitBtn = document.getElementById("operator-commit");
+  if (commitBtn) commitBtn.addEventListener("click", commitOperatorLook);
+}
+
+async function stageOperatorLook(sectionId) {
+  if (!sectionId) return;
+  // Stage with empty overrides — operator can extend the UI later to
+  // edit cue_recipe / laser_program before staging. For now this just
+  // pins the staged_section so the commit button activates.
+  try {
+    const response = await fetch("/api/operator/stage", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        section_id: sectionId,
+        cue_recipe: {},
+        laser_program: {},
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: response.statusText }));
+      console.warn("stage failed", detail);
+      return;
+    }
+    operatorStagedSectionId = sectionId;
+    refreshOperatorWorkspace();
+  } catch (error) {
+    console.error("stage error", error);
+  }
+}
+
+async function commitOperatorLook() {
+  if (!operatorStagedSectionId) return;
+  try {
+    const response = await fetch("/api/operator/commit", { method: "POST" });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({ detail: response.statusText }));
+      console.warn("commit failed", detail);
+      return;
+    }
+    operatorStagedSectionId = null;
+    refreshOperatorWorkspace();
+  } catch (error) {
+    console.error("commit error", error);
+  }
+}
+
+// Cycle-3-rev-2 R9 fix: in-flight guard prevents request pile-up if
+// the server stalls mid-fetch.
+let workspaceFetchInFlight = false;
+
+async function refreshOperatorWorkspace() {
+  if (workspaceFetchInFlight) return;
+  workspaceFetchInFlight = true;
+  try {
+    const payload = await fetchOperatorWorkspace();
+    renderOperatorWorkspace(payload);
+  } finally {
+    workspaceFetchInFlight = false;
+  }
+}
+
+function startOperatorWorkspacePolling() {
+  refreshOperatorWorkspace();
+  setInterval(refreshOperatorWorkspace, 2000);
+}
+
+// --- Rig storage (Phase A — named rig presets) ----------------------------
+//
+// Cycle-1 panel resolution:
+//   - C1 / startup hydration: server-side; this module just reads/writes.
+//   - H1: server enforces name validation; UI also slugifies on Save As.
+//   - H2: server enforces literal-1 schema fallback.
+//   - H4: server-side warning surfaced via response payload conflicts/empty.
+//   - M5: on POST /load response, clear selectedFixtureId and pending PATCH
+//         timers so stale debounced patches against the OLD rig don't fire
+//         against the new state (closes Codex M1).
+//   - M9 / Codex M1 / Gemini M2: refreshRigs is METADATA-ONLY at 5s. It
+//     updates the dropdown + active badge but NEVER replaces canvas state.
+//     The canvas is replaced ONLY when the user explicitly clicks Load.
+
+let rigsFetchInFlight = false;
+
+async function loadFixtureProfiles() {
+  try {
+    const response = await api("/api/mock/fixture-profiles");
+    appState.fixtureProfiles = response.profiles || [];
+  } catch (error) {
+    console.error("fixture profile fetch failed", error);
+    appState.fixtureProfiles = [];
+  }
+}
+
+async function refreshRigs() {
+  // Metadata-only refresh. Updates the dropdown + active badge.
+  // Does NOT touch canvas state.
+  if (rigsFetchInFlight) return;
+  rigsFetchInFlight = true;
+  try {
+    const payload = await api("/api/mock/rigs");
+    appState.rigs = payload.rigs || [];
+    appState.activeRig = payload.active || null;
+    if (!appState.selectedRig && appState.activeRig) {
+      appState.selectedRig = appState.activeRig;
+    }
+    renderRigList();
+  } catch (error) {
+    console.error("rig list fetch failed", error);
+  } finally {
+    rigsFetchInFlight = false;
+  }
+}
+
+function startRigsPolling() {
+  setInterval(refreshRigs, 5000);
+}
+
+function slugifyRigName(text) {
+  // Lowercase, replace non-alnum with `_`, trim leading/trailing dashes.
+  // Keep this in sync with rig_storage._NAME_RE = `^[a-z0-9][a-z0-9_-]{0,63}$`.
+  let slug = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^[-_]+/, "")  // strip leading dash/underscore so first char is alnum
+    .slice(0, 64);
+  return slug;
+}
+
+function renderRigList() {
+  const root = elements.rigControls;
+  if (!root) return;
+
+  const rigs = appState.rigs || [];
+  const active = appState.activeRig || null;
+  const selected = appState.selectedRig || "";
+
+  // Conflict count for the selected rig (best-effort: pulled from refresh).
+  const selectedRigMeta = rigs.find((r) => r.name === selected);
+
+  const optionsHtml = rigs.length
+    ? rigs
+        .map((r) => {
+          const sel = r.name === selected ? " selected" : "";
+          const tag = r.name === active ? " ●" : "";
+          return `<option value="${r.name}"${sel}>${r.name}${tag} (${r.fixture_count})</option>`;
+        })
+        .join("")
+    : `<option value="" disabled selected>(no saved rigs)</option>`;
+
+  const activeBadge = active
+    ? `<span class="rig-badge active">active: ${active}</span>`
+    : `<span class="rig-badge">no active rig</span>`;
+
+  const savedAt = selectedRigMeta?.saved_at
+    ? `<small class="muted-small">saved ${selectedRigMeta.saved_at}</small>`
+    : "";
+
+  root.innerHTML = `
+    <div class="rig-row">
+      <select id="rig-select" class="rig-select">${optionsHtml}</select>
+      ${activeBadge}
+    </div>
+    <div class="rig-actions">
+      <button type="button" id="rig-save">Save</button>
+      <button type="button" id="rig-save-as">Save As…</button>
+      <button type="button" id="rig-load" ${selected ? "" : "disabled"}>Load</button>
+      <button type="button" id="rig-activate" ${selected ? "" : "disabled"}>Set Active</button>
+      <button type="button" id="rig-duplicate" ${selected ? "" : "disabled"}>Duplicate</button>
+      <button type="button" id="rig-delete" class="danger" ${selected ? "" : "disabled"}>Delete</button>
+    </div>
+    ${savedAt}
+  `;
+
+  const sel = root.querySelector("#rig-select");
+  if (sel) {
+    sel.addEventListener("change", (e) => {
+      appState.selectedRig = e.currentTarget.value;
+      renderRigList();
+    });
+  }
+  const saveBtn = root.querySelector("#rig-save");
+  if (saveBtn) saveBtn.addEventListener("click", () => saveCurrentRig(selected));
+  const saveAsBtn = root.querySelector("#rig-save-as");
+  if (saveAsBtn) saveAsBtn.addEventListener("click", saveAsRig);
+  const loadBtn = root.querySelector("#rig-load");
+  if (loadBtn) loadBtn.addEventListener("click", () => loadRig(selected));
+  const actBtn = root.querySelector("#rig-activate");
+  if (actBtn) actBtn.addEventListener("click", () => activateRig(selected));
+  const dupBtn = root.querySelector("#rig-duplicate");
+  if (dupBtn) dupBtn.addEventListener("click", () => duplicateRig(selected));
+  const delBtn = root.querySelector("#rig-delete");
+  if (delBtn) delBtn.addEventListener("click", () => deleteRig(selected));
+}
+
+function _surfaceRigError(error) {
+  const message = error && error.message ? error.message : String(error);
+  console.warn("rig action failed", message);
+  alert("Rig action failed: " + message);
+}
+
+async function saveCurrentRig(name) {
+  // No name selected → behave as Save As…
+  if (!name) {
+    return saveAsRig();
+  }
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(name)}/snapshot`, { method: "POST" });
+    appState.selectedRig = name;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function saveAsRig() {
+  const raw = prompt(
+    "Save current rig as (lowercase letters, digits, _ and - only):",
+    appState.selectedRig || "antonios_lights",
+  );
+  if (raw === null) return;
+  const slug = slugifyRigName(raw);
+  if (!slug) {
+    _surfaceRigError(new Error("invalid name"));
+    return;
+  }
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(slug)}/snapshot`, { method: "POST" });
+    appState.selectedRig = slug;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function loadRig(name) {
+  if (!name) return;
+  if (!confirm(`Replace canvas with rig "${name}"? Unsaved canvas edits will be lost.`)) {
+    return;
+  }
+  try {
+    const response = await api(`/api/mock/rigs/${encodeURIComponent(name)}/load`, { method: "POST" });
+    // Cycle-1 panel Claude M5 + Codex M1: clear selectedFixtureId AND
+    // any pending PATCH timers so stale debounced edits cannot apply
+    // to the new state.
+    if (response.clear_selection) {
+      appState.selectedFixtureId = null;
+      for (const [, pending] of fixturePatchTimers) {
+        window.clearTimeout(pending.timerId);
+      }
+      fixturePatchTimers.clear();
+    }
+    applyMockState(response.state, { preserveSelection: false });
+    renderFixtureList();
+    renderInspector();
+    updateMetrics();
+    await refreshUniverseSnapshot();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function activateRig(name) {
+  if (!name) return;
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(name)}/activate`, { method: "POST" });
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function duplicateRig(name) {
+  if (!name) return;
+  const raw = prompt(`Duplicate "${name}" as:`, name + "_copy");
+  if (raw === null) return;
+  const slug = slugifyRigName(raw);
+  if (!slug) {
+    _surfaceRigError(new Error("invalid name"));
+    return;
+  }
+  try {
+    await api(
+      `/api/mock/rigs/${encodeURIComponent(name)}/duplicate?as=${encodeURIComponent(slug)}`,
+      { method: "POST" },
+    );
+    appState.selectedRig = slug;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function deleteRig(name) {
+  if (!name) return;
+  const isActive = name === appState.activeRig;
+  const promptMsg = isActive
+    ? `"${name}" is the active rig. Force delete? (active pointer will be cleared)`
+    : `Delete rig "${name}"? This cannot be undone.`;
+  if (!confirm(promptMsg)) return;
+  const url = isActive
+    ? `/api/mock/rigs/${encodeURIComponent(name)}?force=true`
+    : `/api/mock/rigs/${encodeURIComponent(name)}`;
+  try {
+    await api(url, { method: "DELETE" });
+    if (appState.selectedRig === name) {
+      appState.selectedRig = "";
+    }
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {

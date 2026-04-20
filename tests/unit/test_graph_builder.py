@@ -200,6 +200,9 @@ def test_full_graph_pipeline_order_is_linear() -> None:
 
     node_names = graph.graph._node_names  # type: ignore[attr-defined]
 
+    # Professional rollout (Task 3): trigger_router / preposition /
+    # surface_compositor land between scene_select and laser_control;
+    # laser_zone_runtime lands between ilda_output and laser_vector_interlock.
     expected_prefix = [
         "audio_sense",
         "feature_extract",
@@ -210,6 +213,9 @@ def test_full_graph_pipeline_order_is_linear() -> None:
         "fusion",
         "director_intent",
         "scene_select",
+        "trigger_router",
+        "preposition",
+        "surface_compositor",
         "laser_control",
         "moving_head_control",
         "panel_control",
@@ -218,6 +224,7 @@ def test_full_graph_pipeline_order_is_linear() -> None:
     expected_suffix = [
         "safety_interlock",
         "ilda_output",
+        "laser_zone_runtime",
         "laser_vector_interlock",
         "ilda_transport",
         "dmx_output",

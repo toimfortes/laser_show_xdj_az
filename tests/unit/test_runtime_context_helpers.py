@@ -105,3 +105,159 @@ def test_apply_operator_intent_to_section_reduces_strobe() -> None:
 
     assert updated["strobe_level"] == 0.4
     assert updated["strobe_profile"]["ceiling"] == 0.45
+
+
+# --- Task 1 professional rollout: PlaybackContext architecture --------------
+
+import copy
+import json
+import os
+import tempfile
+
+from photonic_synesthesia.platform.runtime_context import PlaybackContext
+
+
+def _ctx(**kwargs):
+    defaults = dict(
+        file_path="demo.wav",
+        file_name="demo.wav",
+        duration_seconds=60.0,
+    )
+    defaults.update(kwargs)
+    return PlaybackContext(**defaults)
+
+
+def test_playback_context_seeds_hashes_in_post_init() -> None:
+    """Cycle-3 panel 3C-N3: __post_init__ must seed `_authored_hash` and
+    `_flags_hash` so the first mutation doesn't bump
+    `_timeline_flag_revision` (which would clear the trigger ledger)."""
+    ctx = _ctx(show_sections=[
+        {"id": "sec-0", "section_role": "intro", "start_seconds": 0.0, "end_seconds": 30.0},
+    ])
+    assert ctx._authored_hash != ""
+    assert ctx._flags_hash != ""
+    # First snapshot must NOT trigger a revision bump.
+    initial_rev = ctx._timeline_flag_revision
+    ctx.snapshot()
+    assert ctx._timeline_flag_revision == initial_rev
+
+
+def test_snapshot_returns_superset_of_shipped_fields() -> None:
+    """Cycle-3 panel 3C-N2: snapshot must include shipped fields PLUS new
+    authored-cache fields PLUS live overlay."""
+    ctx = _ctx()
+    snap = ctx.snapshot()
+    # Sample of shipped fields.
+    for key in [
+        "available", "session_id", "file_name", "track_title", "audio_url",
+        "show_plan_path", "waveform", "structure_markers", "selection_mode",
+        "metadata_confidence", "operator_intents", "playhead_seconds",
+        "transport_revision",
+    ]:
+        assert key in snap, f"missing shipped field: {key}"
+    # New authored-cache fields.
+    for key in [
+        "show_sections", "timeline_flags", "staged_look",
+        "operator_workspace_banks", "timeline_flag_revision", "authored_hash",
+    ]:
+        assert key in snap, f"missing authored field: {key}"
+    # Live overlay.
+    assert "active_scene_id" in snap
+
+
+def test_snapshot_active_scene_id_follows_playhead() -> None:
+    """Cycle-1 panel UF-7: active_scene_id MUST be derived per-call from
+    the live playhead, NOT cached against an authored hash."""
+    ctx = _ctx(show_sections=[
+        {"id": "sec-0", "section_role": "intro", "start_seconds": 0.0, "end_seconds": 30.0},
+        {"id": "sec-1", "section_role": "drop_1", "start_seconds": 30.0, "end_seconds": 60.0},
+    ])
+    assert ctx.snapshot()["active_scene_id"] == "sec-0"
+    ctx.update_transport(playhead_seconds=45.0, playing=True, finished=False, realtime=True, speed=1.0)
+    assert ctx.snapshot()["active_scene_id"] == "sec-1"
+
+
+def test_snapshot_public_api_deep_copies() -> None:
+    """Cycle-2 panel NC-8 + cycle-3 panel 3C-N2: public snapshot()
+    deep-copies so callers can mutate the result without poisoning the
+    cache."""
+    ctx = _ctx(show_sections=[{"id": "sec-0", "start_seconds": 0.0, "end_seconds": 60.0}])
+    snap1 = ctx.snapshot()
+    snap1["show_sections"].append({"rogue": True})
+    snap2 = ctx.snapshot()
+    assert len(snap2["show_sections"]) == 1, "public snapshot leak — cache poisoned"
+
+
+def test_set_staged_look_via_recompute_does_not_clear_trigger_ledger() -> None:
+    """Cycle-2 panel NC-3 split: changing `staged_look` bumps
+    `_authored_hash` (cache invalidation) but NOT `_flags_hash`
+    (trigger-ledger invalidation), because timeline_flags didn't change."""
+    ctx = _ctx(show_sections=[{"id": "sec-0", "start_seconds": 0.0, "end_seconds": 60.0}])
+    initial_rev = ctx._timeline_flag_revision
+    initial_authored = ctx._authored_hash
+
+    ctx.staged_look = {"section_id": "sec-0", "cue_recipe": {}, "laser_program": {}}
+    with ctx._lock:
+        ctx._recompute_authored_hash_locked()
+
+    assert ctx._authored_hash != initial_authored, "authored_hash should bump on staged_look change"
+    assert ctx._timeline_flag_revision == initial_rev, "timeline_flag_revision should NOT bump"
+
+
+def test_replace_show_sections_publishes_authored_state() -> None:
+    """Task 1 Step 13 acceptance: replace_show_sections() returns a
+    snapshot reflecting the new sections immediately."""
+    ctx = _ctx()
+    new_sections = [
+        {"id": "sec-2", "start_seconds": 16.0, "end_seconds": 32.0, "tags": ["role:drop"]},
+    ]
+    snap = ctx.replace_show_sections(new_sections)
+    assert snap["show_sections"][0]["id"] == "sec-2"
+    # Snapshot's authored cache reflects the update.
+    assert snap["authored_hash"] == ctx._authored_hash
+
+
+def test_persisted_timeline_flags_hint_is_a_real_slots_field() -> None:
+    """Cycle-2 panel NC-1: PlaybackContext is @dataclass(slots=True);
+    the hint MUST be a declared field, otherwise assignment raises
+    AttributeError at runtime."""
+    ctx = _ctx()
+    ctx._persisted_timeline_flags_hint = [{"id": "test", "at_seconds": 0.0}]
+    assert ctx._persisted_timeline_flags_hint is not None
+    # Used by replace_show_sections (or bind_track_metadata).
+    ctx.replace_show_sections([{"id": "x", "start_seconds": 0.0, "end_seconds": 60.0}])
+    # Hint cleared after use.
+    assert ctx._persisted_timeline_flags_hint is None
+
+
+def test_load_show_plan_migrates_v1_to_v2() -> None:
+    """Cycle-1 panel UF-1, UF-2: v1→v2 migration with literal version gate
+    and `_schema_version` key. Must work without going through save_show_plan
+    (which would stamp the new schema and never exercise the migration)."""
+    from photonic_synesthesia.integrations.show_plans import (
+        _SCHEMA_KEY, load_show_plan, show_plan_path,
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.environ["XDG_DATA_HOME"] = tmpdir
+        try:
+            plan = show_plan_path("legacy-track")
+            plan.parent.mkdir(parents=True, exist_ok=True)
+            # Raw v1 JSON: no _schema_version key.
+            plan.write_text(json.dumps({
+                "show_sections": [{"id": "sec-0", "start_seconds": 0.0, "end_seconds": 10.0}],
+            }), encoding="utf-8")
+
+            loaded = load_show_plan("legacy-track")
+            assert loaded is not None
+            assert loaded[_SCHEMA_KEY] == 2
+            assert loaded["timeline_flags"] == []
+            assert loaded["staged_look"] is None
+            assert loaded["operator_intents"] == []
+        finally:
+            os.environ.pop("XDG_DATA_HOME", None)
+
+
+def test_load_show_plan_returns_none_on_missing() -> None:
+    """Cycle-1 panel UF-1: Optional[dict] return contract preserved."""
+    from photonic_synesthesia.integrations.show_plans import load_show_plan
+    assert load_show_plan("never-saved-key") is None
