@@ -110,24 +110,89 @@ def test_f_hash_intent_expiry_does_recompute_hash() -> None:
 # --- F-EXEC + F-TIMEOUT: regen runs on dedicated executor with timeout ----
 
 def test_f_timeout_regen_callback_that_hangs_raises_within_5_seconds() -> None:
-    """F-TIMEOUT: a wedged `_regenerate_callback` MUST NOT hold `_lock`
-    indefinitely. The 5-second timeout converts a hang into a
-    RuntimeError that the FastAPI handler can return as 400."""
+    """F-TIMEOUT: a wedged `_regenerate_callback` MUST raise RuntimeError
+    within ~5s rather than blocking forever.
+
+    Cycle-3-rev-2 R7: the regen slot stays held until the worker
+    eventually returns. We use a `threading.Event` so the test can
+    release the worker after asserting the timeout fires; otherwise
+    subsequent tests would see 'regeneration already in flight'
+    errors for the duration of the leaked slot.
+    """
+    import threading
     ctx = _ctx_with_section()
+    stop = threading.Event()
 
     def _hanging_callback(mode, variance):
-        time.sleep(60.0)  # would hang the system if not bounded
-        return [{"id": "sec-99", "start_seconds": 0.0, "end_seconds": 60.0}]
+        stop.wait(60.0)  # release when test signals OR 60s safety cap
+        return [{"id": "sec-99", "section_role": "intro", "start_seconds": 0.0, "end_seconds": 60.0}]
 
     ctx._regenerate_callback = _hanging_callback
     ctx._save_callback = lambda payload: None
     start = time.perf_counter()
-    with pytest.raises(RuntimeError, match="timed out"):
-        ctx.set_selection_mode("ai_assisted")
-    elapsed = time.perf_counter() - start
-    assert 4.5 < elapsed < 7.0, (
-        f"F-TIMEOUT bound violated: expected ~5s, got {elapsed:.1f}s"
-    )
+    try:
+        with pytest.raises(RuntimeError, match="timed out"):
+            ctx.set_selection_mode("ai_assisted")
+        elapsed = time.perf_counter() - start
+        assert 4.5 < elapsed < 7.0, (
+            f"F-TIMEOUT bound violated: expected ~5s, got {elapsed:.1f}s"
+        )
+    finally:
+        # Signal the hanging worker to exit so the regen slot releases
+        # and subsequent tests can run without "regen already in flight".
+        stop.set()
+        # Wait deterministically for the slot to be released by the
+        # worker's done-callback (rather than relying on a fixed sleep).
+        from photonic_synesthesia.platform.runtime_context import _REGEN_INFLIGHT
+        for _ in range(50):
+            if _REGEN_INFLIGHT.acquire(blocking=False):
+                _REGEN_INFLIGHT.release()
+                break
+            time.sleep(0.05)
+
+
+def test_f_timeout_second_regen_returns_inflight_error_while_first_hangs() -> None:
+    """Cycle-3-rev-2 R7: while a regen is in flight (even if hung),
+    a second regen attempt must return RuntimeError immediately
+    instead of spawning another concurrent worker. Closes the
+    OS-level CPU starvation Gemini flagged."""
+    import threading
+    ctx = _ctx_with_section()
+    stop = threading.Event()
+    started = threading.Event()
+
+    def _hanging_callback(mode, variance):
+        started.set()
+        stop.wait(60.0)
+        return [{"id": "sec-99", "section_role": "intro", "start_seconds": 0.0, "end_seconds": 60.0}]
+
+    ctx._regenerate_callback = _hanging_callback
+    ctx._save_callback = lambda payload: None
+
+    def _first_regen():
+        try:
+            ctx.set_selection_mode("ai_assisted")
+        except RuntimeError:
+            pass  # expected timeout
+
+    first_thread = threading.Thread(target=_first_regen, daemon=True)
+    try:
+        first_thread.start()
+        # Wait until the first regen actually starts holding the slot.
+        assert started.wait(2.0), "first regen never started"
+        # Second attempt must fail-fast with the in-flight error
+        # (not block waiting for the first to finish).
+        start = time.perf_counter()
+        with pytest.raises(RuntimeError, match="already in flight"):
+            ctx.set_selection_variance(0.5)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.5, (
+            f"in-flight refusal must be immediate; took {elapsed:.2f}s"
+        )
+    finally:
+        stop.set()
+        first_thread.join(timeout=2.0)
+        time.sleep(0.2)
 
 
 # --- F-LOG: every endpoint emits structured logs --------------------------

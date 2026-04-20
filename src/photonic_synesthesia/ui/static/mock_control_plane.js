@@ -272,6 +272,14 @@ function paletteColor(visual, index, fallback) {
 }
 
 async function api(path, options = {}) {
+  // Cycle-3-rev-2 R4 fix (Kilo CRITICAL-1): every fetch gets a 10s
+  // hard timeout via AbortController. Without this, a backend stall
+  // hangs the UI forever (buttons stay disabled, polling stops, etc.).
+  // Caller can override via `options.timeout`.
+  const timeoutMs = options.timeout ?? 10000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   const request = {
     method: options.method || "GET",
     headers: {
@@ -280,26 +288,36 @@ async function api(path, options = {}) {
       ...(options.headers || {}),
     },
     body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: controller.signal,
   };
 
-  const response = await fetch(path, request);
-  if (!response.ok) {
-    let detail = `${response.status} ${response.statusText}`;
-    try {
-      const payload = await response.json();
-      if (payload.detail) {
-        detail = String(payload.detail);
+  try {
+    const response = await fetch(path, request);
+    if (!response.ok) {
+      let detail = `${response.status} ${response.statusText}`;
+      try {
+        const payload = await response.json();
+        if (payload.detail) {
+          detail = String(payload.detail);
+        }
+      } catch {
+        // Keep the HTTP detail.
       }
-    } catch {
-      // Keep the HTTP detail.
+      throw new Error(detail);
     }
-    throw new Error(detail);
-  }
 
-  if (response.status === 204) {
-    return null;
+    if (response.status === 204) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return response.json();
 }
 
 async function loadCatalog() {
@@ -513,11 +531,27 @@ function renderPlayback() {
   // even when the backend regen succeeded. Detach the existing audio
   // element BEFORE the innerHTML rewrite, reattach it AFTER, so its
   // playback state (src, currentTime, paused) survives the re-render.
-  // If the new render decides hasAudio=false (no audio_url), discard the
-  // detached element.
+  //
+  // Cycle-3-rev-2 R5 fix (Codex + Claude + Gemini): the equality check
+  // `preservedAudio.src !== playback.audio_url` ALWAYS evaluated true
+  // because `audio.src` returns a normalized absolute URL
+  // (`http://host:port/api/...`) while `playback.audio_url` is the
+  // raw relative URL (`/api/...`). The fix was a no-op in the browser.
+  // Compare on URL.pathname + search instead so the test is
+  // protocol/host-independent.
   let preservedAudio = elements.playbackPanel.querySelector("#track-audio");
   if (preservedAudio) {
-    if (!hasAudio || preservedAudio.src !== playback.audio_url) {
+    let sameTrack = false;
+    if (hasAudio) {
+      try {
+        const existing = new URL(preservedAudio.src, window.location.href);
+        const next = new URL(playback.audio_url, window.location.href);
+        sameTrack = existing.pathname === next.pathname && existing.search === next.search;
+      } catch {
+        sameTrack = false;  // malformed URL → safer to rebuild
+      }
+    }
+    if (!sameTrack) {
       preservedAudio = null;  // src changed (new track) or audio gone — let render rebuild
     } else {
       preservedAudio.remove();  // detach so innerHTML rewrite doesn't destroy it
@@ -3751,14 +3785,26 @@ function connectWebSocket() {
   });
 }
 
+// Cycle-3-rev-2 R9 fix (Gemini D4): in-flight guard so server stalls
+// don't pile up concurrent fetches in the browser. setInterval-based
+// pollers are vulnerable; recursive-setTimeout pollers like
+// startPlaybackPolling are already self-rate-limiting.
+let universeFetchInFlight = false;
+
 function startUniversePolling() {
   if (universeRefreshTimer) {
     window.clearInterval(universeRefreshTimer);
   }
-  universeRefreshTimer = window.setInterval(() => {
-    refreshUniverseSnapshot().catch((error) => {
+  universeRefreshTimer = window.setInterval(async () => {
+    if (universeFetchInFlight) return;
+    universeFetchInFlight = true;
+    try {
+      await refreshUniverseSnapshot();
+    } catch (error) {
       console.error(error);
-    });
+    } finally {
+      universeFetchInFlight = false;
+    }
   }, 1000);
 }
 
@@ -3928,9 +3974,19 @@ async function commitOperatorLook() {
   }
 }
 
+// Cycle-3-rev-2 R9 fix: in-flight guard prevents request pile-up if
+// the server stalls mid-fetch.
+let workspaceFetchInFlight = false;
+
 async function refreshOperatorWorkspace() {
-  const payload = await fetchOperatorWorkspace();
-  renderOperatorWorkspace(payload);
+  if (workspaceFetchInFlight) return;
+  workspaceFetchInFlight = true;
+  try {
+    const payload = await fetchOperatorWorkspace();
+    renderOperatorWorkspace(payload);
+  } finally {
+    workspaceFetchInFlight = false;
+  }
 }
 
 function startOperatorWorkspacePolling() {

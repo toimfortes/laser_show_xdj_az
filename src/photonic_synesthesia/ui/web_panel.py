@@ -35,6 +35,56 @@ from photonic_synesthesia.platform import (
 
 logger = get_logger(__name__)
 
+# Cycle-3-rev-2 R6 (Codex + Gemini): fields that MUST NOT be logged
+# verbatim. `session_id` is the credential `require_control()` checks
+# (logging it leaks a replayable control token); `issuer_id` is the
+# operator's identifier (PII for audit-trail compliance). Other secrets
+# go here as they're added.
+#
+# `cue_recipe` and `laser_program` are also redacted because they can be
+# multi-KB nested dicts that drown out the actual operation context.
+_LOG_REDACTED_FIELDS = frozenset({
+    "session_id",
+    "issuer_id",
+})
+_LOG_TRUNCATED_FIELDS = frozenset({
+    "cue_recipe",
+    "laser_program",
+    "show_sections",
+    "timeline_flags",
+    "metadata",
+})
+
+
+def _redact_log_payload(data: Any) -> Any:
+    """Return a copy of `data` with secret fields hashed and large
+    payloads replaced with their type+size summary.
+
+    `session_id` and `issuer_id` are turned into `"<redacted:8-char-hash>"`
+    so the log retains correlatability across requests in the same
+    session without leaking the raw credential.
+    """
+    if not isinstance(data, dict):
+        return data
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if key in _LOG_REDACTED_FIELDS and value is not None:
+            try:
+                import hashlib
+                digest = hashlib.sha1(str(value).encode("utf-8")).hexdigest()[:8]
+                out[key] = f"<redacted:{digest}>"
+            except Exception:
+                out[key] = "<redacted>"
+        elif key in _LOG_TRUNCATED_FIELDS and value is not None:
+            type_name = type(value).__name__
+            size_hint = len(value) if hasattr(value, "__len__") else "?"
+            out[key] = f"<{type_name}:len={size_hint}>"
+        elif isinstance(value, dict):
+            out[key] = _redact_log_payload(value)
+        else:
+            out[key] = value
+    return out
+
 
 def log_endpoint(op: str):
     """Decorator: log endpoint entry, exit-with-duration, and exceptions.
@@ -42,9 +92,13 @@ def log_endpoint(op: str):
     Cycle-3 destructive review D1 fix: previously 0/36 endpoints had any
     logging; debugging the catastrophic crash was impossible because no
     application telemetry survived the failure. This decorator emits:
-        - INFO at entry with the operation name + key request fields
+        - INFO at entry with the operation name + redacted request fields
         - INFO at exit with `op` + `duration_ms`
         - ERROR with full exception context if the handler raises
+
+    Cycle-3-rev-2 R6 fix: request payloads run through
+    `_redact_log_payload` to hash credentials (`session_id`, `issuer_id`)
+    and truncate large nested fields (`cue_recipe`, `laser_program`).
 
     Uses the in-repo `get_logger` (structlog-style kwargs, falls back to
     stdlib logging when structlog isn't installed).
@@ -58,9 +112,13 @@ def log_endpoint(op: str):
             for value in (*args, *kwargs.values()):
                 if isinstance(value, BaseModel):
                     try:
-                        req_summary = value.model_dump(exclude_none=True)
-                    except Exception:
-                        req_summary = None
+                        raw = value.model_dump(exclude_none=True)
+                        req_summary = _redact_log_payload(raw)
+                    except Exception as exc:
+                        # Cycle-3-rev-2 Gemini D5: don't silently swallow
+                        # — log the failure type so the missing payload
+                        # is debuggable.
+                        req_summary = f"<serialization_failed:{type(exc).__name__}>"
                     break
             logger.info("endpoint_request", op=op, request=req_summary)
             try:
@@ -1049,26 +1107,51 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
     async def update_playback_selection_mode(
         request: PlaybackSelectionModeRequest,
     ) -> dict[str, Any]:
+        """Cycle-3-rev-2 R2 fix (Kilo CRIT-2 + Codex HIGH + Gemini): the
+        regen calls into AI scoring and was blocking the uvicorn worker
+        thread on `future.result(timeout=5.0)`. The handler is `async def`,
+        but a sync call inside an async function still consumes the
+        thread for the duration. Bridge to asyncio properly via
+        `run_in_executor` so the event loop can serve other requests
+        (WebSocket frames, GET /api/mock/state, etc.) while the regen
+        runs on the dedicated `_REGEN_EXECUTOR` thread.
+        """
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
+        loop = asyncio.get_running_loop()
         try:
-            return playback_context.set_selection_mode(request.selection_mode)
+            return await loop.run_in_executor(
+                None,  # default executor — the call is non-blocking; PlaybackContext serializes via _REGEN_INFLIGHT
+                playback_context.set_selection_mode,
+                request.selection_mode,
+            )
         except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # `regeneration already in flight` → 409 Conflict (cycle-3-rev-2 R7)
+            # Other RuntimeErrors (timeout, invalid mode) → 400 Bad Request.
+            status = 409 if "already in flight" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.patch("/api/mock/playback/selection-variance")
     @log_endpoint("PATCH:/api/mock/playback/selection-variance")
     async def update_playback_selection_variance(
         request: PlaybackSelectionVarianceRequest,
     ) -> dict[str, Any]:
+        """Cycle-3-rev-2 R2: same pattern as selection-mode (regen is
+        equally heavy)."""
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
+        loop = asyncio.get_running_loop()
         try:
-            return playback_context.set_selection_variance(request.selection_variance)
+            return await loop.run_in_executor(
+                None,
+                playback_context.set_selection_variance,
+                request.selection_variance,
+            )
         except RuntimeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            status = 409 if "already in flight" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/operator-intents")
     @log_endpoint("POST:/api/mock/playback/operator-intents")

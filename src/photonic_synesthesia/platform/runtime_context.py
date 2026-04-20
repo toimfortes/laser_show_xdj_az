@@ -76,34 +76,46 @@ _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
 # the regen wedges (5 second hard ceiling); the FastAPI handler
 # returns RuntimeError instead of holding `_lock` indefinitely.
 #
-# On timeout, the worker thread can't be cancelled (Python limitation),
-# so we discard the executor and create a fresh one — the hung thread
-# leaks until it eventually returns or the process exits, but new
-# regens are not queued behind it.
-_REGEN_LOCK = Lock()
-_REGEN_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+# Cycle-3-rev-2 R7 fix (Kilo + Gemini convergent): the prior
+# replace-executor-on-timeout pattern leaked a CPU-busy thread per
+# timeout. Repeated user retries → multiple zombie threads running
+# the AI scorer concurrently → defeats F-EXEC's serialization guarantee
+# AND eventually exhausts CPU (Gemini's "OS-level CPU starvation"
+# CRITICAL — possibly the actual root cause of the catastrophic
+# system hang the user experienced).
+#
+# Cycle-3-rev-2 R7 pattern: the executor is permanent (never replaced).
+# A non-blocking `_REGEN_INFLIGHT` lock gates submissions: if another
+# regen is in flight, new attempts return RuntimeError immediately
+# (FastAPI handler converts to HTTP 409). Caller has to wait for the
+# current regen to finish before triggering another. If the original
+# regen wedges, all retries 409 — but no new threads spawn, so CPU
+# stays bounded.
+_REGEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="playback-regen",
+)
+_REGEN_INFLIGHT = Lock()
 _REGEN_TIMEOUT_SECONDS = 5.0
 
 
-def _get_regen_executor() -> concurrent.futures.ThreadPoolExecutor:
-    global _REGEN_EXECUTOR
-    with _REGEN_LOCK:
-        if _REGEN_EXECUTOR is None:
-            _REGEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="playback-regen",
-            )
-        return _REGEN_EXECUTOR
+def _try_acquire_regen_slot() -> bool:
+    """Non-blocking attempt to claim the regen slot. Returns False
+    immediately if a regen is already in flight (cycle-3-rev-2 R7).
+    """
+    return _REGEN_INFLIGHT.acquire(blocking=False)
 
 
-def _replace_regen_executor() -> None:
-    """Discard the current regen executor (e.g. after a timeout) so the
-    next call creates a fresh one rather than queueing behind a hung
-    worker."""
-    global _REGEN_EXECUTOR
-    with _REGEN_LOCK:
-        if _REGEN_EXECUTOR is not None:
-            _REGEN_EXECUTOR.shutdown(wait=False)
-            _REGEN_EXECUTOR = None
+def _release_regen_slot() -> None:
+    """Release the regen slot. Safe to call even if not held — the
+    runtime context's `_regenerate_selection` releases unconditionally
+    in a `finally` block.
+    """
+    try:
+        _REGEN_INFLIGHT.release()
+    except RuntimeError:
+        # Already released (defensive — the finally pattern in
+        # `_regenerate_selection` should make this impossible).
+        pass
 
 
 def _compute_authored_hash(
@@ -238,18 +250,22 @@ class PlaybackContext:
     _authored_cache: dict[str, Any] | None = field(default=None, repr=False)
     _authored_cache_hash: str = field(default="", repr=False)
 
-    # Persistence serializer lock. Cycle-3 destructive review D2 fix:
-    # held INDEPENDENTLY of `_lock`. Pattern on every write path:
-    #     with self._lock:                 # short — memory only
-    #         self.<mutate state>
-    #         payload = self._show_plan_payload_locked()
-    #     with self._persistence_lock:     # serializes writers; graph never blocks
+    # Persistence serializer lock. Cycle-3 review D2 fix initially split
+    # the locks but introduced a last-writer-loses race (a 4-reviewer panel
+    # caught it as cycle-3-rev-2 R1 — Codex CRITICAL, Gemini D1, Kilo).
+    # Final pattern (cycle-3-rev-2 R1+R3 fix):
+    #     with self._persistence_lock:        # acquired FIRST — serializes writers
+    #         with self._lock:                # brief — memory mutation only
+    #             self.<mutate state>
+    #             payload = self._show_plan_payload_locked()
+    #         # _lock released — graph tick free; persistence_lock still held
     #         self._persist_show_plan_locked(payload)
-    # Cycle-1 panel UF-15 (concurrent writers reordering disk writes) is
-    # closed by `_persistence_lock`; the cycle-2 panel NC-2 fix mistakenly
-    # held BOTH locks across the disk write, which let `_publish_playback_snapshot`
-    # block the 50 Hz graph tick on synchronous disk I/O. The cycle-3 review
-    # D2 corrected the lock-hold scope.
+    #         with self._lock:                # brief reacquire for post-save bookkeeping
+    #             self.<update show_plan_path/show_source from save callback>
+    # Properties:
+    #   - Disk writes ordered with memory commits (closes UF-15 — last-writer-loses)
+    #   - `_lock` hold time bounded to in-memory operations (closes cycle-3 D2 — graph tick never blocks on disk)
+    #   - post-save bookkeeping under `_lock` (closes cycle-3-rev-2 R3 — `show_plan_path` no longer mutated outside the lock the graph tick reads under)
     _persistence_lock: Lock = field(default_factory=Lock, repr=False)
 
     # Hint for persisted timeline_flags ordering across rebind (cycle-2
@@ -380,16 +396,21 @@ class PlaybackContext:
             self._timeline_flag_revision += 1
 
     def replace_show_sections(self, show_sections: list[dict[str, Any]]) -> dict[str, Any]:
-        """Public writer. Memory mutation under `_lock`; disk write under
-        `_persistence_lock` only — `_lock` is RELEASED before the I/O so
-        the 50 Hz graph tick never blocks on synchronous disk write
-        (cycle-3 destructive review D2).
+        """Public writer. Cycle-3-rev-2 R1+R3 lock pattern:
+        `_persistence_lock` outermost (serializes writers + preserves
+        disk-vs-memory commit order), `_lock` brief inside for memory
+        ops only. Closes UF-15 (last-writer-loses) AND keeps the
+        50 Hz graph tick unblocked during disk I/O.
         """
-        with self._lock:
-            self._replace_show_sections_locked(show_sections)
-            payload = self._show_plan_payload_locked()
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                self._replace_show_sections_locked(show_sections)
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return self.snapshot()
 
     def update_transport(
@@ -529,47 +550,50 @@ class PlaybackContext:
         """
         updated_section: dict[str, Any] | None = None
         payload: dict[str, Any] | None = None
-        with self._lock:
-            for index, section in enumerate(self.show_sections):
-                if str(section.get("id")) != section_id:
-                    continue
-                updated = copy.deepcopy(self._base_show_sections[index] if index < len(self._base_show_sections) else section)
-                for key, value in changes.items():
-                    if key in {
-                        "scene_id",
-                        "fixture_mode",
-                        "laser_pattern",
-                        "mover_pattern",
-                        "wash_pattern",
-                        "led_pattern",
-                    }:
-                        updated[key] = str(value)
-                    elif key in {"laser_enabled", "movers_enabled", "washes_enabled", "leds_enabled"}:
-                        updated[key] = bool(value)
-                    elif key in {"intensity_multiplier", "motion_multiplier", "strobe_level"}:
-                        try:
-                            updated[key] = float(value)
-                        except (TypeError, ValueError):
-                            continue
-                    elif key == "label":
-                        updated[key] = str(value)
-                    elif "." in key:
-                        _apply_nested_change(updated, key, value)
-                # Build the new base list with this section replaced;
-                # then route through the canonical helper.
-                new_base = copy.deepcopy(self._base_show_sections)
-                if index < len(new_base):
-                    new_base[index] = copy.deepcopy(updated)
-                else:
-                    new_base.append(copy.deepcopy(updated))
-                self._replace_show_sections_locked(new_base)
-                payload = self._show_plan_payload_locked()
-                updated_section = copy.deepcopy(self.show_sections[index])
-                break
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
-        if payload is not None:
-            with self._persistence_lock:
-                self._persist_show_plan_locked(payload)
+        # Cycle-3-rev-2 R1+R3 lock pattern: persistence_lock outermost,
+        # _lock brief inside for memory ops only.
+        with self._persistence_lock:
+            with self._lock:
+                for index, section in enumerate(self.show_sections):
+                    if str(section.get("id")) != section_id:
+                        continue
+                    updated = copy.deepcopy(self._base_show_sections[index] if index < len(self._base_show_sections) else section)
+                    for key, value in changes.items():
+                        if key in {
+                            "scene_id",
+                            "fixture_mode",
+                            "laser_pattern",
+                            "mover_pattern",
+                            "wash_pattern",
+                            "led_pattern",
+                        }:
+                            updated[key] = str(value)
+                        elif key in {"laser_enabled", "movers_enabled", "washes_enabled", "leds_enabled"}:
+                            updated[key] = bool(value)
+                        elif key in {"intensity_multiplier", "motion_multiplier", "strobe_level"}:
+                            try:
+                                updated[key] = float(value)
+                            except (TypeError, ValueError):
+                                continue
+                        elif key == "label":
+                            updated[key] = str(value)
+                        elif "." in key:
+                            _apply_nested_change(updated, key, value)
+                    new_base = copy.deepcopy(self._base_show_sections)
+                    if index < len(new_base):
+                        new_base[index] = copy.deepcopy(updated)
+                    else:
+                        new_base.append(copy.deepcopy(updated))
+                    self._replace_show_sections_locked(new_base)
+                    payload = self._show_plan_payload_locked()
+                    updated_section = copy.deepcopy(self.show_sections[index])
+                    break
+            if payload is not None:
+                saved_path = self._persist_show_plan_locked(payload)
+                if saved_path:
+                    with self._lock:
+                        self.show_plan_path = saved_path
+                        self.show_source = "show_plan"
         return updated_section
 
     def _show_plan_payload_locked(self) -> dict[str, Any]:
@@ -602,40 +626,48 @@ class PlaybackContext:
             "staged_look": copy.deepcopy(self.staged_look),
         }
 
-    def _persist_show_plan_locked(self, payload: dict[str, Any]) -> None:
+    def _persist_show_plan_locked(self, payload: dict[str, Any]) -> str | None:
         """Caller-locked persistence helper.
 
-        Cycle-2 panel NC-2 fix: caller MUST hold both `self._lock` and
-        `self._persistence_lock`. Helper does NOT re-acquire (the cycle-2
-        re-entry deadlock). Cycle-4 panel Codex-MEDIUM: preserves shipped
-        post-save bookkeeping (updates `show_plan_path` / `show_source`
-        from the callback result).
+        Cycle-2 panel NC-2 + cycle-3-rev-2 R1+R3 fix:
+        - Caller MUST hold `self._persistence_lock` (serializes writers
+          + preserves disk-write order vs memory commits).
+        - Caller MUST NOT hold `self._lock` (graph tick must be free
+          to publish snapshots during disk I/O).
+        - Helper RETURNS the save callback's result string; caller is
+          responsible for assigning `self.show_plan_path` / `self.show_source`
+          under `self._lock`. Cycle-3-rev-2 R3: those fields are read by
+          `_snapshot_internal_locked` under `self._lock`, so writes to
+          them must happen under the same lock to avoid memory-barrier
+          violation across the FastAPI thread + 50 Hz graph tick.
+
+        Returns: the path string from the save callback (or None).
         """
         callback = self._save_callback
         if callback is None:
-            return
+            return None
         try:
             result = callback(payload)
         except Exception as exc:
             logger.warning("show_plan save failed", error=str(exc))
             raise
-        if result:
-            self.show_plan_path = str(result)
-            self.show_source = "show_plan"
+        return str(result) if result else None
 
     def persist_current_show_plan(self) -> str | None:
         """Persist the current show plan if a callback is configured.
 
-        Cycle-3 destructive review D2: payload built under `_lock` (memory
-        only), then disk write under `_persistence_lock` only. The graph
-        tick never blocks on the synchronous I/O.
+        Cycle-3-rev-2 R1+R3 lock pattern: persistence_lock outermost,
+        _lock brief inside.
         """
-        with self._lock:
-            payload = self._show_plan_payload_locked()
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
-        with self._lock:
-            return self.show_plan_path or None
+            with self._lock:
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            with self._lock:
+                if saved_path:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
+                return self.show_plan_path or None
 
     def request_seek(self, position_seconds: float) -> float:
         """Seek the backing transport and refresh exported playhead state.
@@ -690,40 +722,87 @@ class PlaybackContext:
         #   - F-TIMEOUT: if the scorer wedges (math NaN, semantic profile
         #     corruption, infinite softmax loop), the timeout bounds the
         #     lock-hold-via-blocked-handler scenario.
-        try:
-            future = _get_regen_executor().submit(
-                regenerate_callback, normalized_mode, normalized_variance,
-            )
-            regenerated_sections = future.result(timeout=_REGEN_TIMEOUT_SECONDS)
-        except concurrent.futures.TimeoutError as exc:
-            logger.error(
-                "playback_regenerate_timeout",
+        # Cycle-3-rev-2 R7 fix: in-flight guard. Refuse new regens while
+        # one is running so the AI scorer's non-thread-safe module state
+        # never sees concurrent access AND zombie threads can't accumulate.
+        if not _try_acquire_regen_slot():
+            logger.warning(
+                "playback_regenerate_in_flight",
                 mode=normalized_mode,
                 variance=normalized_variance,
-                timeout_seconds=_REGEN_TIMEOUT_SECONDS,
             )
-            # Hung worker can't be cancelled — discard the executor so the
-            # next regen attempt isn't queued behind it.
-            _replace_regen_executor()
             raise RuntimeError(
-                f"Show-plan regeneration timed out after {_REGEN_TIMEOUT_SECONDS}s "
-                f"for mode={normalized_mode!r}, variance={normalized_variance:.3f}"
-            ) from exc
-        if not isinstance(regenerated_sections, list):
-            raise RuntimeError("Playback regeneration did not return show sections")
+                "Show-plan regeneration already in flight — wait for it "
+                "to finish before triggering another."
+            )
+        try:
+            try:
+                future = _REGEN_EXECUTOR.submit(
+                    regenerate_callback, normalized_mode, normalized_variance,
+                )
+                regenerated_sections = future.result(timeout=_REGEN_TIMEOUT_SECONDS)
+            except concurrent.futures.TimeoutError as exc:
+                # Hung worker can't be cancelled. Leave it running and
+                # the in-flight slot HELD until it eventually returns.
+                # New regen attempts get 409 Conflict from the handler
+                # (cycle-3-rev-2 R7: prevents zombie thread accumulation
+                # that would otherwise cause OS-level CPU starvation).
+                # NOTE: don't release the slot here — the worker still has
+                # it. We deliberately leak the slot for the duration of
+                # the wedged regen to bound CPU.
+                logger.error(
+                    "playback_regenerate_timeout",
+                    mode=normalized_mode,
+                    variance=normalized_variance,
+                    timeout_seconds=_REGEN_TIMEOUT_SECONDS,
+                )
 
-        with self._lock:
-            self.selection_mode = normalized_mode
-            self.selection_variance = normalized_variance
-            # Cycle-3 panel 3C-H2: route through canonical helper for hash
-            # bookkeeping. Operator drafts do not survive a regeneration —
-            # the authored state they were layered against no longer exists.
-            self.staged_look = None
-            self._replace_show_sections_locked(regenerated_sections)
-            payload = self._show_plan_payload_locked()
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+                # Schedule slot release for when the worker eventually
+                # finishes (may be never; that's OK — it just means
+                # subsequent regens 409 forever, which is honest about
+                # the broken state).
+                def _release_when_done(fut):
+                    _release_regen_slot()
+                future.add_done_callback(_release_when_done)
+                # Mark slot-release as the worker's responsibility.
+                slot_released_by_worker = True
+                raise RuntimeError(
+                    f"Show-plan regeneration timed out after {_REGEN_TIMEOUT_SECONDS}s "
+                    f"for mode={normalized_mode!r}, variance={normalized_variance:.3f}"
+                ) from exc
+            else:
+                slot_released_by_worker = False
+            if not isinstance(regenerated_sections, list):
+                raise RuntimeError("Playback regeneration did not return show sections")
+        finally:
+            # Release on the success / non-timeout-error path. The
+            # timeout branch sets `slot_released_by_worker` and the
+            # `add_done_callback` handles release when the worker
+            # finishes naturally.
+            try:
+                if not slot_released_by_worker:
+                    _release_regen_slot()
+            except UnboundLocalError:
+                # Edge case: exception thrown before `slot_released_by_worker`
+                # was assigned (shouldn't happen with the above structure
+                # but defensive). Release defensively.
+                _release_regen_slot()
+
+        # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                self.selection_mode = normalized_mode
+                self.selection_variance = normalized_variance
+                # Operator drafts do not survive a regeneration — the
+                # authored state they were layered against no longer exists.
+                self.staged_look = None
+                self._replace_show_sections_locked(regenerated_sections)
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return self.snapshot()
 
     def set_selection_mode(self, selection_mode: str) -> dict[str, Any]:
@@ -756,29 +835,30 @@ class PlaybackContext:
         normalized_target = _normalize_operator_target(target)
         normalized_amount = round(_clamp(float(amount), 0.0, 1.0), 3)
 
-        with self._lock:
-            target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
-            intent_payload = {
-                "intent": normalized_intent,
-                "scope": normalized_scope,
-                "target": normalized_target,
-                "amount": normalized_amount,
-                "expires_at": str(expires_at or ""),
-                "target_ids": sorted(target_ids),
-                "applied_playhead_seconds": round(self.playhead_seconds, 3),
-                "applied_at": time.time(),
-            }
-            self.operator_intents.append(intent_payload)
-            # Re-route section update through the canonical helper so
-            # `_authored_hash` / `_flags_hash` bookkeeping fires.
-            # `_base_show_sections` stays the same; helper's internal
-            # `_refresh_operator_intents_locked` reads the new
-            # `operator_intents` and overlays them.
-            self._replace_show_sections_locked(copy.deepcopy(self._base_show_sections))
-            payload = self._show_plan_payload_locked()
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
+                intent_payload = {
+                    "intent": normalized_intent,
+                    "scope": normalized_scope,
+                    "target": normalized_target,
+                    "amount": normalized_amount,
+                    "expires_at": str(expires_at or ""),
+                    "target_ids": sorted(target_ids),
+                    "applied_playhead_seconds": round(self.playhead_seconds, 3),
+                    "applied_at": time.time(),
+                }
+                self.operator_intents.append(intent_payload)
+                # Re-route section update through the canonical helper so
+                # `_authored_hash` / `_flags_hash` bookkeeping fires.
+                self._replace_show_sections_locked(copy.deepcopy(self._base_show_sections))
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return self.snapshot()
 
     def bind_track_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -798,76 +878,74 @@ class PlaybackContext:
         if not isinstance(binding, dict):
             raise RuntimeError("Playback metadata binding did not return a payload")
 
-        with self._lock:
-            self.track_title = str(binding.get("track_title") or self.track_title or self.file_name)
-            self.track_artist = str(binding.get("track_artist") or self.track_artist)
-            self.track_key = str(binding.get("track_key") or self.track_key)
-            self.file_name = str(binding.get("file_name") or self.file_name or self.track_title)
-            self.structure_markers = [
-                dict(marker) for marker in binding.get("structure_markers", self.structure_markers)
-            ]
-            binding_show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
-            self.selection_mode = _normalize_selection_mode(
-                binding.get("selection_mode", self.selection_mode)
-            )
-            self.selection_variance = _normalize_selection_variance(
-                binding.get("selection_variance", self.selection_variance)
-            )
-            self.venue_mode = _normalize_venue_mode(
-                binding.get("venue_mode", self.venue_mode)
-            )
-            confidence = binding.get("metadata_confidence", self.metadata_confidence)
-            self.metadata_confidence = copy.deepcopy(confidence if isinstance(confidence, dict) else {})
-            # Install persisted operator_intents BEFORE _replace_show_sections_locked
-            # runs (cycle-4 panel Codex-HIGH-2). Helper's internal
-            # _refresh_operator_intents_locked overlays them onto the new base.
-            intents = binding.get("operator_intents", self.operator_intents)
-            self.operator_intents = copy.deepcopy(intents if isinstance(intents, list) else [])
-            self.metadata_source = _normalize_metadata_source(
-                binding.get("metadata_source", metadata.get("metadata_source", self.metadata_source))
-            )
-            self.metadata_bound_at = time.time()
-            self.show_source = str(binding.get("show_source") or self.show_source or "generated")
-
-            if binding.get("duration_seconds") is not None:
-                try:
-                    self.duration_seconds = max(0.0, float(binding["duration_seconds"]))
-                except (TypeError, ValueError):
-                    pass
-            if binding.get("playhead_seconds") is not None:
-                try:
-                    self.playhead_seconds = max(
-                        0.0,
-                        min(float(binding["playhead_seconds"]), self.duration_seconds),
-                    )
-                except (TypeError, ValueError):
-                    pass
-            if binding.get("playing") is not None:
-                self.playing = bool(binding["playing"])
-            if binding.get("finished") is not None:
-                self.finished = bool(binding["finished"])
-            if binding.get("realtime") is not None:
-                self.realtime = bool(binding["realtime"])
-            if binding.get("speed") is not None:
-                try:
-                    self.speed = max(0.01, float(binding["speed"]))
-                except (TypeError, ValueError):
-                    pass
-            # Cycle-1 panel UF-16: stage mutation INSIDE the locked region.
-            persisted_stage = binding.get("staged_look")
-            self.staged_look = copy.deepcopy(persisted_stage) if isinstance(persisted_stage, dict) else None
-            # Hint the helper with persisted flag ordering; helper rejects
-            # if content doesn't match the freshly-derived flags.
-            persisted_flags = binding.get("timeline_flags")
-            if isinstance(persisted_flags, list):
-                self._persisted_timeline_flags_hint = list(persisted_flags)
-            self.server_time = time.time()
-            self._replace_show_sections_locked(binding_show_sections)
-            self.transport_revision += 1
-            payload = self._show_plan_payload_locked()
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                self.track_title = str(binding.get("track_title") or self.track_title or self.file_name)
+                self.track_artist = str(binding.get("track_artist") or self.track_artist)
+                self.track_key = str(binding.get("track_key") or self.track_key)
+                self.file_name = str(binding.get("file_name") or self.file_name or self.track_title)
+                self.structure_markers = [
+                    dict(marker) for marker in binding.get("structure_markers", self.structure_markers)
+                ]
+                binding_show_sections = copy.deepcopy(binding.get("show_sections", self.show_sections))
+                self.selection_mode = _normalize_selection_mode(
+                    binding.get("selection_mode", self.selection_mode)
+                )
+                self.selection_variance = _normalize_selection_variance(
+                    binding.get("selection_variance", self.selection_variance)
+                )
+                self.venue_mode = _normalize_venue_mode(
+                    binding.get("venue_mode", self.venue_mode)
+                )
+                confidence = binding.get("metadata_confidence", self.metadata_confidence)
+                self.metadata_confidence = copy.deepcopy(confidence if isinstance(confidence, dict) else {})
+                intents = binding.get("operator_intents", self.operator_intents)
+                self.operator_intents = copy.deepcopy(intents if isinstance(intents, list) else [])
+                self.metadata_source = _normalize_metadata_source(
+                    binding.get("metadata_source", metadata.get("metadata_source", self.metadata_source))
+                )
+                self.metadata_bound_at = time.time()
+                self.show_source = str(binding.get("show_source") or self.show_source or "generated")
+
+                if binding.get("duration_seconds") is not None:
+                    try:
+                        self.duration_seconds = max(0.0, float(binding["duration_seconds"]))
+                    except (TypeError, ValueError):
+                        pass
+                if binding.get("playhead_seconds") is not None:
+                    try:
+                        self.playhead_seconds = max(
+                            0.0,
+                            min(float(binding["playhead_seconds"]), self.duration_seconds),
+                        )
+                    except (TypeError, ValueError):
+                        pass
+                if binding.get("playing") is not None:
+                    self.playing = bool(binding["playing"])
+                if binding.get("finished") is not None:
+                    self.finished = bool(binding["finished"])
+                if binding.get("realtime") is not None:
+                    self.realtime = bool(binding["realtime"])
+                if binding.get("speed") is not None:
+                    try:
+                        self.speed = max(0.01, float(binding["speed"]))
+                    except (TypeError, ValueError):
+                        pass
+                persisted_stage = binding.get("staged_look")
+                self.staged_look = copy.deepcopy(persisted_stage) if isinstance(persisted_stage, dict) else None
+                persisted_flags = binding.get("timeline_flags")
+                if isinstance(persisted_flags, list):
+                    self._persisted_timeline_flags_hint = list(persisted_flags)
+                self.server_time = time.time()
+                self._replace_show_sections_locked(binding_show_sections)
+                self.transport_revision += 1
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return self.snapshot()
 
     # --- Task 4: operator preview/commit staging lane ---------------------
@@ -891,22 +969,26 @@ class PlaybackContext:
         """
         if not isinstance(cue_recipe, dict) or not isinstance(laser_program, dict):
             raise RuntimeError("Invalid staged look payload")
-        with self._lock:
-            if not any(str(section.get("id")) == section_id for section in self.show_sections):
-                raise RuntimeError("Unknown section id")
-            self.staged_look = _stage_look_helper(
-                section_id=section_id,
-                cue_recipe=cue_recipe,
-                laser_program=laser_program,
-            )
-            self.server_time = time.time()
-            self.transport_revision += 1
-            self._recompute_authored_hash_locked()
-            payload = self._show_plan_payload_locked()
-            staged = copy.deepcopy(self.staged_look)
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                if not any(str(section.get("id")) == section_id for section in self.show_sections):
+                    raise RuntimeError("Unknown section id")
+                self.staged_look = _stage_look_helper(
+                    section_id=section_id,
+                    cue_recipe=cue_recipe,
+                    laser_program=laser_program,
+                )
+                self.server_time = time.time()
+                self.transport_revision += 1
+                self._recompute_authored_hash_locked()
+                payload = self._show_plan_payload_locked()
+                staged = copy.deepcopy(self.staged_look)
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return staged
 
     def commit_staged_look(self) -> dict[str, Any]:
@@ -921,38 +1003,40 @@ class PlaybackContext:
         `staged_look` is cleared and the merged section becomes the new
         authored state.
         """
-        with self._lock:
-            if not self.staged_look:
-                raise RuntimeError("No staged look")
-            committed = _commit_staged_look_helper(self.staged_look)
-            target_id = str(committed["section_id"])
-            target_index: int | None = None
-            for idx, section in enumerate(self._base_show_sections):
-                if str(section.get("id")) == target_id:
-                    target_index = idx
-                    break
-            if target_index is None:
-                raise RuntimeError("Staged section no longer exists; please re-stage")
-            target_section = self._base_show_sections[target_index]
-            section_end = float(target_section.get("end_seconds", 0.0))
-            if self.playhead_seconds > section_end:
-                raise RuntimeError(
-                    "Playhead advanced past staged section; please re-stage against the current section"
-                )
-            updated_sections = copy.deepcopy(self._base_show_sections)
-            updated_sections[target_index] = _deep_merge_section(
-                authored=updated_sections[target_index],
-                stage_cue_recipe=copy.deepcopy(committed["cue_recipe"]),
-                stage_laser_program=copy.deepcopy(committed["laser_program"]),
-            )
-            # Clear staged_look BEFORE the authored-state commit so the
-            # canonical helper's hash recomputation sees the cleared stage.
-            self.staged_look = None
-            self._replace_show_sections_locked(updated_sections)
-            payload = self._show_plan_payload_locked()
-        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
-            self._persist_show_plan_locked(payload)
+            with self._lock:
+                if not self.staged_look:
+                    raise RuntimeError("No staged look")
+                committed = _commit_staged_look_helper(self.staged_look)
+                target_id = str(committed["section_id"])
+                target_index: int | None = None
+                for idx, section in enumerate(self._base_show_sections):
+                    if str(section.get("id")) == target_id:
+                        target_index = idx
+                        break
+                if target_index is None:
+                    raise RuntimeError("Staged section no longer exists; please re-stage")
+                target_section = self._base_show_sections[target_index]
+                section_end = float(target_section.get("end_seconds", 0.0))
+                if self.playhead_seconds > section_end:
+                    raise RuntimeError(
+                        "Playhead advanced past staged section; please re-stage against the current section"
+                    )
+                updated_sections = copy.deepcopy(self._base_show_sections)
+                updated_sections[target_index] = _deep_merge_section(
+                    authored=updated_sections[target_index],
+                    stage_cue_recipe=copy.deepcopy(committed["cue_recipe"]),
+                    stage_laser_program=copy.deepcopy(committed["laser_program"]),
+                )
+                self.staged_look = None
+                self._replace_show_sections_locked(updated_sections)
+                payload = self._show_plan_payload_locked()
+            saved_path = self._persist_show_plan_locked(payload)
+            if saved_path:
+                with self._lock:
+                    self.show_plan_path = saved_path
+                    self.show_source = "show_plan"
         return committed
 
 
