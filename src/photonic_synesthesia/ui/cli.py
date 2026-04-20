@@ -248,6 +248,70 @@ def _show_plan_payload_saver(default_track_key: str) -> Any:
     return lambda payload: str(save_show_plan(str(payload.get("track_key") or default_track_key), payload))
 
 
+def _apply_active_rig_to_settings(ctx: click.Context, settings: Any) -> None:
+    """Phase B runtime bridge — overlay the active rig onto Settings.fixtures.
+
+    Cycle-1 panel C3 (Kilo CRITICAL — verified vs `cli.py:973-977,1447`):
+    `--config` is on the parent `cli` group, NOT on the subcommand.
+    `ctx.get_parameter_source("config")` would return the wrong source
+    here. The existing pattern uses `ctx.obj["config_path"]`, which is
+    populated in the parent group; we mirror that.
+
+    Precedence (cycle-1 plan, recommendation A):
+      - `--config <yaml>` always wins (preserves existing scripts/CI).
+      - Otherwise, an active rig drives `settings.fixtures`.
+      - Otherwise, `Settings()` defaults stand.
+
+    Cycle-1 panel C1 + Gemini C1: never crash startup. All load /
+    materialize failures degrade to a warning + fallback to default
+    `settings.fixtures`. Cycle-1 panel H4: an active rig with fixtures
+    but ZERO runtime-eligible ones is an explicit user choice — emit
+    a warning and set `settings.fixtures = []` rather than silently
+    retain the YAML defaults.
+    """
+    from photonic_synesthesia.platform.rig_storage import (
+        RigBridgeError,
+        get_active_rig_name,
+        load_rig,
+        materialize_to_fixture_configs,
+    )
+
+    config_explicit = bool(ctx.obj.get("config_path")) if ctx.obj else False
+    active = get_active_rig_name()  # auto-clears stale pointers internally
+    if not active:
+        return  # nothing to overlay
+    if config_explicit:
+        click.echo(f"Active rig {active!r} overridden by --config flag")
+        return
+
+    try:
+        rig = load_rig(active)
+        materialized, warnings = materialize_to_fixture_configs(
+            rig, fixtures_dir=settings.fixtures_dir,
+        )
+    except (FileNotFoundError, ValueError, RigBridgeError) as exc:
+        click.echo(f"Active rig {active!r} could not be loaded: {exc}", err=True)
+        click.echo("Falling back to default Settings.fixtures", err=True)
+        return
+
+    for warning in warnings:
+        click.echo(f"  warning: {warning}", err=True)
+
+    rig_fixtures = rig.get("fixtures") or []
+    if rig_fixtures and not materialized:
+        click.echo(
+            f"Active rig {active!r} has {len(rig_fixtures)} fixtures "
+            f"but ZERO are runtime-capable. DMX/ILDA output will be empty.",
+            err=True,
+        )
+        settings.fixtures = []
+    else:
+        settings.fixtures = materialized
+        click.echo(
+            f"Active rig: {active} ({len(materialized)} fixture(s) materialized)"
+        )
+
+
 def _catalog_entry_as_show_plan(catalog_entry: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(catalog_entry, dict):
         return None
@@ -1259,6 +1323,7 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
         settings = Settings()
 
     settings.debug = ctx.obj["debug"]
+    _apply_active_rig_to_settings(ctx, settings)
     _validate_startup_config(settings, mock=mock)
 
     click.echo(f"Mode: {'Mock' if mock else 'Live'}")
@@ -1462,6 +1527,12 @@ def run_file(
         settings.ilda.ether_dream_host = ether_dream_host
     if ether_dream_port is not None:
         settings.ilda.ether_dream_port = ether_dream_port
+
+    # Phase B runtime bridge: overlay active rig onto settings.fixtures
+    # BEFORE laser_profiles is built so the graph sees the user's patch
+    # (closes cycle-1 panel C3 — must use ctx.obj["config_path"], not
+    # ctx.get_parameter_source("config")).
+    _apply_active_rig_to_settings(ctx, settings)
 
     transport_source = ctx.get_parameter_source("ilda_transport")
     export_path_source = ctx.get_parameter_source("ilda_export_path_override")
