@@ -8,6 +8,7 @@ mode.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -231,6 +232,52 @@ def test_f_log_endpoint_emits_request_and_response_logs(monkeypatch) -> None:
     assert "duration_ms" in response_events[0][1]
 
 
+def test_low1_endpoint_log_captures_path_params_alongside_request_body(monkeypatch) -> None:
+    """Cycle-4 Review B LOW-1: the `@log_endpoint` decorator now records
+    BOTH the request body AND path/query params in the
+    `endpoint_request` log line. Pre-fix only captured the first
+    BaseModel arg, so PATCH `/api/mock/fixtures/{fixture_id}` logged
+    `changes=...` but dropped `fixture_id`.
+    """
+    from photonic_synesthesia.ui import web_panel
+    captured: list[dict] = []
+
+    class _Capture:
+        def info(self, event, **kwargs): captured.append({"event": event, **kwargs})
+        def warning(self, event, **kwargs): pass
+        def error(self, event, **kwargs): pass
+        def debug(self, event, **kwargs): pass
+        def exception(self, event, **kwargs): pass
+
+    monkeypatch.setattr(web_panel, "logger", _Capture())
+    ctx = _ctx_with_section()
+    set_shared_playback_context(ctx)
+    try:
+        client = TestClient(web_panel.create_app())
+        # PATCH a fixture: body is `{changes: {...}}`, path has `fixture_id`.
+        state = client.get("/api/mock/state").json()
+        fid = state["fixtures"][0]["id"]
+        r = client.patch(
+            f"/api/mock/fixtures/{fid}",
+            json={"changes": {"intensity": 0.5}},
+        )
+        assert r.status_code == 200
+    finally:
+        clear_shared_playback_context()
+    patch_request = next(
+        (c for c in captured
+         if c["event"] == "endpoint_request"
+         and c.get("op") == "PATCH:/api/mock/fixtures/{fixture_id}"),
+        None,
+    )
+    assert patch_request is not None, "no endpoint_request for PATCH fixture"
+    # Body (BaseModel) captured under `request`.
+    assert patch_request["request"] == {"changes": {"intensity": 0.5}}
+    # Path params captured under `params`.
+    assert patch_request["params"] is not None
+    assert patch_request["params"].get("fixture_id") == fid
+
+
 def test_review_b_high6_duplicate_patch_with_same_args_does_not_retrigger_regen() -> None:
     """Cycle-4 post-merge audit Review B HIGH-6: a duplicate PATCH with
     the same selection_mode value (client timeout → retry scenario)
@@ -262,6 +309,83 @@ def test_review_b_high6_duplicate_patch_with_same_args_does_not_retrigger_regen(
     # Different value: regen does run.
     ctx.set_selection_mode("local_ollama_cpu")
     assert call_count["n"] == 2
+
+
+def test_medium3_ws_reconnect_exponential_backoff_schedule(tmp_path) -> None:
+    """Cycle-4 Review B MEDIUM-3: `_wsReconnectDelayMs(attempt)` implements
+    exp backoff capped at 30s with ±25% jitter. Pre-fix used a fixed
+    1500ms, which meant a down server got 40 req/min from every tab.
+    Evaluates the function via node and pins the schedule shape."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available; JS pure-function test skipped")
+
+    # Extract the function, eval it with deterministic Math.random, check
+    # the schedule.
+    script = r"""
+      const fs = require('fs');
+      const src = fs.readFileSync(process.argv[2], 'utf8');
+      // Extract the _wsReconnectDelayMs function body only.
+      const match = src.match(/function _wsReconnectDelayMs\(attempt\)[\s\S]*?^\}/m);
+      if (!match) { console.error('function not found'); process.exit(2); }
+      eval(match[0]);
+      // Force Math.random to 0.5 (jitter=0) for deterministic base values.
+      const origRandom = Math.random;
+      Math.random = () => 0.5;
+      const schedule = [1, 2, 3, 4, 5, 10].map(a => ({ attempt: a, ms: _wsReconnectDelayMs(a) }));
+      Math.random = origRandom;
+      console.log(JSON.stringify(schedule));
+    """
+    script_path = tmp_path / "check.js"
+    script_path.write_text(script, encoding="utf-8")
+    js_src = Path(__file__).resolve().parents[2] / "src/photonic_synesthesia/ui/static/mock_control_plane.js"
+    proc = subprocess.run(
+        [node, str(script_path), str(js_src)],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert proc.returncode == 0, f"node eval failed: {proc.stderr}"
+    import json as _json
+    schedule = _json.loads(proc.stdout)
+    # Attempts 1-4 double each time; attempts 5+ cap at 30s.
+    ms_by_attempt = {entry["attempt"]: entry["ms"] for entry in schedule}
+    # With jitter=0 (Math.random=0.5 → (0.5*2-1)=0), base values are exact.
+    assert ms_by_attempt[1] == 1500
+    assert ms_by_attempt[2] == 3000
+    assert ms_by_attempt[3] == 6000
+    assert ms_by_attempt[4] == 12000
+    assert ms_by_attempt[5] == 24000
+    assert ms_by_attempt[10] == 30000  # capped
+
+
+def test_low2_websocket_live_emits_runtime_snapshots(monkeypatch) -> None:
+    """Cycle-4 Review B LOW-2: verify the `/ws/live` websocket emits
+    runtime snapshots on a short cadence. Ping frames are implemented
+    server-side at 30s intervals (longer than a test should run); this
+    test pins that the happy-path stream of runtime snapshots works
+    with the new timeout + ping-loop code structure — a regression of
+    the ping loop that broke the send path would fail here.
+    """
+    from photonic_synesthesia.ui import web_panel
+    ctx = _ctx_with_section()
+    set_shared_playback_context(ctx)
+    try:
+        client = TestClient(web_panel.create_app())
+        with client.websocket_connect("/ws/live") as ws:
+            # Receive at least 2 frames within a reasonable timeout.
+            frames = []
+            for _ in range(2):
+                data = ws.receive_json()
+                frames.append(data)
+            # All should be runtime snapshots (NOT ping frames — the
+            # ping cadence is 30s, well above the test window).
+            for frame in frames:
+                assert "snapshot_id" in frame, f"expected runtime snapshot, got {frame}"
+                assert frame.get("op") != "ping", "did not expect a ping in this window"
+    finally:
+        clear_shared_playback_context()
 
 
 def test_f_log_endpoint_records_duration_under_normal_load(monkeypatch) -> None:

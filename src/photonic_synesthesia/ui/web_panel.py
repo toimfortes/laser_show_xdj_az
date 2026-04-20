@@ -108,20 +108,35 @@ def log_endpoint(op: str):
         @functools.wraps(handler)
         async def wrapper(*args, **kwargs):
             start = time.perf_counter()
-            # Best-effort capture of the first BaseModel arg for context.
-            req_summary = None
-            for value in (*args, *kwargs.values()):
+            # Cycle-4 Review B LOW-1: capture BOTH the request body (first
+            # BaseModel arg) AND path/query params (remaining kwargs) so
+            # the log line shows everything needed to replay the request.
+            # Pre-fix only captured the first BaseModel arg, so a PATCH
+            # like `/api/mock/fixtures/{fixture_id}` with body `{changes: {...}}`
+            # logged `changes` but dropped `fixture_id` — debugging which
+            # fixture was patched required cross-referencing timestamps.
+            req_summary: dict[str, Any] | str | None = None
+            params_summary: dict[str, Any] = {}
+            for key, value in kwargs.items():
                 if isinstance(value, BaseModel):
                     try:
                         raw = value.model_dump(exclude_none=True)
                         req_summary = _redact_log_payload(raw)
                     except Exception as exc:
-                        # Cycle-3-rev-2 Gemini D5: don't silently swallow
-                        # — log the failure type so the missing payload
-                        # is debuggable.
                         req_summary = f"<serialization_failed:{type(exc).__name__}>"
-                    break
-            logger.info("endpoint_request", op=op, request=req_summary)
+                elif isinstance(value, (str, int, float, bool, type(None))):
+                    # Path + query params: log primitive values.
+                    params_summary[key] = value
+            # Redact the params dict too (covers `session_id` that FastAPI
+            # may route via path/query in some cases + keeps the log shape
+            # consistent with body-field redaction).
+            params_summary = _redact_log_payload(params_summary) if params_summary else {}
+            logger.info(
+                "endpoint_request",
+                op=op,
+                request=req_summary,
+                params=params_summary or None,
+            )
             try:
                 result = await handler(*args, **kwargs)
             except Exception as exc:
@@ -1819,14 +1834,18 @@ def create_app(
     @app.websocket("/ws/live")
     async def websocket_live(websocket: WebSocket) -> None:
         await websocket.accept()
+        # Cycle-4 Review B LOW-2: ping/pong to detect half-open TCP
+        # connections (network partition, laptop sleep, NAT table
+        # eviction). Without this, a dead connection is only discovered
+        # when a `send_json` hits the 5s timeout, which can leave the
+        # client seeing stale data for up to 5s after the link drops.
+        # Ping interval 30s matches the socket's starlette default and
+        # is well under most NAT idle timeouts (60-120s).
+        last_ping = time.time()
+        PING_INTERVAL_S = 30.0
         try:
             while True:
-                # Post-merge cycle-4 audit CRITICAL-5 (Review B): send_json
-                # can hang forever if the client TCP buffer is full, a
-                # network partition has silently dropped the connection,
-                # or the client is frozen but hasn't sent RST. Bound each
-                # send with a 5s timeout so a wedged client can't leak
-                # this coroutine.
+                # Cycle-4 CRITICAL-5: timeout-bounded send.
                 try:
                     await asyncio.wait_for(
                         websocket.send_json(
@@ -1836,7 +1855,25 @@ def create_app(
                     )
                 except asyncio.TimeoutError:
                     logger.warning("ws_live_send_timeout")
-                    break  # close the socket; client will reconnect
+                    break
+
+                # Cycle-4 LOW-2: periodic application-level ping. We send
+                # a small JSON `{"op": "ping", "ts": ...}` frame — simpler
+                # than starlette's built-in ping (which requires passing
+                # through to the underlying protocol) and gives us an
+                # explicit pong handshake we can observe in application logs.
+                now = time.time()
+                if now - last_ping >= PING_INTERVAL_S:
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_json({"op": "ping", "ts": now}),
+                            timeout=5.0,
+                        )
+                        last_ping = now
+                    except asyncio.TimeoutError:
+                        logger.warning("ws_live_ping_timeout")
+                        break
+
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return

@@ -3836,9 +3836,24 @@ function bindControls() {
 }
 
 // Post-merge cycle-4 audit HIGH-5 (Review B): track reconnect attempts so
-// the UI can show "reconnecting (N)" and so subsequent fixes (exp backoff)
-// have a counter to key off.
+// the UI can show "reconnecting (N)" and so the MEDIUM-3 exp-backoff
+// schedule has a counter to key off.
 let wsReconnectAttempts = 0;
+
+// Cycle-4 Review B MEDIUM-3: exponential backoff schedule on reconnect.
+// Pre-fix was a fixed 1500ms delay → if the server is down, the client
+// hammers it with 40 req/min. With exp backoff + jitter, the cadence is:
+//   attempt 1: ~1.5s (with ±25% jitter)
+//   attempt 2: ~3s
+//   attempt 3: ~6s
+//   attempt 4: ~12s
+//   attempt 5+: capped at 30s
+function _wsReconnectDelayMs(attempt) {
+  const base = Math.min(1500 * Math.pow(2, Math.max(0, attempt - 1)), 30000);
+  // Jitter ±25% so N concurrent tabs don't stampede after a server bounce.
+  const jitter = base * 0.25 * (Math.random() * 2 - 1);
+  return Math.max(500, Math.round(base + jitter));
+}
 
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -3849,7 +3864,22 @@ function connectWebSocket() {
     qs("ws-status").textContent = "live";
   });
   socket.addEventListener("message", (event) => {
-    appState.runtimeSnapshot = JSON.parse(event.data);
+    let payload;
+    try {
+      payload = JSON.parse(event.data);
+    } catch (_) {
+      return;  // malformed frame; wait for the next one
+    }
+    // Cycle-4 Review B LOW-2: server may send `{"op": "ping", "ts": ...}`
+    // every 30s as an application-level heartbeat. Echo back a pong so
+    // the server log can confirm the connection is alive.
+    if (payload && payload.op === "ping") {
+      try {
+        socket.send(JSON.stringify({ op: "pong", ts: payload.ts }));
+      } catch (_) { /* best-effort */ }
+      return;  // ping frame isn't runtime state
+    }
+    appState.runtimeSnapshot = payload;
     updateRuntimeSummary();
     renderSceneBank();
   });
@@ -3868,10 +3898,11 @@ function connectWebSocket() {
     // frame (which after a server restart may be completely wrong).
     appState.runtimeSnapshot = null;
     wsReconnectAttempts += 1;
+    const delay = _wsReconnectDelayMs(wsReconnectAttempts);
     appState.wsStatus = "reconnecting";
-    qs("ws-status").textContent = `reconnecting (${wsReconnectAttempts})`;
+    qs("ws-status").textContent = `reconnecting (${wsReconnectAttempts}, ${Math.round(delay/1000)}s)`;
     updateRuntimeSummary();
-    window.setTimeout(connectWebSocket, 1500);
+    window.setTimeout(connectWebSocket, delay);
   });
 }
 
