@@ -19,6 +19,7 @@ from typing import Protocol
 from photonic_synesthesia.core.config import FixtureConfig, SafetyConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState, SafetyState
+from photonic_synesthesia.core.threadhygiene import StopSignal, join_or_raise
 from photonic_synesthesia.dmx.universe import create_universe_buffer, is_valid_dmx_channel
 
 logger = get_logger(__name__)
@@ -53,7 +54,13 @@ class SupportsBlackoutAndStats(SupportsBlackout, Protocol):
 
 
 class HeartbeatWatchdog:
-    """Independent watchdog that blackouts output if heartbeat stops."""
+    """Independent watchdog that blackouts output if heartbeat stops.
+
+    Cycle-6 B1: uses `StopSignal` + `join_or_raise` so a wedged
+    watchdog surfaces loudly instead of silently leaking. A leaked
+    watchdog was the exact pattern that hammered closed shmem in
+    yesterday's crash — the class is small but safety-critical.
+    """
 
     def __init__(
         self,
@@ -66,14 +73,17 @@ class HeartbeatWatchdog:
         self._check_interval_s = max(check_interval_s, 0.01)
         self._last_heartbeat = time.monotonic()
         self._timeout_triggered = False
-        self._running = False
+        self._stop_signal = StopSignal()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start watchdog loop."""
-        if self._running:
-            return
-        self._running = True
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                "Heartbeat-Watchdog already running; refusing to double-start. "
+                "A previous stop() likely left a zombie — see threadhygiene."
+            )
+        self._stop_signal.clear()
         self._thread = threading.Thread(
             target=self._run_loop,
             name="Heartbeat-Watchdog",
@@ -82,10 +92,11 @@ class HeartbeatWatchdog:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop watchdog loop."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
+        """Stop watchdog loop. Raises if the worker fails to exit."""
+        self._stop_signal.stop()
+        try:
+            join_or_raise(self._thread, timeout=1.0, name="Heartbeat-Watchdog")
+        finally:
             self._thread = None
 
     def beat(self) -> None:
@@ -94,8 +105,11 @@ class HeartbeatWatchdog:
         self._timeout_triggered = False
 
     def _run_loop(self) -> None:
-        while self._running:
-            time.sleep(self._check_interval_s)
+        while not self._stop_signal.stopped():
+            # Wake immediately on stop, not on the next sleep boundary.
+            self._stop_signal.wait(self._check_interval_s)
+            if self._stop_signal.stopped():
+                break
             elapsed = time.monotonic() - self._last_heartbeat
             if elapsed > self._timeout_s and not self._timeout_triggered:
                 self._timeout_triggered = True
@@ -527,16 +541,24 @@ class SafetyMonitor:
             name: time.monotonic() for name in self._outputs
         }
 
-        self._running = False
+        self._stop_signal = StopSignal()
         self._thread: threading.Thread | None = None
         self._last_stall_log: float = 0.0
 
     def start(self) -> None:
-        """Start safety monitoring."""
-        if self._running:
-            return
+        """Start safety monitoring.
 
-        self._running = True
+        Cycle-6 B1: refuses to double-start. A zombie SafetyMonitor
+        would fire blackout callbacks twice per stall — safe against
+        false positives but doubles the blackout-callback failure
+        surface. Caller must fix the underlying leak instead.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                "Safety-Monitor already running; refusing to double-start. "
+                "A previous stop() likely left a zombie — see threadhygiene."
+            )
+        self._stop_signal.clear()
         self._thread = threading.Thread(
             target=self._monitor_loop,
             name="Safety-Monitor",
@@ -545,16 +567,20 @@ class SafetyMonitor:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop safety monitoring."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
+        """Stop safety monitoring. Raises if the monitor fails to exit."""
+        self._stop_signal.stop()
+        try:
+            join_or_raise(self._thread, timeout=1.0, name="Safety-Monitor")
+        finally:
             self._thread = None
 
     def _monitor_loop(self) -> None:
         """Monitor critical output health."""
-        while self._running:
-            time.sleep(self.check_interval)
+        while not self._stop_signal.stopped():
+            # Wake immediately on stop, not on the next sleep boundary.
+            self._stop_signal.wait(self.check_interval)
+            if self._stop_signal.stopped():
+                break
 
             now = time.monotonic()
             stalled_outputs: list[str] = []
