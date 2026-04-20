@@ -7,7 +7,7 @@ import math
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
@@ -93,13 +93,15 @@ class ILDAOutputNode:
             and self.fixture_profiles[fixture.id].control_surface == "ilda"
         ]
         self._running = False
+        # Cycle-5: `_ild_timeline` and per-tick export were moved to the
+        # new `ILDAExportNode` which runs after the interlock chain.
+        # ILDAOutputNode retains only `_export_path` for its get_stats
+        # report (unchanged wire shape for the web UI).
         self._export_path = config.export_path
-        self._ild_timeline: list[ILDAFrame] = []
         self._blackout_requested = False
 
     def start(self) -> None:
         self._running = True
-        self._ild_timeline = []
         self._blackout_requested = False
         if self.config.transport_type == "json" and self._export_path is not None:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,7 +109,7 @@ class ILDAOutputNode:
             self._export_path.parent.mkdir(parents=True, exist_ok=True)
 
     def stop(self) -> None:
-        self._ild_timeline = []
+        pass
         self._blackout_requested = False
         self._running = False
 
@@ -152,7 +154,13 @@ class ILDAOutputNode:
         else:
             frames = [self._frame_for_fixture(fixture, state) for fixture in self.fixtures]
         state["ilda_frames"] = frames
-        self._export_frames(frames)
+        # Cycle-5 HIGH (LS1 variant): exports are NOT written here.
+        # Previously `_export_frames(frames)` ran at this point, before
+        # `laser_zone_runtime` + `laser_vector_interlock` had a chance
+        # to clamp the frames. Exported `.ild`/`.json` therefore
+        # contained pre-interlock frames — replaying them on a different
+        # rig would bypass the clamps. Export now runs in a dedicated
+        # `ILDAExportNode` wired AFTER `laser_vector_interlock`.
         state["processing_times"]["ilda_output"] = time.time() - start_time
         return state
 
@@ -562,24 +570,110 @@ class ILDAOutputNode:
             )
         return points
 
-    def _export_frames(self, frames: list[ILDAFrame]) -> None:
+class ILDAExportNode:
+    """Write post-interlock ILDA frames to disk (json / ild transports).
+
+    Cycle-5 HIGH resolutions:
+
+    1. **LS1 variant — exports bypassed interlock.** Previously the
+       export call lived inside `ILDAOutputNode.__call__`, which runs
+       BEFORE `laser_zone_runtime` and `laser_vector_interlock`.
+       Exported artifacts therefore contained PRE-CLAMP frames.
+       Replaying them on a different rig would bypass every safety
+       clamp in the original runtime. Moved here, wired AFTER the
+       interlock chain, so exports always reflect the frames the DAC
+       actually transmitted.
+
+    2. **Unbounded `_ild_timeline` + O(N²) disk rewrite.** The old
+       implementation appended to `self._ild_timeline` and rewrote the
+       entire `.ild` file every 20 ms tick. Memory grew unbounded
+       across the show; disk work was O(show_length × tick_rate).
+       Now the accumulator is bounded to `_MAX_ILD_FRAMES_BUFFER` and
+       the actual `.ild` write happens ONLY on `stop()` (the file
+       represents the whole show; there is no need to rewrite per
+       tick). If the buffer overflows we log a warning and drop the
+       oldest frames rather than OOM.
+    """
+
+    # Cap the in-memory ILD timeline so a multi-hour show can't OOM.
+    # 15,000 frames = ~5 minutes at 50 Hz per fixture, tunable upward
+    # for longer sessions. The watermark is deliberately well under
+    # the practical OOM floor for a typical laptop (~120 MB at 15000
+    # frames × 500 points × 16 bytes).
+    _MAX_ILD_FRAMES_BUFFER = 15000
+
+    def __init__(
+        self,
+        config: ILDAConfig,
+        export_path_factory: Callable[[], Path | None] | None = None,
+    ) -> None:
+        self.config = config
+        # Accept either a fixed path (from the config) or a factory for
+        # tests that want a tmp_path-scoped path per instance.
+        self._export_path: Path | None = (
+            export_path_factory() if export_path_factory else config.export_path
+        )
+        self._ild_timeline: list[ILDAFrame] = []
+        self._overflowed = False
+
+    def __call__(self, state: PhotonicState) -> PhotonicState:
+        start_time = time.time()
+        if not self.config.enabled:
+            state["processing_times"]["ilda_export"] = time.time() - start_time
+            return state
+        frames = state.get("ilda_frames") or []
         if self.config.transport_type == "memory":
+            pass  # nothing to write; exporter still participates for timing
+        elif self.config.transport_type == "json":
+            if self._export_path is not None and frames:
+                payload = {"generated_at": time.time(), "frames": frames}
+                try:
+                    self._export_path.write_text(json.dumps(payload), encoding="utf-8")
+                except OSError as exc:
+                    logger.warning("ilda_json_write_failed", error=str(exc))
+        elif self.config.transport_type == "ild":
+            # Accumulate in memory; flush on stop(). The file represents
+            # the whole show — rewriting per tick was O(N²).
+            if self._export_path is not None and frames:
+                self._ild_timeline.extend(frames)
+                if len(self._ild_timeline) > self._MAX_ILD_FRAMES_BUFFER:
+                    drop = len(self._ild_timeline) - self._MAX_ILD_FRAMES_BUFFER
+                    # Drop oldest — preserve the tail so the final file
+                    # at least captures recent activity. Log once per
+                    # overflow event so oncall isn't spammed.
+                    del self._ild_timeline[:drop]
+                    if not self._overflowed:
+                        logger.warning(
+                            "ilda_timeline_overflow_dropping_oldest",
+                            cap=self._MAX_ILD_FRAMES_BUFFER,
+                            dropped=drop,
+                        )
+                        self._overflowed = True
+        state["processing_times"]["ilda_export"] = time.time() - start_time
+        return state
+
+    def stop(self) -> None:
+        """Flush the accumulated `.ild` timeline to disk.
+
+        Called by `PhotonicGraph.stop()` so the file lands once,
+        reflecting the whole show, instead of being rewritten 50×/sec
+        during the tick.
+        """
+        if (
+            self.config.transport_type != "ild"
+            or self._export_path is None
+            or not self._ild_timeline
+        ):
             return
-        if self.config.transport_type == "json":
-            if self._export_path is None:
-                return
-            payload = {
-                "generated_at": time.time(),
-                "frames": frames,
-            }
-            self._export_path.write_text(json.dumps(payload), encoding="utf-8")
-            return
-        if self.config.transport_type == "ild":
-            if self._export_path is None:
-                return
-            self._ild_timeline.extend(frames)
+        try:
             self._export_path.write_bytes(encode_ild(self._ild_timeline))
-            return
+            logger.info(
+                "ilda_ild_export_flushed",
+                frames=len(self._ild_timeline),
+                path=str(self._export_path),
+            )
+        except OSError as exc:
+            logger.error("ilda_ild_export_failed", error=str(exc))
 
 
 class ILDADACOutputNode:
@@ -606,6 +700,19 @@ class ILDADACOutputNode:
         self._transport_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._thread_stop = threading.Event()
+        # Cycle-5 CRITICAL (Ether Dream fail-open): split the two concepts
+        # the previous unified `_state_frames_sent` was conflating:
+        #   - `_state_ticks`: advances EVERY __call__ regardless of
+        #     hardware state. Proves the graph is alive. Used by
+        #     SafetyMonitor for non-DAC transports (memory/ild/json)
+        #     where there is no hardware to stall.
+        #   - `_state_frames_sent`: advances ONLY on a successful DAC
+        #     `ensure_streaming` call. Used by SafetyMonitor for DAC
+        #     transport to detect hardware stalls. Without this split,
+        #     a dropped Ether Dream link left the counter advancing via
+        #     the synthetic top-of-call increment and the watchdog
+        #     never fired → stale last-nonblank frame kept projecting.
+        self._state_ticks = 0
         self._state_frames_sent = 0
 
     def start(self) -> None:
@@ -687,7 +794,18 @@ class ILDADACOutputNode:
         except OSError:
             logger.debug("Ether Dream emergency transmission failed", exc_info=True)
 
+    @property
+    def fixture_count(self) -> int:
+        return len(self.ilda_fixtures)
+
     def get_stats(self) -> dict[str, int | float | bool | str | None]:
+        # Cycle-5 CRITICAL (Ether Dream fail-open fix): SafetyMonitor polls
+        # `frames_sent` to detect stalls. For DAC transport we must report
+        # the actual hardware-send counter so a dropped link fails the
+        # watchdog. For non-DAC transports we report the tick counter
+        # because there is no hardware to stall — reporting 0 would cause
+        # the watchdog to fire on every preview-only session.
+        is_dac = self.config.transport_type == "ether_dream"
         return {
             "running": self._running,
             "transport_type": self.config.transport_type,
@@ -695,22 +813,21 @@ class ILDADACOutputNode:
             "ether_dream_port": self.config.ether_dream_port,
             "ether_dream_faulted": self._ether_dream_faulted,
             "fixture_count": len(self.ilda_fixtures),
-            "frames_sent": self._state_frames_sent,
+            "frames_sent": self._state_frames_sent if is_dac else self._state_ticks,
+            "graph_ticks": self._state_ticks,
+            "hardware_frames_sent": self._state_frames_sent,
         }
-
-    @property
-    def fixture_count(self) -> int:
-        return len(self.ilda_fixtures)
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
         start_time = time.time()
-        # Heartbeat: advance the frame counter unconditionally on every
-        # __call__ so the SafetyMonitor can tell the graph is alive even
-        # when the transport type is memory/ild/json (no hardware push).
-        # Previously the early-return below meant _state_frames_sent
-        # stayed 0 forever in file-playback / preview-only modes, and
-        # the watchdog blackouts fired in a tight loop.
-        self._state_frames_sent += 1
+        # Cycle-5 CRITICAL: advance `_state_ticks` unconditionally so
+        # SafetyMonitor can tell the GRAPH is alive even in non-DAC
+        # transports (memory/ild/json — no hardware push). But DO NOT
+        # advance `_state_frames_sent` here — that counter is reserved
+        # for successful hardware sends in DAC mode so the watchdog can
+        # detect link failures. See `get_stats` for how the right
+        # counter is reported per transport type.
+        self._state_ticks += 1
 
         if (
             self.config.transport_type != "ether_dream"

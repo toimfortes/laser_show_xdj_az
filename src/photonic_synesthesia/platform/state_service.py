@@ -120,8 +120,18 @@ class ControlPlaneStateService:
         )
         return receipt
 
-    def acquire_control_lease(self, request: LeaseAcquireRequest) -> LeaseAcquireResponse:
-        response = self.authority.acquire(request)
+    def acquire_control_lease(
+        self,
+        request: LeaseAcquireRequest,
+        force_token: str | None = None,
+    ) -> LeaseAcquireResponse:
+        """Acquire the control lease.
+
+        `force_token` is the X-Force-Takeover-Token header value (cycle-5
+        CRITICAL SECURE fix). Passed through to `ControlAuthorityService`
+        which only honors `force=True` when the env-var token matches.
+        """
+        response = self.authority.acquire(request, force_token=force_token)
         event_type = (
             PlatformEventType.CONTROL_LEASE_ACQUIRED
             if response.granted

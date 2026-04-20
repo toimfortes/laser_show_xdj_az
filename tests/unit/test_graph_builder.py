@@ -105,6 +105,9 @@ def test_photonic_graph_builds_without_safety_monitor_node_in_graph() -> None:
         "photonic_synesthesia.graph.builder.ILDADACOutputNode",
         return_value=_NoopNode(),
     ), patch(
+        "photonic_synesthesia.graph.builder.ILDAExportNode",
+        return_value=_NoopNode(),
+    ), patch(
         "photonic_synesthesia.graph.builder.SafetyInterlockNode",
         return_value=_NoopNode(),
     ), patch(
@@ -187,6 +190,9 @@ def test_full_graph_pipeline_order_is_linear() -> None:
         "photonic_synesthesia.graph.builder.ILDADACOutputNode",
         return_value=_NoopNode(),
     ), patch(
+        "photonic_synesthesia.graph.builder.ILDAExportNode",
+        return_value=_NoopNode(),
+    ), patch(
         "photonic_synesthesia.graph.builder.SafetyInterlockNode",
         return_value=_NoopNode(),
     ), patch(
@@ -226,6 +232,7 @@ def test_full_graph_pipeline_order_is_linear() -> None:
         "ilda_output",
         "laser_zone_runtime",
         "laser_vector_interlock",
+        "ilda_export",
         "ilda_transport",
         "dmx_output",
     ]

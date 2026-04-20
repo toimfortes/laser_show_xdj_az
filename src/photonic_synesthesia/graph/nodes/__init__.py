@@ -32,6 +32,10 @@ _NODE_IMPORTS = {
         "photonic_synesthesia.graph.nodes.ilda_output",
         "ILDADACOutputNode",
     ),
+    "ILDAExportNode": (
+        "photonic_synesthesia.graph.nodes.ilda_output",
+        "ILDAExportNode",
+    ),
     "LaserVectorInterlockNode": (
         "photonic_synesthesia.graph.nodes.laser_vector_interlock",
         "LaserVectorInterlockNode",

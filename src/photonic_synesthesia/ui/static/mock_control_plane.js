@@ -160,6 +160,24 @@ function safeText(value, fallback = "n/a") {
   return value === null || value === undefined || value === "" ? fallback : String(value);
 }
 
+// Cycle-5 MEDIUM (full-repo audit): escape HTML entities in any value
+// before it's concatenated into a template literal that will be
+// assigned to `innerHTML`. Without this, user-controlled strings from
+// saved rigs (fixture.label), show-section labels, or anything that
+// flows through the unauthenticated PATCH endpoints can inject
+// arbitrary HTML/JS into the DOM. Pair with `safeText(...)` for
+// null-guarding; use `escapeHtml(safeText(value))` at every user-data
+// interpolation site.
+function escapeHtml(value) {
+  if (value === null || value === undefined) return "";
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -1150,7 +1168,7 @@ function renderShowEditor() {
     <div class="show-segment-strip">
       ${sections.map((section) => `
         <button type="button" class="show-segment-chip${activeSection?.id === section.id ? " active" : ""}" data-jump-section="${section.id}">
-          <strong>${section.label}</strong>
+          <strong>${escapeHtml(section.label)}</strong>
           <span>${section.start_seconds.toFixed(1)}s</span>
         </button>
       `).join("")}
@@ -1159,7 +1177,7 @@ function renderShowEditor() {
       ${sections.map((section) => `
         <div class="show-section-card${activeSection?.id === section.id ? " active" : ""}" data-section-id="${section.id}">
           <div class="show-section-header">
-            <strong>${section.label}</strong>
+            <strong>${escapeHtml(section.label)}</strong>
             <span>${section.start_seconds.toFixed(1)}s - ${section.end_seconds.toFixed(1)}s</span>
           </div>
           <p class="show-pattern-summary">${patternSummary(section)}</p>
@@ -2408,7 +2426,7 @@ function renderFixtureList() {
     row.className = `fixture-row${fixture.id === appState.selectedFixtureId ? " selected" : ""}`;
     row.innerHTML = `
       <div>
-        <strong>${fixture.label}</strong>
+        <strong>${escapeHtml(fixture.label)}</strong>
         <p class="fixture-meta">${fixture.type} · U${fixture.universe} · ${fixture.address}</p>
       </div>
       <div class="actions">
@@ -2564,7 +2582,7 @@ function renderInspector() {
   elements.fixtureInspector.className = "inspector-grid";
   elements.fixtureInspector.innerHTML = `
     <div class="subhead">
-      <h3>${fixture.label}</h3>
+      <h3>${escapeHtml(fixture.label)}</h3>
       <p>${safeText(fixture.type)} fixture · drag it on the stage to repatch quickly</p>
     </div>
     ${[...commonFields, ...typeFields].join("")}
@@ -2981,7 +2999,7 @@ function renderFixtureActivity(visual, fixtureOutputs) {
       key: `${fixture.id}|${activity.patternLabel}|${activity.behavior}|${activity.intensityText}|${activity.sectionLabel}|${activity.muted}`,
       html: `
         <div class="fixture-activity-row">
-          <strong>${fixture.label}</strong>
+          <strong>${escapeHtml(fixture.label)}</strong>
           <span>${activity.typeLabel} · ${activity.patternLabel} · ${activity.sectionLabel}</span>
           <small>${activity.muted ? "Muted" : activity.behavior} · ${activity.intensityText}</small>
         </div>
@@ -3695,7 +3713,7 @@ function renderMonitor() {
         <div class="monitor-row">
           <div class="monitor-header">
             <div>
-              <strong>${fixture.fixture_label}</strong>
+              <strong>${escapeHtml(fixture.fixture_label)}</strong>
               <p class="monitor-meta">U${activeUniverse.universe} · ${fixture.address} · ${fixture.type}</p>
             </div>
             <div>${Math.round(fixture.intensity * 100)}%</div>
@@ -4028,7 +4046,7 @@ function renderOperatorWorkspace(payload) {
             data-section="${dataSection}"
             data-bank="${bank.id}"
             data-button="${buttonId}"
-            type="button">${buttonLabel}</button>`;
+            type="button">${escapeHtml(buttonLabel)}</button>`;
         })
         .join("");
       return `<div class="operator-bank">

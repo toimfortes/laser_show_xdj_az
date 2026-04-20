@@ -294,8 +294,18 @@ class _HarmonicAnalyzer:
 
     def _on_done(self, future: concurrent.futures.Future) -> None:
         result: dict[str, float] | None
+        executor_is_broken = False
         try:
             result = future.result()
+        except BrokenProcessPool as exc:
+            # Cycle-5 HIGH (Review 2): worker process crashed (segfault
+            # in librosa / numpy on malformed audio). The ProcessPool
+            # is now permanently broken — subsequent submits raise
+            # BrokenProcessPool forever. Reset _executor to None so
+            # `_ensure_executor` recreates it on the next submit.
+            logger.warning("harmonic_analyzer_worker_crashed", error=str(exc))
+            result = None
+            executor_is_broken = True
         except Exception as exc:
             logger.warning("harmonic_analyzer_failed", error=str(exc))
             result = None
@@ -303,6 +313,15 @@ class _HarmonicAnalyzer:
             if result is not None:
                 self._latest = result
             self._inflight = False
+            if executor_is_broken:
+                old_executor = self._executor
+                self._executor = None
+                # Shutdown outside the lock if possible.
+        if executor_is_broken and old_executor is not None:
+            try:
+                old_executor.shutdown(wait=False)
+            except Exception:
+                pass
 
     def _compute(self, y: NDArray, sr: int) -> dict[str, float]:
         """Synchronous fallback — delegates to the module-level

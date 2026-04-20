@@ -23,6 +23,7 @@ from photonic_synesthesia.graph.nodes import (
     FeatureExtractNode,
     FusionNode,
     ILDADACOutputNode,
+    ILDAExportNode,
     ILDAOutputNode,
     InterpreterNode,
     LaserControlNode,
@@ -133,6 +134,12 @@ class PhotonicGraph:
             self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].stop()
+        # Cycle-5 HIGH: ilda_export flushes its accumulated `.ild`
+        # timeline to disk on stop(). The file represents the whole
+        # show — writing it once here is O(N); writing it per tick
+        # was O(N²) and unbounded in memory.
+        if "ilda_export" in self.nodes and hasattr(self.nodes["ilda_export"], "stop"):
+            self.nodes["ilda_export"].stop()
         # Cycle-1 Review A: feature_extract owns a ProcessPool worker
         # (heavy DSP off the hot path). Shut it down on graph stop so
         # the child process exits cleanly instead of leaking.
@@ -349,6 +356,12 @@ def build_photonic_graph(
         settings.safety.laser,
         settings.fixtures,
     )
+    # Cycle-5 HIGH (LS1 variant): post-interlock exporter. Wired AFTER
+    # `laser_vector_interlock` in the pipeline below so exported
+    # `.ild`/`.json` artifacts reflect the clamped frames the DAC
+    # actually transmitted, not the pre-clamp frames ILDAOutputNode
+    # produced upstream.
+    nodes["ilda_export"] = ILDAExportNode(settings.ilda)
 
     # Safety node. require_watchdog=True fails loudly if the dead-man
     # switch couldn't be installed (e.g., no outputs wired in the
@@ -403,6 +416,7 @@ def build_photonic_graph(
             "ilda_output",
             "laser_zone_runtime",
             "laser_vector_interlock",
+            "ilda_export",
             "ilda_transport",
             "dmx_output",
         ],

@@ -74,7 +74,16 @@ class LaserZoneRuntimeNode:
             updated = dict(frame)
             fixture_id = str(frame.get("fixture_id", ""))
             rule = rules.get(fixture_id, {}) if isinstance(rules, dict) else {}
-            brightness_cap = float(rule.get("brightness_cap", 1.0)) if isinstance(rule, dict) else 1.0
+            # Cycle-5 MEDIUM (Review 2): guard against NaN (propagates
+            # through RGB silently) and negative values (would invert
+            # colors). Values > 1.0 are explicitly ALLOWED — some rigs
+            # intentionally boost dim lasers, and `_channel_clamp` at
+            # the final write caps overflow at 255. So the guard is
+            # `[0, inf)` with NaN → 0, not `[0, 1]`.
+            raw_cap = float(rule.get("brightness_cap", 1.0)) if isinstance(rule, dict) else 1.0
+            if raw_cap != raw_cap:  # NaN check (NaN != NaN)
+                raw_cap = 0.0
+            brightness_cap = max(0.0, raw_cap)
             protected = bool(rule.get("protected", False)) if isinstance(rule, dict) else False
             axis, threshold, below_is_protected = self._protected_half_plane_by_fixture.get(
                 fixture_id, ("y", 0.0, True),

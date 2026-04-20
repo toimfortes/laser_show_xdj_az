@@ -705,6 +705,15 @@ class PlaybackContext:
         with self._lock:
             current_mode = _normalize_selection_mode(self.selection_mode)
             current_variance = _normalize_selection_variance(self.selection_variance)
+            # Cycle-5 HIGH (Review B/C — regen stomps concurrent edits):
+            # snapshot the authored hash at submit time. If concurrent
+            # writers (update_show_section, apply_operator_intent) mutate
+            # authored state while the bg worker runs, the hash will have
+            # changed by commit time and we refuse to clobber their edit
+            # with our stale regeneration output. Without this check, a
+            # ~5s regen window is a stomp-risk every time the operator
+            # edits during AI scoring.
+            submit_authored_hash = self._authored_hash
         normalized_mode = _normalize_selection_mode(selection_mode if selection_mode is not None else current_mode)
         normalized_variance = _normalize_selection_variance(
             selection_variance if selection_variance is not None else current_variance
@@ -806,6 +815,22 @@ class PlaybackContext:
         # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
             with self._lock:
+                # Cycle-5 HIGH: stomp-protection. If authored state
+                # changed while regen was running, refuse to overwrite
+                # the operator's edit. The client should re-request
+                # regen with fresh mode/variance values.
+                if self._authored_hash != submit_authored_hash:
+                    logger.warning(
+                        "playback_regenerate_stomp_refused",
+                        submit_hash=submit_authored_hash[:12] if submit_authored_hash else None,
+                        current_hash=self._authored_hash[:12] if self._authored_hash else None,
+                        mode=normalized_mode,
+                        variance=normalized_variance,
+                    )
+                    raise RuntimeError(
+                        "Show-plan regeneration refused: authored state changed "
+                        "while the regen was running. Retry after the other edit completes."
+                    )
                 self.selection_mode = normalized_mode
                 self.selection_variance = normalized_variance
                 # Operator drafts do not survive a regeneration — the
@@ -853,6 +878,24 @@ class PlaybackContext:
         # Cycle-3-rev-2 R1+R3 lock pattern.
         with self._persistence_lock:
             with self._lock:
+                # Cycle-5 HIGH (Review 2 + Review 3): cap operator_intents
+                # to prevent DoS + unbounded deepcopy cost on every
+                # graph tick. Intents with empty `expires_at` are
+                # "permanent until cleared," so without a cap a flood
+                # can exhaust memory AND starve the hot path. 50 is the
+                # recommended cap from Review 3; evicts oldest by
+                # `applied_at` if exceeded.
+                _MAX_OPERATOR_INTENTS = 50
+                if len(self.operator_intents) >= _MAX_OPERATOR_INTENTS:
+                    # Drop oldest by applied_at. Preserve recent intents.
+                    self.operator_intents.sort(key=lambda i: i.get("applied_at", 0.0))
+                    evict_count = len(self.operator_intents) - _MAX_OPERATOR_INTENTS + 1
+                    del self.operator_intents[:evict_count]
+                    logger.warning(
+                        "operator_intents_cap_reached_evicted_oldest",
+                        cap=_MAX_OPERATOR_INTENTS,
+                        evicted=evict_count,
+                    )
                 target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
                 intent_payload = {
                     "intent": normalized_intent,

@@ -253,6 +253,13 @@ def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
 
 
 def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
+    """Cycle-5 HIGH (LS1 variant): ILDA export is now a SEPARATE node
+    (`ILDAExportNode`) that runs AFTER `laser_vector_interlock` in the
+    real pipeline. This test runs `ILDAOutputNode → ILDAExportNode` in
+    sequence, mirroring the production ordering, so exports reflect
+    post-interlock frames."""
+    from photonic_synesthesia.graph.nodes.ilda_output import ILDAExportNode
+
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -262,15 +269,18 @@ def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
         enabled=True,
     )
     export_path = tmp_path / "latest_ilda.json"
+    cfg = ILDAConfig(enabled=True, transport_type="json", export_path=export_path, points_per_frame=24)
     node = ILDAOutputNode(
-        ILDAConfig(enabled=True, transport_type="json", export_path=export_path, points_per_frame=24),
+        cfg,
         [fixture],
         LaserSafetyConfig(),
         fixtures_dir=Path("config/fixtures"),
     )
+    exporter = ILDAExportNode(cfg)
     node.start()
     state = _armed_state()
     result = node(state)
+    result = exporter(result)
 
     assert result["ilda_frames"]
     assert export_path.exists()
@@ -305,6 +315,13 @@ def test_encode_ild_writes_truecolor_frame_and_eof_header() -> None:
 
 
 def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
+    """Cycle-5 HIGH: `.ild` export now accumulates in `ILDAExportNode`
+    and flushes ONLY on `stop()` (file represents the whole show; the
+    old per-tick rewrite was O(N²) and grew memory unbounded). The
+    exporter also runs AFTER the interlock chain, so exported frames
+    are post-clamp."""
+    from photonic_synesthesia.graph.nodes.ilda_output import ILDAExportNode
+
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -314,16 +331,21 @@ def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
         enabled=True,
     )
     export_path = tmp_path / "latest_ilda.ild"
+    cfg = ILDAConfig(enabled=True, transport_type="ild", export_path=export_path, points_per_frame=24)
     node = ILDAOutputNode(
-        ILDAConfig(enabled=True, transport_type="ild", export_path=export_path, points_per_frame=24),
+        cfg,
         [fixture],
         LaserSafetyConfig(),
         fixtures_dir=Path("config/fixtures"),
     )
+    exporter = ILDAExportNode(cfg)
     node.start()
     state = _armed_state()
     result = node(state)
-
+    result = exporter(result)
+    # Before flush, nothing on disk yet (timeline is in memory).
+    assert not export_path.exists()
+    exporter.stop()
     assert result["ilda_frames"]
     assert export_path.exists()
     data = export_path.read_bytes()
@@ -332,6 +354,13 @@ def test_ilda_output_ild_export_writes_binary_file(tmp_path: Path) -> None:
 
 
 def test_ilda_output_ild_export_accumulates_timeline_frames(tmp_path: Path) -> None:
+    """Cycle-5 HIGH: exporter accumulates multi-tick timeline + flushes
+    on stop(). Pinning test: consecutive ticks should produce a single
+    combined `.ild` file (same end-to-end shape as the pre-refactor
+    per-tick rewrite), but the write cost is O(N) at stop() instead of
+    O(N²) across the show."""
+    from photonic_synesthesia.graph.nodes.ilda_output import ILDAExportNode
+
     fixture = FixtureConfig(
         id="laser-main",
         name="Main Laser",
@@ -341,25 +370,33 @@ def test_ilda_output_ild_export_accumulates_timeline_frames(tmp_path: Path) -> N
         enabled=True,
     )
     export_path = tmp_path / "timeline.ild"
+    cfg = ILDAConfig(enabled=True, transport_type="ild", export_path=export_path, points_per_frame=24)
     node = ILDAOutputNode(
-        ILDAConfig(enabled=True, transport_type="ild", export_path=export_path, points_per_frame=24),
+        cfg,
         [fixture],
         LaserSafetyConfig(),
         fixtures_dir=Path("config/fixtures"),
     )
+    exporter = ILDAExportNode(cfg)
     node.start()
 
     first_state = _armed_state()
     first_state["current_structure"] = MusicStructure.BREAKDOWN
     first_result = node(first_state)
+    first_result = exporter(first_result)
     first_frames = copy.deepcopy(first_result["ilda_frames"])
 
     second_state = _armed_state()
     second_state["current_structure"] = MusicStructure.DROP
     second_state["director_state"]["laser_aggression"] = 0.9
     second_result = node(second_state)
+    second_result = exporter(second_result)
     second_frames = copy.deepcopy(second_result["ilda_frames"])
 
+    # File only materializes after stop().
+    assert not export_path.exists()
+    exporter.stop()
+    assert export_path.exists()
     data = export_path.read_bytes()
 
     assert data == encode_ild(first_frames + second_frames)

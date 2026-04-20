@@ -1606,7 +1606,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="rig_not_found")
         return {"active": name}
 
-    from fastapi import Query as _Query  # local — fastapi is optional at module level
+    from fastapi import Header, Query as _Query  # local — fastapi is optional at module level
 
     @app.post("/api/mock/rigs/{name}/duplicate")
     @log_endpoint("POST:/api/mock/rigs/{name}/duplicate")
@@ -1695,8 +1695,17 @@ def create_app(
 
     @app.post("/api/control/lease/acquire")
     @log_endpoint("POST:/api/control/lease/acquire")
-    async def acquire_control_lease(request: LeaseAcquireRequest) -> dict[str, Any]:
-        response = services.acquire_control_lease(request)
+    async def acquire_control_lease(
+        request: LeaseAcquireRequest,
+        x_force_takeover_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        # Cycle-5 CRITICAL (SECURE): force-takeover requires the
+        # X-Force-Takeover-Token header matching the server's
+        # PHOTONIC_FORCE_TAKEOVER_TOKEN env var. If the env var is
+        # unset, all force-takeover requests fail closed.
+        response = services.acquire_control_lease(
+            request, force_token=x_force_takeover_token,
+        )
         return response.model_dump(mode="json")
 
     @app.post("/api/control/lease/release")
