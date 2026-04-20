@@ -239,16 +239,32 @@ class PhotonicGraph:
         # the child process exits cleanly instead of leaking.
         if "feature_extract" in self.nodes and hasattr(self.nodes["feature_extract"], "close"):
             self.nodes["feature_extract"].close()
-        # Cycle-5 panel LS3: tear down the out-of-process watchdog
-        # cleanly. `daemon=True` would kill it at interpreter exit
-        # anyway, but a clean terminate + join() lets the /dev/shm
-        # segment be unlinked without a race against atexit.
+        # Cycle-5 panel LS3 + Cycle-6 B3: tear down the out-of-process
+        # watchdog with SIGTERM → SIGKILL escalation. `daemon=True`
+        # would kill it at interpreter exit anyway, but leaving a
+        # zombie watchdog past stop() means the /dev/shm segment we
+        # unlink next could be held by the still-alive subprocess —
+        # the unlink marks it for deletion but the fd stays bound
+        # until the last holder closes, producing a stale segment
+        # visible in `ls /dev/shm` until the watchdog dies.
         if self._watchdog_proc is not None:
             try:
                 self._watchdog_proc.terminate()
                 self._watchdog_proc.join(timeout=2.0)
-            except Exception:
-                pass
+                if self._watchdog_proc.is_alive():
+                    logger.warning(
+                        "watchdog_subprocess_ignored_sigterm_escalating_to_sigkill",
+                        pid=self._watchdog_proc.pid,
+                    )
+                    self._watchdog_proc.kill()
+                    self._watchdog_proc.join(timeout=0.5)
+                    if self._watchdog_proc.is_alive():
+                        logger.error(
+                            "watchdog_subprocess_survived_sigkill",
+                            pid=self._watchdog_proc.pid,
+                        )
+            except Exception:  # pragma: no cover — defensive
+                logger.exception("watchdog_subprocess_shutdown_failed")
             self._watchdog_proc = None
         if self._watchdog_shmem is not None:
             try:
