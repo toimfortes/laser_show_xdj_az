@@ -84,6 +84,16 @@ def watchdog_loop(main_pid: int) -> None:
     last_change_monotonic = time.monotonic()
     soft_escalated = False
     tick = 0
+    # Cycle-6 D2: track consecutive StaleRead occurrences. A one-off
+    # is normal (writer happened to be mid-bump); 20 in a row (= 1
+    # second at the 50ms tick) is abnormal and signals either a
+    # crashed writer that left seq odd or a storm of writes from
+    # main that's preventing us from ever getting a stable snapshot.
+    # Both cases need operator visibility, so we log at WARN once per
+    # streak. Escalation is still handled by the normal stall path
+    # below — we're just making the symptom visible.
+    consecutive_stale = 0
+    STALE_WARN_THRESHOLD = 20
 
     # Set up clean-exit handlers (main's SIGTERM propagates here via
     # the parent-child relationship on typical shutdown).
@@ -109,7 +119,18 @@ def watchdog_loop(main_pid: int) -> None:
             except StaleRead:
                 # Live-lock on seq — main may be stuck mid-write.
                 # Treat as inconclusive this tick; keep watching.
+                consecutive_stale += 1
+                if consecutive_stale == STALE_WARN_THRESHOLD:
+                    _write_diagnostic(
+                        f"stale_read_streak consecutive={consecutive_stale} "
+                        "— main may have crashed mid-write (seq stuck odd) "
+                        "or is hammering shmem. Normal-stall detection "
+                        "still active."
+                    )
                 continue
+            else:
+                if consecutive_stale > 0:
+                    consecutive_stale = 0
 
             current_main_hb = snapshot.main_heartbeat
 

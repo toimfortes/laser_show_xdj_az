@@ -193,6 +193,14 @@ def test_f_timeout_second_regen_returns_inflight_error_while_first_hangs() -> No
     finally:
         stop.set()
         first_thread.join(timeout=2.0)
+        # Cycle-6 D1: make the join assertive. Pre-D1 a leaked first
+        # thread would silently survive; the canary catches it at
+        # teardown, but failing here gives a direct pointer to the
+        # offending test rather than a generic leak diagnostic.
+        assert not first_thread.is_alive(), (
+            "first regen thread leaked past stop.set() — the in-flight "
+            "refusal path didn't release the slot cleanly"
+        )
         time.sleep(0.2)
 
 

@@ -283,11 +283,14 @@ def test_safety_monitor_blackout_applies_to_all_outputs_on_stall() -> None:
         max_silence=0.08,
     )
 
-    running = True
+    # Cycle-6 C3: use threading.Event instead of a plain bool so the
+    # bump thread wakes immediately on stop (not on the next 20ms
+    # sleep boundary) and the pattern matches M1 conventions.
+    stop_event = threading.Event()
 
     def bump_dmx() -> None:
-        while running:
-            time.sleep(0.02)
+        while not stop_event.is_set():
+            stop_event.wait(0.02)
             dmx_output.frames_sent += 1
 
     thread = None
@@ -308,9 +311,10 @@ def test_safety_monitor_blackout_applies_to_all_outputs_on_stall() -> None:
         ):
             time.sleep(0.01)
     finally:
-        running = False
+        stop_event.set()
         if thread is not None:
-            thread.join(timeout=0.2)
+            thread.join(timeout=0.5)
+            assert not thread.is_alive(), "bump_dmx leaked past stop signal"
         monitor.stop()
 
     assert (

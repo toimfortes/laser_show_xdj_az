@@ -280,3 +280,66 @@ def test_ilda_emergency_loop_tolerates_shmem_read_errors(
 
     # Should NOT raise — broken shmem is swallowed.
     node._emergency_loop()
+
+
+# ---------------------------------------------------------------------------
+# D2: consecutive StaleRead diagnostic
+# ---------------------------------------------------------------------------
+
+
+def test_consecutive_stale_reads_emit_diagnostic(
+    kill_recorder: list[tuple[int, int]],
+    noop_signal: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2 invariant: when the shmem keeps raising StaleRead (simulates
+    a crashed writer that left seq stuck odd), the watchdog emits a
+    one-shot diagnostic at the configured threshold — not silently
+    tick forever."""
+    from photonic_watchdog.shmem import StaleRead
+
+    shmem = WatchdogSharedState(create=True)
+    diagnostics: list[str] = []
+
+    try:
+        # Capture diagnostics emitted by _write_diagnostic.
+        monkeypatch.setattr(
+            watchdog_loop_module,
+            "_write_diagnostic",
+            lambda msg: diagnostics.append(msg),
+        )
+
+        # Force read() to always StaleRead — simulates live-lock.
+        def _always_stale() -> None:
+            raise StaleRead("synthetic stale for test")
+
+        monkeypatch.setattr(shmem, "read", _always_stale)
+
+        # Keep thresholds aggressive so test finishes fast.
+        monkeypatch.setattr(watchdog_loop_module, "MAX_SOFT_STALL_MS", 50_000)
+        monkeypatch.setattr(watchdog_loop_module, "MAX_HARD_STALL_MS", 50_000)
+        monkeypatch.setattr(watchdog_loop_module, "WATCHDOG_TICK_SECONDS", 0.005)
+
+        # Patch the attach in the loop so it uses our pre-made shmem.
+        monkeypatch.setattr(
+            watchdog_loop_module, "WatchdogSharedState", lambda create: shmem
+        )
+
+        thread = _run_loop_in_thread(99999)
+
+        # 20 consecutive stales × 5ms tick = 100ms; give generous slack.
+        assert _wait_until(
+            lambda: any("stale_read_streak" in d for d in diagnostics),
+            timeout_s=2.0,
+        ), f"stale-read diagnostic never emitted; saw: {diagnostics}"
+
+        # Thread will keep spinning; no clean exit expected for this
+        # test. The `shmem.close()` in the fixture-style finally below
+        # terminates the loop's next read attempt.
+    finally:
+        try:
+            shmem.close()
+            shmem.unlink()
+        except Exception:
+            pass
+        thread.join(timeout=1.0)
