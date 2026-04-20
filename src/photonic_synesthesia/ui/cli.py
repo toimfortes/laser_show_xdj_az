@@ -1864,9 +1864,25 @@ def run_file(
 @cli.command()
 @click.option("--channel", "-c", type=int, required=True, help="DMX channel (1-512)")
 @click.option("--value", "-v", type=int, required=True, help="Value (0-255)")
+@click.option(
+    "--max-duration",
+    type=float,
+    default=None,
+    help="Auto-exit after N seconds (default: run until SIGINT/SIGTERM)",
+)
 @click.pass_context
-def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
-    """Test DMX output by setting a single channel."""
+def dmx_test(ctx: click.Context, channel: int, value: int, max_duration: float | None) -> None:
+    """Test DMX output by setting a single channel.
+
+    Cycle-6 A5: waits on a `threading.Event` instead of `while True:
+    time.sleep(1)`. SIGTERM and SIGINT wake the main thread
+    immediately (no up-to-one-second lag), and the `--max-duration`
+    flag lets CI / smoke tests bound the run. Pre-A5 this command had
+    no way to exit from CI — any wrapper had to SIGKILL it, which
+    skipped the blackout-in-finally path.
+    """
+    import threading
+
     from photonic_synesthesia.core.config import Settings
     from photonic_synesthesia.dmx.universe import is_valid_dmx_channel
     from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
@@ -1884,21 +1900,34 @@ def dmx_test(ctx: click.Context, channel: int, value: int) -> None:
 
     click.echo(f"Setting channel {channel} to {value}...")
 
+    stop_event = threading.Event()
+
+    def _handle_signal(signum: int, frame: object) -> None:
+        stop_event.set()
+
+    previous_sigint = signal.signal(signal.SIGINT, _handle_signal)
+    previous_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+
     try:
         dmx.start()
         dmx.set_channel(channel, value)
-        click.echo("Press Ctrl+C to stop and blackout.")
+        if max_duration is not None:
+            click.echo(
+                f"Holding for up to {max_duration:.1f}s; Ctrl+C to stop and blackout."
+            )
+        else:
+            click.echo("Press Ctrl+C to stop and blackout.")
 
-        import time
-
-        while True:
-            time.sleep(1)
-
-    except KeyboardInterrupt:
-        click.echo("\nBlacking out...")
+        stop_event.wait(timeout=max_duration)
+        if max_duration is not None and not stop_event.is_set():
+            click.echo(f"\nMax duration ({max_duration:.1f}s) reached. Blacking out...")
+        else:
+            click.echo("\nBlacking out...")
     finally:
         dmx.blackout()
         dmx.stop()
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 @cli.command()
