@@ -6,9 +6,14 @@ import math
 import time
 from collections import defaultdict, deque
 
-from photonic_synesthesia.core.config import LaserSafetyConfig
+from photonic_synesthesia.core.config import FixtureConfig, LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, PhotonicState
+from photonic_synesthesia.graph.safety import (
+    ProtectedHalfPlane,
+    is_point_protected,
+    protected_half_plane_for_fixture,
+)
 
 logger = get_logger(__name__)
 
@@ -35,6 +40,7 @@ class LaserVectorInterlockNode:
         safety: LaserSafetyConfig | None = None,
         *,
         config: LaserSafetyConfig | None = None,
+        fixtures: list[FixtureConfig] | None = None,
         min_beat_confidence: float = 0.0,
     ) -> None:
         resolved = safety or config
@@ -42,6 +48,19 @@ class LaserVectorInterlockNode:
             raise TypeError("LaserVectorInterlockNode requires safety or config")
         self.config: LaserSafetyConfig = resolved
         self._min_beat_confidence = max(0.0, min(1.0, min_beat_confidence))
+
+        # Cycle-5 panel LS2: vector interlock is the LAST geometric gate
+        # before hardware. Re-evaluate the protected half-plane AFTER
+        # clamp + velocity scaling + blink limiting, so a mis-calibrated
+        # `ilda_y_min` that would clamp a safe point DOWN into the
+        # protected zone is caught at the final hop. Uses the SAME
+        # shared helper as LaserZoneRuntimeNode so the two nodes can't
+        # disagree on the predicate.
+        self._protected_half_plane_by_fixture: dict[str, ProtectedHalfPlane] = {
+            str(f.id): protected_half_plane_for_fixture(f)
+            for f in (fixtures or [])
+            if f.type == "laser"
+        }
 
         self._last_point: defaultdict[str, tuple[int, int] | None] = defaultdict(
             lambda: None,
@@ -133,6 +152,29 @@ class LaserVectorInterlockNode:
 
             if not is_lit:
                 r = g = b = 0
+
+            # Cycle-5 panel LS2: final geometric gate. Check the
+            # protected half-plane AFTER every coordinate transformation
+            # (clamp + velocity scaling + blink limiter) so a
+            # mis-calibrated `ilda_{x,y}_{min,max}` that clamped a safe
+            # lit point into the protected zone is caught here.
+            half_plane = self._protected_half_plane_by_fixture.get(frame["fixture_id"])
+            if half_plane is not None:
+                value_on_axis = float(y if half_plane.axis == "y" else x)
+                if is_point_protected(value_on_axis, half_plane):
+                    # Force blank. Do NOT advance `last` with the
+                    # contaminated coord — keep the previous safe anchor
+                    # so subsequent points' velocity calculations don't
+                    # cascade from an in-zone position (Kilo F8).
+                    r = g = b = 0
+                    is_lit = False
+                    processed_point = ILDAPoint(
+                        x=x, y=y, r=0, g=0, b=0, blanked=True,
+                    )
+                    processed.append(processed_point)
+                    # `last` stays as the prior safe point; do NOT
+                    # update `self._last_point` with (x, y).
+                    continue
 
             processed_point = ILDAPoint(
                 x=x,

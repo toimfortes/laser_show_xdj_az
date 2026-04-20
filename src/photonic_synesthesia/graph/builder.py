@@ -416,7 +416,10 @@ def build_photonic_graph(
         check_interval=0.1,
         max_silence=max(0.5 * settings.safety.heartbeat_timeout_s, 0.05),
     )
-    nodes["laser_vector_interlock"] = LaserVectorInterlockNode(settings.safety.laser)
+    nodes["laser_vector_interlock"] = LaserVectorInterlockNode(
+        settings.safety.laser,
+        fixtures=settings.fixtures,
+    )
 
     # Professional rollout (Task 3) runtime nodes. Ordering: trigger_router
     # / preposition / surface_compositor land AFTER scene_select so they

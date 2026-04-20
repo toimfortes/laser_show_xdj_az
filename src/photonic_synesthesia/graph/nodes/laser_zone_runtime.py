@@ -22,6 +22,11 @@ from __future__ import annotations
 from typing import Any
 
 from photonic_synesthesia.core.config import FixtureConfig
+from photonic_synesthesia.graph.safety import (
+    ProtectedHalfPlane,
+    is_point_protected,
+    protected_half_plane_for_fixture,
+)
 
 
 def _channel_clamp(value: float) -> int:
@@ -33,39 +38,20 @@ def _channel_clamp(value: float) -> int:
 
 
 class LaserZoneRuntimeNode:
-    """Apply authored zone policies (brightness cap + protected blanking)."""
+    """Apply authored zone policies (brightness cap + protected blanking).
+
+    Cycle-5 panel LS2: the protected-zone predicate is now a shared
+    helper in `photonic_synesthesia.graph.safety.protected_zone`.
+    `LaserVectorInterlockNode` (the final geometric gate) imports the
+    SAME helper, guaranteeing the two nodes can't disagree on whether
+    a point is in the protected zone.
+    """
 
     def __init__(self, *, fixtures: list[FixtureConfig] | None = None) -> None:
-        self._protected_half_plane_by_fixture = {
-            str(f.id): self._protected_half_plane_for_fixture(f)
+        self._protected_half_plane_by_fixture: dict[str, ProtectedHalfPlane] = {
+            str(f.id): protected_half_plane_for_fixture(f)
             for f in (fixtures or [])
         }
-
-    @staticmethod
-    def _protected_half_plane_for_fixture(fixture: FixtureConfig) -> tuple[str, float, bool]:
-        """Return (axis, threshold, below_is_protected) from the fixture config.
-
-        Default `(y, 0.0, True)` matches cycle-1's hardcoded `y < 0` for
-        center-origin Y-up rigs.
-        """
-        override = getattr(fixture, "safety_protected_half_plane", None)
-        if isinstance(override, dict):
-            return (
-                str(override.get("axis", "y")),
-                float(override.get("threshold", 0.0)),
-                bool(override.get("below_is_protected", True)),
-            )
-        return ("y", 0.0, True)
-
-    @staticmethod
-    def _point_is_protected(
-        point: dict[str, Any],
-        axis: str,
-        threshold: float,
-        below_is_protected: bool,
-    ) -> bool:
-        value = float(point.get(axis, 0.0))
-        return (value < threshold) if below_is_protected else (value > threshold)
 
     def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
         rules = state.get("laser_zone_rules") or {}
@@ -85,13 +71,18 @@ class LaserZoneRuntimeNode:
                 raw_cap = 0.0
             brightness_cap = max(0.0, raw_cap)
             protected = bool(rule.get("protected", False)) if isinstance(rule, dict) else False
-            axis, threshold, below_is_protected = self._protected_half_plane_by_fixture.get(
-                fixture_id, ("y", 0.0, True),
+            half_plane = self._protected_half_plane_by_fixture.get(
+                fixture_id,
+                ProtectedHalfPlane(axis="y", threshold=0.0, below_is_protected=True),
             )
             new_points: list[dict[str, Any]] = []
             for point in list(frame.get("points", []) or []):
+                # Cycle-5 LS2: use the shared helper. `point[axis]` is
+                # already in ILDA int-space; `half_plane.threshold` is in
+                # the SAME space. No rescale anywhere.
+                value_on_axis = float(point.get(half_plane.axis, 0.0))
                 blanked = bool(point.get("blanked", False)) or (
-                    protected and self._point_is_protected(point, axis, threshold, below_is_protected)
+                    protected and is_point_protected(value_on_axis, half_plane)
                 )
                 new_points.append({
                     **point,

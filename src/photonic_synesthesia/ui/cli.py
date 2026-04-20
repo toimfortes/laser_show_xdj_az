@@ -1030,6 +1030,14 @@ def _validate_startup_config(settings: object, mock: bool = False) -> None:
         if not has_default_scene:
             raise SceneError(default_scene, f"Default scene file not found in {scenes_dir}")
 
+    # Cycle-5 panel LS2 Layer 2: assert the configured ILDA clamp bounds
+    # cannot push a safe point into a protected half-plane. Catches the
+    # mis-calibration class (normalized threshold in int-space, clamp
+    # bounds overlap the protected region) at CLI startup, not at
+    # runtime when the laser is already on.
+    from photonic_synesthesia.graph.safety import validate_laser_zone_config
+    validate_laser_zone_config(list(settings.fixtures), settings.safety.laser)
+
 
 @click.group()
 @click.version_option(version=__version__)
