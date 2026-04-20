@@ -37,6 +37,7 @@ Crash recovery: `atexit.register(unlink)` on the creator side plus
 from __future__ import annotations
 
 import atexit
+import fcntl
 import os
 import struct
 import sys
@@ -134,6 +135,28 @@ class WatchdogSharedState:
             self._shm = shared_memory.SharedMemory(name=self._NAME)
         self._closed = False
 
+        # Cycle-6 E6/H4: cross-process writer serialization. The
+        # docstring at module top promised `fcntl.flock` on the shmem's
+        # backing file, but the implementation only ever held
+        # `_local_lock` (in-process). Main and watchdog could write in
+        # the same window: each `_writer()` does a full
+        # read-modify-write of every field, so whichever pack ran
+        # second silently rolled back the other process's changes.
+        # Now we open a separate fd on the backing file just for
+        # flock and acquire LOCK_EX inside `_writer` after the
+        # in-process lock. Not opened on platforms that lack the
+        # backing path (Windows) — flock degrades to in-process only.
+        self._flock_fd: int | None = None
+        backing_path = f"/dev/shm/{self._NAME}"
+        try:
+            self._flock_fd = os.open(backing_path, os.O_RDWR)
+        except OSError:
+            # Backing file unavailable (non-Linux platform, restricted
+            # sandbox, /dev/shm not mounted). Cross-process serialization
+            # is impossible; fall back to in-process-only locking and
+            # accept the residual race. Production runs on Linux.
+            self._flock_fd = None
+
     @classmethod
     def _cleanup_stale_segment(cls) -> None:
         """Best-effort removal of a stale `/dev/shm` segment before
@@ -183,6 +206,14 @@ class WatchdogSharedState:
                 self._shm.close()
             except Exception:
                 pass
+            # Cycle-6 E6: close the cross-process flock fd. The kernel
+            # also releases any held flock on close(2).
+            if self._flock_fd is not None:
+                try:
+                    os.close(self._flock_fd)
+                except OSError:
+                    pass
+                self._flock_fd = None
 
     def unlink(self) -> None:
         """Manual unlink (for tests that want explicit cleanup)."""
@@ -209,30 +240,58 @@ class WatchdogSharedState:
         accessing a released memoryview.
 
         Bumps seq to odd on entry, even on exit (seqlock invariant).
-        Serialized within-process by `_local_lock`; across-process
-        races are resolved by the seqlock retry pattern on the reader
-        side.
+        Serialized within-process by `_local_lock` (cycle-6 B6) AND
+        across processes by `fcntl.flock(LOCK_EX)` on the backing
+        file (cycle-6 E6).
+
+        Lock order: `_local_lock` → `flock`. The in-process lock is
+        the outer barrier (so two threads in this process don't
+        compete for flock), the cross-process flock is inner.
 
         Cycle-6 B6: the close-check happens under `_local_lock`, so
         `close()` cannot sneak in between the check and the writes —
         it's blocked on the same lock.
+        Cycle-6 E6/H4: pre-E6 only `_local_lock` was held; main and
+        watchdog could both run their full read-modify-write of the
+        struct in parallel. Each writer reads the current state and
+        repacks ALL fields, so the second writer silently rolled back
+        the first writer's changes. Adding the flock makes the
+        read-modify-write block atomic ACROSS processes too.
         """
         with self._local_lock:
             if self._closed:
                 yield False
                 return
-            current = self._read_seq()
-            # If current is odd, another writer is in progress; wait
-            # briefly (advisory — we're racing but both writers will
-            # update seq, and the reader-retry loop handles torn
-            # states). Bump to odd (=writer active).
-            self._write_seq(current | 1 if (current & 1) == 0 else current + 1)
+            # Acquire cross-process write lock. Critical section is
+            # microseconds (read 60 bytes, mutate, write 60 bytes); a
+            # blocking flock is fine here. If the backing-file fd
+            # wasn't openable (non-Linux / sandbox), degrade to
+            # in-process-only locking.
+            flock_acquired = False
+            if self._flock_fd is not None:
+                try:
+                    fcntl.flock(self._flock_fd, fcntl.LOCK_EX)
+                    flock_acquired = True
+                except OSError:
+                    pass
             try:
-                yield True
+                current = self._read_seq()
+                # If current is odd, another writer is in progress;
+                # this should be impossible now under flock+local_lock,
+                # but the bump is defensive.
+                self._write_seq(current | 1 if (current & 1) == 0 else current + 1)
+                try:
+                    yield True
+                finally:
+                    # Bump to next even value (=stable).
+                    now = self._read_seq()
+                    self._write_seq(now + 1)
             finally:
-                # Bump to next even value (=stable).
-                now = self._read_seq()
-                self._write_seq(now + 1)
+                if flock_acquired:
+                    try:
+                        fcntl.flock(self._flock_fd, fcntl.LOCK_UN)
+                    except OSError:  # pragma: no cover — defensive
+                        pass
 
     def read(self) -> WatchdogState:
         """Consistent snapshot read. Retries until two identical `seq`
