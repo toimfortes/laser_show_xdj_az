@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import threading
 from threading import Lock
-from typing import Any
+from typing import Any, Callable
 
 from photonic_synesthesia.core.config import Settings
 from photonic_synesthesia.core.logging import get_logger
@@ -229,38 +229,68 @@ class PhotonicGraph:
         logger.info("out_of_process_watchdog_started", pid=self._watchdog_proc.pid)
 
     def stop(self) -> None:
-        """Stop all processing and clean up resources."""
+        """Stop all processing and clean up resources.
+
+        Cycle-6 C2/stop-order: per-node shutdown is wrapped in
+        try/except. Pre-C2 the first node whose stop() raised (now
+        a real possibility thanks to `join_or_raise`) prevented
+        every later node from being torn down — a single wedged
+        cv_sense worker could leak the DMX serial, the ILDA DAC,
+        and the feature-extract ProcessPool. Isolating each stop
+        call means a loud failure in one node doesn't cascade into
+        a silent leak across the rest.
+        """
         logger.info("Stopping photonic graph")
         self._running = False
 
-        # Stop background threads
-        if "audio_sense" in self.nodes:
-            self.nodes["audio_sense"].stop()
-        if "midi_sense" in self.nodes:
-            self.nodes["midi_sense"].stop()
-        if "cv_sense" in self.nodes and hasattr(self.nodes["cv_sense"], "stop"):
-            self.nodes["cv_sense"].stop()
-        if "ilda_transport" in self.nodes and hasattr(self.nodes["ilda_transport"], "stop"):
-            self.nodes["ilda_transport"].stop()
-        if "safety_interlock" in self.nodes and hasattr(self.nodes["safety_interlock"], "stop"):
-            self.nodes["safety_interlock"].stop()
+        # Ordered list of (label, callable) — ordering matters for
+        # data-flow dependencies (stop sources before sinks so the
+        # sinks don't wedge on an unblocked producer), but each call
+        # is individually protected.
+        shutdown_steps: list[tuple[str, Callable[[], None]]] = []
+
+        def _add(label: str, node_key: str, method_name: str = "stop") -> None:
+            node = self.nodes.get(node_key)
+            if node is None:
+                return
+            method = getattr(node, method_name, None)
+            if not callable(method):
+                return
+            shutdown_steps.append((label, method))
+
+        _add("audio_sense", "audio_sense")
+        _add("midi_sense", "midi_sense")
+        _add("cv_sense", "cv_sense")
+        _add("ilda_transport", "ilda_transport")
+        _add("safety_interlock", "safety_interlock")
         if self.safety_monitor is not None:
-            self.safety_monitor.stop()
-        if "ilda_output" in self.nodes and hasattr(self.nodes["ilda_output"], "stop"):
-            self.nodes["ilda_output"].stop()
-        if "dmx_output" in self.nodes:
-            self.nodes["dmx_output"].stop()
+            shutdown_steps.append(("safety_monitor", self.safety_monitor.stop))
+        _add("ilda_output", "ilda_output")
+        _add("dmx_output", "dmx_output")
         # Cycle-5 HIGH: ilda_export flushes its accumulated `.ild`
         # timeline to disk on stop(). The file represents the whole
         # show — writing it once here is O(N); writing it per tick
         # was O(N²) and unbounded in memory.
-        if "ilda_export" in self.nodes and hasattr(self.nodes["ilda_export"], "stop"):
-            self.nodes["ilda_export"].stop()
+        _add("ilda_export", "ilda_export")
         # Cycle-1 Review A: feature_extract owns a ProcessPool worker
         # (heavy DSP off the hot path). Shut it down on graph stop so
         # the child process exits cleanly instead of leaking.
-        if "feature_extract" in self.nodes and hasattr(self.nodes["feature_extract"], "close"):
-            self.nodes["feature_extract"].close()
+        _add("feature_extract", "feature_extract", method_name="close")
+
+        failed: list[tuple[str, BaseException]] = []
+        for label, call in shutdown_steps:
+            try:
+                call()
+            except BaseException as exc:  # noqa: BLE001 — teardown must continue
+                failed.append((label, exc))
+                logger.exception("node_stop_failed", node=label)
+
+        if failed:
+            logger.error(
+                "graph_stop_completed_with_failures",
+                count=len(failed),
+                nodes=[label for label, _ in failed],
+            )
         # Cycle-5 panel LS3 + Cycle-6 B3: tear down the out-of-process
         # watchdog with SIGTERM → SIGKILL escalation. `daemon=True`
         # would kill it at interpreter exit anyway, but leaving a
