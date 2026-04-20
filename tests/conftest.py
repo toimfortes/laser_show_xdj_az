@@ -14,7 +14,7 @@ if str(SRC_PATH) not in sys.path:
     sys.path.insert(0, str(SRC_PATH))
 
 
-# Cycle-6 hang-remediation (M2): per-test leak canary.
+# Cycle-6 hang-remediation (M2 + E2): per-test leak canary.
 #
 # Yesterday's crash accumulated leaked daemon threads over ~300 tests
 # before the CPU-saturation threshold was hit. This fixture turns that
@@ -25,21 +25,34 @@ if str(SRC_PATH) not in sys.path:
 # opt out (useful if a third-party pytest plugin spawns an unavoidable
 # daemon during teardown and we need a clean signal on a separate
 # failure mode). CI always runs with the canary on.
+#
+# Cycle-6 E2: the canary now compares thread IDENTs instead of filtering
+# by name prefix. Pre-E2 the whitelist included `"Thread-"`, which matches
+# Python's default auto-generated name format (`Thread-N`) for any thread
+# constructed without `name=`. A test that created
+# `threading.Thread(target=..., daemon=True)` without passing `name=`
+# would leak a daemon with a default `Thread-N` name — exactly the class
+# the canary was designed to catch — and the whitelist let it through.
+# Panel v2 (3/3 convergent, Codex + Gemini + Claude) flagged this as a
+# CRITICAL canary-bypass. The ident-based approach has no false-negative
+# surface because pytest-internal threads are snapshotted at session start
+# and every new ident is tested against that snapshot.
 _LEAK_CANARY_ENABLED = os.environ.get("PHOTONIC_LEAK_CANARY", "1") == "1"
 
-# Thread names known to be session-scoped (spawned during collection or
-# fixture setup, not per-test). Matching is prefix-based on .name.
-_SESSION_THREADS = frozenset({
-    "MainThread",
-    "pytest",
-    "Thread-",  # pytest-asyncio and friends
-    "asyncio_",
-    "ThreadPoolExecutor-",
-})
+# Populated by the `_capture_session_baseline_threads` fixture below.
+_SESSION_BASELINE_IDENTS: set[int] = set()
 
 
-def _current_ignored_thread_names() -> set[str]:
-    return {t.name for t in threading.enumerate()}
+@pytest.fixture(scope="session", autouse=True)
+def _capture_session_baseline_threads():
+    """Snapshot thread idents at session start so the per-test canary
+    can distinguish session-scoped threads (pytest-asyncio reactor,
+    ThreadPoolExecutor workers, plugin helpers) from test-scoped
+    leaks. Any thread not in this baseline that's alive at test
+    teardown is a real leak.
+    """
+    _SESSION_BASELINE_IDENTS.update(t.ident for t in threading.enumerate() if t.ident is not None)
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -54,25 +67,28 @@ def _photonic_thread_leak_canary():
         yield
         return
 
-    before_ids = {t.ident for t in threading.enumerate()}
+    before_ids = {t.ident for t in threading.enumerate() if t.ident is not None}
     yield
-    new_daemons = [
-        t
-        for t in threading.enumerate()
-        if t.ident not in before_ids and t.daemon and t.is_alive()
-    ]
-    # Filter session-scoped threads to avoid false positives from pytest
-    # infrastructure.
-    leaked = [
-        t
-        for t in new_daemons
-        if not any(t.name.startswith(prefix) for prefix in _SESSION_THREADS)
-    ]
+    leaked: list[threading.Thread] = []
+    for t in threading.enumerate():
+        if not t.is_alive() or not t.daemon or t.ident is None:
+            continue
+        # A thread is a leak IFF it was NOT in the per-test "before"
+        # set AND NOT in the session-start baseline. The session
+        # baseline covers pytest-asyncio reactors, ThreadPoolExecutor
+        # workers from plugins, MainThread, and anything else that
+        # spawned during collection.
+        if t.ident in before_ids:
+            continue
+        if t.ident in _SESSION_BASELINE_IDENTS:
+            continue
+        leaked.append(t)
+
     if leaked:
-        names = sorted({f"{t.name} (daemon={t.daemon})" for t in leaked})
+        descriptions = sorted({f"{t.name!r} (ident={t.ident}, daemon={t.daemon})" for t in leaked})
         pytest.fail(
             "Test leaked daemon thread(s). This is the pattern that caused "
-            f"the 2026-04-20 system hang. Leaked: {names}. "
+            f"the 2026-04-20 system hang. Leaked: {descriptions}. "
             "Use photonic_synesthesia.core.threadhygiene.join_or_raise() "
             "to surface the leak at its real source.",
             pytrace=False,

@@ -296,50 +296,68 @@ def test_consecutive_stale_reads_emit_diagnostic(
     a crashed writer that left seq stuck odd), the watchdog emits a
     one-shot diagnostic at the configured threshold — not silently
     tick forever."""
-    from photonic_watchdog.shmem import StaleRead
+    from photonic_watchdog.shmem import StaleRead, WatchdogState
 
     shmem = WatchdogSharedState(create=True)
     diagnostics: list[str] = []
+    # Two-phase fake `read`: raise StaleRead enough times to trigger
+    # the diagnostic, then return a stable snapshot so the loop's
+    # normal stall detection can fire SIGKILL and exit. Without this,
+    # the loop would spin forever (StaleRead → continue) and the
+    # leaked thread would trip the cycle-6 E2 leak canary.
+    stale_count = {"n": 0}
+    STALES_BEFORE_RECOVERY = 30  # > STALE_WARN_THRESHOLD (20)
 
+    def _phased_read() -> WatchdogState:
+        stale_count["n"] += 1
+        if stale_count["n"] <= STALES_BEFORE_RECOVERY:
+            raise StaleRead("synthetic stale for test")
+        # After the diagnostic has fired, return a snapshot whose
+        # main_heartbeat never changes — the loop interprets this as
+        # a hard stall and SIGKILLs (recorded by kill_recorder).
+        return WatchdogState(
+            seq=0, main_heartbeat=1, tick_number=1,
+            dmx_frames_sent=0, ilda_frames_sent=0,
+            watchdog_heartbeat=0, watchdog_pid=0,
+            blackout_requested=0, emergency_stop=0,
+        )
+
+    thread = None
     try:
-        # Capture diagnostics emitted by _write_diagnostic.
         monkeypatch.setattr(
             watchdog_loop_module,
             "_write_diagnostic",
             lambda msg: diagnostics.append(msg),
         )
+        monkeypatch.setattr(shmem, "read", _phased_read)
 
-        # Force read() to always StaleRead — simulates live-lock.
-        def _always_stale() -> None:
-            raise StaleRead("synthetic stale for test")
-
-        monkeypatch.setattr(shmem, "read", _always_stale)
-
-        # Keep thresholds aggressive so test finishes fast.
-        monkeypatch.setattr(watchdog_loop_module, "MAX_SOFT_STALL_MS", 50_000)
-        monkeypatch.setattr(watchdog_loop_module, "MAX_HARD_STALL_MS", 50_000)
+        # Keep thresholds aggressive so the diagnostic fires AND the
+        # SIGKILL escalation lets the loop exit cleanly within the test.
+        monkeypatch.setattr(watchdog_loop_module, "MAX_SOFT_STALL_MS", 50)
+        monkeypatch.setattr(watchdog_loop_module, "MAX_HARD_STALL_MS", 200)
         monkeypatch.setattr(watchdog_loop_module, "WATCHDOG_TICK_SECONDS", 0.005)
-
-        # Patch the attach in the loop so it uses our pre-made shmem.
         monkeypatch.setattr(
             watchdog_loop_module, "WatchdogSharedState", lambda create: shmem
         )
 
         thread = _run_loop_in_thread(99999)
 
-        # 20 consecutive stales × 5ms tick = 100ms; give generous slack.
+        # 20 consecutive stales × 5ms tick = 100 ms.
         assert _wait_until(
             lambda: any("stale_read_streak" in d for d in diagnostics),
             timeout_s=2.0,
         ), f"stale-read diagnostic never emitted; saw: {diagnostics}"
 
-        # Thread will keep spinning; no clean exit expected for this
-        # test. The `shmem.close()` in the fixture-style finally below
-        # terminates the loop's next read attempt.
+        # SIGKILL escalation lets the loop exit; canary requires a
+        # joined thread.
+        assert _wait_until(lambda: not thread.is_alive(), timeout_s=2.0), (
+            "watchdog loop never exited — leak canary will fail"
+        )
     finally:
         try:
             shmem.close()
             shmem.unlink()
         except Exception:
             pass
-        thread.join(timeout=1.0)
+        if thread is not None:
+            thread.join(timeout=1.0)

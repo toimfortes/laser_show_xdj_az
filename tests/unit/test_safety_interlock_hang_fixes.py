@@ -53,15 +53,19 @@ def test_heartbeat_watchdog_stop_is_loud_when_worker_wedged() -> None:
     # Worker thread that never looks at the stop signal — simulates a
     # C extension inside the callback.
     wd = HeartbeatWatchdog(on_timeout=lambda: None, timeout_s=1.0)
-    wd._thread = threading.Thread(target=lambda: wedge.wait(5.0), daemon=True)
-    wd._thread.start()
+    worker = threading.Thread(
+        target=lambda: wedge.wait(5.0), name="Heartbeat-Watchdog", daemon=True
+    )
+    worker.start()
+    wd._thread = worker
 
-    with pytest.raises(RuntimeError, match="Heartbeat-Watchdog.*failed to exit"):
-        wd.stop()
-
-    wedge.set()
-    if wd._thread is not None:
-        wd._thread.join(timeout=1.0)
+    try:
+        with pytest.raises(RuntimeError, match="Heartbeat-Watchdog.*failed to exit"):
+            wd.stop()
+    finally:
+        # stop() nulls wd._thread in its finally; keep our own ref.
+        wedge.set()
+        worker.join(timeout=1.0)
 
 
 # ----------- SafetyMonitor -----------
@@ -100,12 +104,15 @@ def test_safety_monitor_stop_is_loud_when_worker_wedged() -> None:
     monitor = SafetyMonitor(dmx_output=_make_mock_output(), check_interval=0.05)
     wedge = threading.Event()
     # Replace worker thread with an unkillable one.
-    monitor._thread = threading.Thread(target=lambda: wedge.wait(5.0), daemon=True)
-    monitor._thread.start()
+    worker = threading.Thread(
+        target=lambda: wedge.wait(5.0), name="Safety-Monitor", daemon=True
+    )
+    worker.start()
+    monitor._thread = worker
 
-    with pytest.raises(RuntimeError, match="Safety-Monitor.*failed to exit"):
-        monitor.stop()
-
-    wedge.set()
-    if monitor._thread is not None:
-        monitor._thread.join(timeout=1.0)
+    try:
+        with pytest.raises(RuntimeError, match="Safety-Monitor.*failed to exit"):
+            monitor.stop()
+    finally:
+        wedge.set()
+        worker.join(timeout=1.0)
