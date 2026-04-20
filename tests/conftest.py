@@ -21,10 +21,11 @@ if str(SRC_PATH) not in sys.path:
 # invisible accumulation into a loud per-test failure — the FIRST test
 # that leaks a daemon thread fails, not the 300th.
 #
-# Opt-in via env var for the initial land so existing flaky tests can
-# be fixed one-by-one. After one green CI cycle, flip the env-var check
-# so the canary is default-on.
-_LEAK_CANARY_ENABLED = os.environ.get("PHOTONIC_LEAK_CANARY", "0") == "1"
+# Default-on since cycle-6 Phase C. Set `PHOTONIC_LEAK_CANARY=0` to
+# opt out (useful if a third-party pytest plugin spawns an unavoidable
+# daemon during teardown and we need a clean signal on a separate
+# failure mode). CI always runs with the canary on.
+_LEAK_CANARY_ENABLED = os.environ.get("PHOTONIC_LEAK_CANARY", "1") == "1"
 
 # Thread names known to be session-scoped (spawned during collection or
 # fixture setup, not per-test). Matching is prefix-based on .name.

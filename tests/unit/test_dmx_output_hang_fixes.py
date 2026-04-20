@@ -85,41 +85,61 @@ def test_dmx_stop_is_loud_when_transmit_thread_wedges() -> None:
     stop() must raise instead of silently returning."""
     node = _make_node()
 
-    # Worker that completely ignores the stop signal. Simulates a
-    # C extension that isn't checking the Python-level flag.
+    # Worker ignores the StopSignal and only exits when the test
+    # releases `wedge` — that way the leak canary sees the thread
+    # die after the assertion. A truly-infinite `while True:
+    # time.sleep()` thread would leak past the test and trip the
+    # canary.
+    wedge = threading.Event()
+
     def _wedged_worker() -> None:
-        while True:
-            time.sleep(0.05)
+        wedge.wait(timeout=5.0)
 
-    node._thread = threading.Thread(target=_wedged_worker, name="DMX-Transmit", daemon=True)
-    node._thread.start()
+    worker = threading.Thread(target=_wedged_worker, name="DMX-Transmit", daemon=True)
+    worker.start()
+    node._thread = worker
 
-    with pytest.raises(RuntimeError, match="DMX-Transmit.*failed to exit"):
-        node.stop()
+    try:
+        with pytest.raises(RuntimeError, match="DMX-Transmit.*failed to exit"):
+            node.stop()
+    finally:
+        # `stop()` nulls `node._thread` in its finally block, so we
+        # keep our own reference to drain the wedged worker.
+        wedge.set()
+        worker.join(timeout=1.0)
 
 
 def test_dmx_start_refuses_to_double_start() -> None:
     node = _make_node()
 
-    # Pretend a previous stop left a zombie.
+    # Pretend a previous stop left a zombie. Use a releaseable Event
+    # so the leak canary sees the thread die post-test (unbounded
+    # `time.sleep(5)` would span multiple tests and trip the canary
+    # on the NEXT test in the file).
+    release = threading.Event()
     node._thread = threading.Thread(
-        target=lambda: time.sleep(5.0), name="DMX-Transmit", daemon=True
+        target=lambda: release.wait(timeout=5.0),
+        name="DMX-Transmit",
+        daemon=True,
     )
     node._thread.start()
 
-    # Keep start cheap by pretending pyftdi missing; the guard runs
-    # BEFORE the hardware open path, so the RuntimeError should fire.
-    with mock.patch(
-        "photonic_synesthesia.graph.nodes.dmx_output.PYFTDI_AVAILABLE", True
-    ):
+    try:
+        # Keep start cheap by pretending pyftdi missing; the guard runs
+        # BEFORE the hardware open path, so the RuntimeError should fire.
         with mock.patch(
-            "photonic_synesthesia.graph.nodes.dmx_output.serial_for_url"
-        ) as fake_open:
-            with pytest.raises(RuntimeError, match="refusing to double-start"):
-                node.start()
-            fake_open.assert_not_called()
-
-    # Cleanup — let the sleeping daemon die out after the test ends.
+            "photonic_synesthesia.graph.nodes.dmx_output.PYFTDI_AVAILABLE", True
+        ):
+            with mock.patch(
+                "photonic_synesthesia.graph.nodes.dmx_output.serial_for_url"
+            ) as fake_open:
+                with pytest.raises(RuntimeError, match="refusing to double-start"):
+                    node.start()
+                fake_open.assert_not_called()
+    finally:
+        release.set()
+        if node._thread is not None:
+            node._thread.join(timeout=1.0)
 
 
 def test_dmx_stop_returns_fast_under_normal_load() -> None:
