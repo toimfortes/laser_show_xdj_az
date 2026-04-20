@@ -552,12 +552,27 @@ class PlaybackContext:
         payload: dict[str, Any] | None = None
         # Cycle-3-rev-2 R1+R3 lock pattern: persistence_lock outermost,
         # _lock brief inside for memory ops only.
+        #
+        # Cycle-5 HIGH (R3): the previous impl did SIX `copy.deepcopy()`
+        # calls per single-field edit, including ONE full-list deepcopy
+        # of `_base_show_sections`. For a 5-min show that's ~20 ms
+        # inside `_lock` — enough to drop multiple 50 Hz graph frames
+        # per UI patch. The cost is structural: we only need to deep-
+        # copy the SECTION being modified (so mutations don't leak
+        # back via aliased references), not the whole list.
         with self._persistence_lock:
             with self._lock:
                 for index, section in enumerate(self.show_sections):
                     if str(section.get("id")) != section_id:
                         continue
-                    updated = copy.deepcopy(self._base_show_sections[index] if index < len(self._base_show_sections) else section)
+                    # Deepcopy ONLY the target base section (its nested
+                    # cue_recipe/laser_program dicts must not alias).
+                    base_source = (
+                        self._base_show_sections[index]
+                        if index < len(self._base_show_sections)
+                        else section
+                    )
+                    updated = copy.deepcopy(base_source)
                     for key, value in changes.items():
                         if key in {
                             "scene_id",
@@ -579,11 +594,17 @@ class PlaybackContext:
                             updated[key] = str(value)
                         elif "." in key:
                             _apply_nested_change(updated, key, value)
-                    new_base = copy.deepcopy(self._base_show_sections)
+                    # Build the new base via SHALLOW list copy + single-
+                    # element replacement. Other section dicts remain
+                    # aliased with the old `_base_show_sections` until
+                    # `_replace_show_sections_locked` re-seats them via
+                    # its own deepcopy. Total deepcopy work: one section
+                    # here + the helper's one full-list deepcopy.
+                    new_base = list(self._base_show_sections)
                     if index < len(new_base):
-                        new_base[index] = copy.deepcopy(updated)
+                        new_base[index] = updated
                     else:
-                        new_base.append(copy.deepcopy(updated))
+                        new_base.append(updated)
                     self._replace_show_sections_locked(new_base)
                     payload = self._show_plan_payload_locked()
                     updated_section = copy.deepcopy(self.show_sections[index])

@@ -838,7 +838,24 @@ class ILDADACOutputNode:
             state["processing_times"]["ilda_output"] = time.time() - start_time
             return state
 
-        if self._blackout_requested:
+        # Cycle-5 MEDIUM (self-audit LS1 defense-in-depth): independently
+        # verify `state["safety_state"]` instead of trusting that
+        # upstream ILDAOutputNode produced blank frames when safety is
+        # tripped. Without this check, a future refactor that rewires
+        # the pipeline OR any path that produces non-blank frames after
+        # safety_interlock fires would reach hardware unchecked. On a
+        # laser controller, the output stage must independently verify
+        # safety — never trust upstream unconditionally.
+        safety_state = state.get("safety_state") or {}
+        control_state = state.get("control_state") or {}
+        safety_requires_blackout = (
+            self._blackout_requested
+            or bool(safety_state.get("emergency_stop"))
+            or not bool(safety_state.get("laser_enabled", True))
+            or not bool(control_state.get("armed_live", True))
+            or bool(control_state.get("blackout_active"))
+        )
+        if safety_requires_blackout:
             frames = [self._blank_frame_for_fixture(fixture) for fixture in self.ilda_fixtures]
             self._stream_frames(self._merge_frames_for_dac(frames))
         else:

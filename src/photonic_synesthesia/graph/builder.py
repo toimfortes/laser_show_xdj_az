@@ -225,6 +225,16 @@ class PhotonicGraph:
                 "Dual-loop runtime flag is enabled, but single-loop execution path is active",
             )
 
+        # Cycle-5 LOW (Review 1): slow-frame telemetry. Previously frame
+        # overruns only logged under `settings.debug`, which means
+        # production post-crash logs tell oncall nothing about WHICH
+        # node missed its budget. Emit a rate-limited production log
+        # with the top-N per-node processing_times so the 3 a.m.
+        # debugging hole has a floor.
+        _OVERRUN_LOG_INTERVAL_S = 5.0
+        _last_overrun_log = 0.0
+        _overruns_since_last_log = 0
+
         try:
             self.start()
             while self._running:
@@ -239,12 +249,39 @@ class PhotonicGraph:
                         self._sleep_with_hybrid_pacing(sleep_time)
                     else:
                         time.sleep(sleep_time)
-                elif self.settings.debug:
-                    logger.warning(
-                        "Frame overrun",
-                        elapsed_ms=elapsed * 1000,
-                        target_ms=frame_time * 1000,
-                    )
+                else:
+                    _overruns_since_last_log += 1
+                    now = time.monotonic()
+                    if now - _last_overrun_log >= _OVERRUN_LOG_INTERVAL_S:
+                        # Build the top-N per-node timing table so
+                        # oncall can see which node is over budget
+                        # WITHOUT digging into the live-state API.
+                        pt = self._state.get("processing_times", {}) or {}
+                        top = sorted(
+                            pt.items(), key=lambda kv: kv[1] if isinstance(kv[1], (int, float)) else 0.0,
+                            reverse=True,
+                        )[:5]
+                        top_ms = [
+                            (name, round(t * 1000, 2))
+                            for name, t in top
+                            if isinstance(t, (int, float))
+                        ]
+                        logger.warning(
+                            "frame_overrun",
+                            elapsed_ms=round(elapsed * 1000, 2),
+                            target_ms=round(frame_time * 1000, 2),
+                            overruns_since_last_log=_overruns_since_last_log,
+                            top_node_times_ms=top_ms,
+                        )
+                        _last_overrun_log = now
+                        _overruns_since_last_log = 0
+                    elif self.settings.debug:
+                        # Debug mode still emits every overrun for fine-grained tracing.
+                        logger.warning(
+                            "Frame overrun",
+                            elapsed_ms=elapsed * 1000,
+                            target_ms=frame_time * 1000,
+                        )
         finally:
             self.stop()
 
