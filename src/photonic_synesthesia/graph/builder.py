@@ -133,6 +133,11 @@ class PhotonicGraph:
             self.nodes["ilda_output"].stop()
         if "dmx_output" in self.nodes:
             self.nodes["dmx_output"].stop()
+        # Cycle-1 Review A: feature_extract owns a ProcessPool worker
+        # (heavy DSP off the hot path). Shut it down on graph stop so
+        # the child process exits cleanly instead of leaking.
+        if "feature_extract" in self.nodes and hasattr(self.nodes["feature_extract"], "close"):
+            self.nodes["feature_extract"].close()
 
     def _publish_playback_snapshot(self) -> None:
         """Publish one playback_snapshot per tick + reset frame-local artifacts.
