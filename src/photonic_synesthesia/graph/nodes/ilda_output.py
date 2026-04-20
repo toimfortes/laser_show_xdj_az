@@ -12,6 +12,7 @@ from typing import Any, Callable
 from photonic_synesthesia.core.config import FixtureConfig, ILDAConfig, LaserSafetyConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import ILDAFrame, ILDAPoint, MusicStructure, PhotonicState
+from photonic_synesthesia.core.threadhygiene import join_or_raise
 from photonic_synesthesia.director.palettes import (
     DEFAULT_PALETTE,
     Palette,
@@ -732,23 +733,36 @@ class ILDADACOutputNode:
         self._watchdog_shmem = shmem
 
     def start(self) -> None:
+        """Start the ILDA emergency-output thread.
+
+        Cycle-6 B2: raises on double-start. Pre-B2 the check silently
+        skipped if a worker was alive, which hid the case where a
+        previous stop() timed out — a zombie Emergency-Output thread
+        is safety-critical to catch.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                "ILDA-Emergency-Output already running; refusing to double-start. "
+                "A previous stop() likely left a zombie — see threadhygiene."
+            )
         self._running = True
         self._ether_dream_faulted = False
         self._blackout_requested = False
         self._thread_stop.clear()
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(
-                target=self._emergency_loop,
-                name="ILDA-Emergency-Output",
-                daemon=True,
-            )
-            self._thread.start()
+        self._thread = threading.Thread(
+            target=self._emergency_loop,
+            name="ILDA-Emergency-Output",
+            daemon=True,
+        )
+        self._thread.start()
 
     def stop(self) -> None:
+        """Stop the emergency thread + close DAC. Raises if the thread wedges."""
         self._running = False
         self._thread_stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
+        try:
+            join_or_raise(self._thread, timeout=1.0, name="ILDA-Emergency-Output")
+        finally:
             self._thread = None
         self._clear_emergency()
 
