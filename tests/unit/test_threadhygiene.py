@@ -189,3 +189,56 @@ def test_shutdown_executor_kills_wedged_process_pool_worker() -> None:
     # Future itself is not required to be cancelled (the child was
     # running, not pending), but the child exit code should be set.
     assert future.cancelled() or future.done() or True  # tolerant — the real pin is child death
+
+
+# ---------- shutdown_executor: ThreadPool bounded-wait (E4) ----------
+
+
+def test_shutdown_executor_thread_pool_returns_within_timeout_when_wedged() -> None:
+    """E4 invariant: pre-E4, ThreadPool shutdown did `wait=True` which
+    blocks indefinitely on a wedged worker. Now the helper polls
+    threads with a real deadline and returns within ~timeout, even if
+    the worker thread refuses to exit."""
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    wedge = threading.Event()
+    started = threading.Event()
+
+    def _wedged() -> None:
+        started.set()
+        wedge.wait(timeout=10.0)  # only exits when test releases
+
+    pool.submit(_wedged)
+    assert started.wait(timeout=1.0), "wedged worker never started"
+
+    t0 = time.monotonic()
+    shutdown_executor(pool, timeout=0.3, name="wedged-thread-pool")
+    elapsed = time.monotonic() - t0
+
+    # The HONEST contract: helper returns within ~timeout. Pre-E4 this
+    # would block on shutdown(wait=True) until the worker exited.
+    assert elapsed < 1.0, (
+        f"shutdown_executor on wedged ThreadPool blocked for {elapsed:.2f}s; "
+        f"expected ~0.3s bounded wait"
+    )
+
+    # Cleanup — the daemon-style test thread won't exit on its own; we
+    # release wedge so the leak canary doesn't trip.
+    wedge.set()
+
+
+def test_shutdown_executor_thread_pool_clean_path_does_not_log_warning(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """If all worker threads exit cleanly, no warning should be emitted."""
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+    pool.submit(lambda: None)
+    pool.submit(lambda: None)
+    # Give the workers a moment to grab and run the no-ops.
+    time.sleep(0.05)
+
+    shutdown_executor(pool, timeout=1.0, name="clean-thread-pool")
+
+    captured = capfd.readouterr()
+    assert "did not exit" not in captured.err, (
+        f"unexpected warning on clean shutdown: {captured.err!r}"
+    )
