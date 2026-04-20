@@ -8,6 +8,7 @@ findings (recorded in `/tmp/rig_panel/r1_*.txt`).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -471,3 +472,128 @@ def test_list_available_profiles_reports_metadata(fixtures_dir):
 
 def test_list_available_profiles_returns_empty_for_missing_dir(tmp_path):
     assert list_available_profiles(tmp_path / "nope") == []
+
+
+# ---------------------------------------------------------------------------
+# Cycle-4 self-audit M1: orphan `.tmp` sweep
+
+
+def test_list_rigs_sweeps_old_orphan_tmp_files():
+    """Orphan `*.json.tmp` files older than the threshold MUST be
+    removed by `list_rigs()` so they don't accumulate. Simulates a
+    crash between `tmp.write_text` and `os.replace` by manually
+    creating a stale `.tmp` file."""
+    import os as _os
+
+    save_rig("normal_rig", [_laser_fixture()])
+    root = rigs_root()
+    stale_tmp = root / "crashed_save.json.tmp"
+    stale_tmp.write_text('{"partial": true}', encoding="utf-8")
+    # Backdate its mtime to 2 hours ago (past the 1h threshold).
+    two_hours_ago = time.time() - 7200
+    _os.utime(stale_tmp, (two_hours_ago, two_hours_ago))
+
+    assert stale_tmp.is_file()
+    list_rigs()  # triggers the sweep
+    assert not stale_tmp.exists(), "stale .tmp should have been swept"
+
+
+def test_list_rigs_preserves_recent_tmp_files():
+    """Recent `.tmp` files (< threshold) MUST be left alone — they
+    could belong to an in-flight save about to complete."""
+    save_rig("normal_rig", [_laser_fixture()])
+    root = rigs_root()
+    recent_tmp = root / "in_progress.json.tmp"
+    recent_tmp.write_text('{"partial": true}', encoding="utf-8")
+    # mtime = now (just created); below threshold.
+    assert recent_tmp.is_file()
+    list_rigs()
+    assert recent_tmp.is_file(), "recent .tmp should be preserved"
+
+
+def test_sweep_orphan_tmp_files_returns_removed_count(tmp_path):
+    """Direct unit test for `_sweep_orphan_tmp_files` — counts removed."""
+    import os as _os
+
+    from photonic_synesthesia.platform.rig_storage import _sweep_orphan_tmp_files
+
+    root = rigs_root()
+    root.mkdir(parents=True, exist_ok=True)
+    # 3 stale, 2 recent
+    for i in range(3):
+        p = root / f"stale_{i}.json.tmp"
+        p.write_text("x", encoding="utf-8")
+        _os.utime(p, (time.time() - 7200, time.time() - 7200))
+    for i in range(2):
+        p = root / f"recent_{i}.json.tmp"
+        p.write_text("x", encoding="utf-8")
+    removed = _sweep_orphan_tmp_files()
+    assert removed == 3
+
+
+# ---------------------------------------------------------------------------
+# Cycle-4 self-audit M3: payload size caps
+
+
+def test_save_rig_rejects_too_many_fixtures():
+    """> _MAX_FIXTURES_PER_RIG fixtures → ValueError, no file written."""
+    from photonic_synesthesia.platform.rig_storage import _MAX_FIXTURES_PER_RIG
+
+    too_many = [_laser_fixture(f"f-{i}", address=(i % 500) + 1) for i in range(_MAX_FIXTURES_PER_RIG + 1)]
+    with pytest.raises(ValueError, match="max is"):
+        save_rig("huge_rig", too_many)
+    assert not rig_path("huge_rig").exists()
+
+
+def test_save_rig_rejects_oversized_label():
+    """label > _MAX_LABEL_CHARS → ValueError."""
+    from photonic_synesthesia.platform.rig_storage import _MAX_LABEL_CHARS
+
+    bad = _laser_fixture("laser-1")
+    bad["label"] = "A" * (_MAX_LABEL_CHARS + 1)
+    with pytest.raises(ValueError, match="label exceeds"):
+        save_rig("bad_rig", [bad])
+    assert not rig_path("bad_rig").exists()
+
+
+def test_save_rig_rejects_oversized_string_field():
+    """Any string field > _MAX_STRING_FIELD_CHARS → ValueError."""
+    from photonic_synesthesia.platform.rig_storage import _MAX_STRING_FIELD_CHARS
+
+    bad = _laser_fixture("laser-1")
+    bad["color"] = "#" + "A" * (_MAX_STRING_FIELD_CHARS + 10)
+    with pytest.raises(ValueError, match="exceeds"):
+        save_rig("bad_rig", [bad])
+
+
+def test_save_rig_rejects_oversized_json_payload():
+    """Total JSON > _MAX_RIG_PAYLOAD_BYTES → ValueError.
+
+    Constructed so no individual string field exceeds `_MAX_STRING_FIELD_CHARS`
+    and fixture count is under `_MAX_FIXTURES_PER_RIG` — only the
+    total-byte backstop should catch this.
+    """
+    from photonic_synesthesia.platform.rig_storage import (
+        _MAX_STRING_FIELD_CHARS,
+        _MAX_RIG_PAYLOAD_BYTES,
+    )
+
+    bad = _laser_fixture("laser-1")
+    # Nested list of strings, each under the per-field cap but
+    # totaling > 8 MB. 9000 strings * 1000 chars ≈ 9 MB.
+    big_list = ["X" * (_MAX_STRING_FIELD_CHARS - 10) for _ in range(9000)]
+    bad["extra_payload"] = {"data": big_list}
+    with pytest.raises(ValueError, match="bytes; max is"):
+        save_rig("bad_rig", [bad])
+
+
+def test_save_rig_accepts_reasonable_payload():
+    """Verify the caps don't reject a realistic rig (sanity check)."""
+    reasonable = [
+        _laser_fixture(f"laser-{i}", address=(i * 9) + 1)
+        for i in range(20)  # 20 lasers — more than a realistic stage
+    ]
+    for f in reasonable:
+        f["label"] = "Reasonably Named Laser With Descriptive Words But Not Absurd"
+    path = save_rig("reasonable_rig", reasonable)
+    assert path.is_file()

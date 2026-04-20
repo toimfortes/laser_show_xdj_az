@@ -23,6 +23,7 @@ import copy
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -163,6 +164,39 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
+# Cycle-4 self-audit M1: orphan `.tmp` cleanup threshold.
+# If the process crashes (SIGKILL, OOM, power loss) between `tmp.write_text`
+# and `os.replace`, the `.tmp` sibling is left behind. `list_rigs` filters
+# `.json` files and doesn't see these orphans, so they accumulate silently.
+# Sweep any `.tmp` file older than this threshold.
+_ORPHAN_TMP_MAX_AGE_SECONDS = 3600  # 1 hour
+
+
+def _sweep_orphan_tmp_files() -> int:
+    """Remove orphan `*.json.tmp` files older than the threshold.
+
+    Called opportunistically from `list_rigs()` (every UI poll ≈ 5 s) so
+    no dedicated sweeper thread is required. Total function — never
+    raises; best-effort cleanup with WARN-level log on any failure.
+    Returns the count of files removed (for testing).
+    """
+    root = rigs_root()
+    if not root.is_dir():
+        return 0
+    now = time.time()
+    removed = 0
+    for entry in root.glob("*.json.tmp"):
+        try:
+            if now - entry.stat().st_mtime > _ORPHAN_TMP_MAX_AGE_SECONDS:
+                entry.unlink(missing_ok=True)
+                removed += 1
+        except OSError as exc:
+            logger.warning("orphan_tmp_sweep_failed", path=str(entry), error=str(exc))
+    if removed > 0:
+        logger.info("orphan_tmp_sweep", removed=removed)
+    return removed
+
+
 def _now_iso_utc_z() -> str:
     """Return current UTC time as ISO 8601 with literal Z suffix.
 
@@ -222,6 +256,60 @@ def _validate_unique_ids(fixtures: list[dict[str, Any]]) -> None:
         seen.add(fid)
 
 
+# Cycle-4 self-audit M3: per-fixture + total-payload size caps.
+# `PUT /api/mock/rigs/{name}` + `POST /api/mock/rigs/{name}/snapshot`
+# both land in `save_rig`. Without caps, a local attacker (or a buggy
+# browser extension) could submit a rig with multi-MB string fields and
+# fill the XDG_DATA_HOME disk quota. Numbers chosen to be comfortably
+# above legitimate use (255 chars > any reasonable label; 2000 fixtures
+# > any real stage; 8 MB payload > realistic rig) but low enough to
+# fail fast on abuse.
+_MAX_LABEL_CHARS = 255
+_MAX_STRING_FIELD_CHARS = 1024
+_MAX_FIXTURES_PER_RIG = 2000
+_MAX_RIG_PAYLOAD_BYTES = 8 * 1024 * 1024  # 8 MB
+
+
+def _validate_payload_size_limits(fixtures: list[dict[str, Any]]) -> None:
+    """Cycle-4 self-audit M3: reject oversized rig payloads at save time.
+
+    Enforces:
+      - At most `_MAX_FIXTURES_PER_RIG` fixtures per rig.
+      - At most `_MAX_LABEL_CHARS` chars on the `label` field.
+      - At most `_MAX_STRING_FIELD_CHARS` on any other string field.
+      - At most `_MAX_RIG_PAYLOAD_BYTES` when JSON-serialized.
+
+    Raises ValueError on first violation — no file written.
+    """
+    if len(fixtures) > _MAX_FIXTURES_PER_RIG:
+        raise ValueError(
+            f"rig has {len(fixtures)} fixtures; max is {_MAX_FIXTURES_PER_RIG}"
+        )
+    for fixture in fixtures:
+        fid = fixture.get("id", "<unknown>")
+        label = fixture.get("label", "")
+        if isinstance(label, str) and len(label) > _MAX_LABEL_CHARS:
+            raise ValueError(
+                f"fixture {fid!r} label exceeds {_MAX_LABEL_CHARS} chars "
+                f"(got {len(label)})"
+            )
+        for key, value in fixture.items():
+            if key == "label":
+                continue  # covered above
+            if isinstance(value, str) and len(value) > _MAX_STRING_FIELD_CHARS:
+                raise ValueError(
+                    f"fixture {fid!r} field {key!r} exceeds "
+                    f"{_MAX_STRING_FIELD_CHARS} chars (got {len(value)})"
+                )
+    # Final backstop: total JSON size. Catches deeply-nested blobs that
+    # slip past the per-field checks.
+    size = len(json.dumps(fixtures))
+    if size > _MAX_RIG_PAYLOAD_BYTES:
+        raise ValueError(
+            f"rig payload is {size} bytes; max is {_MAX_RIG_PAYLOAD_BYTES}"
+        )
+
+
 def save_rig(name: str, fixtures: list[dict[str, Any]]) -> Path:
     """Persist a rig under the given name, server-stamping schema + timestamp.
 
@@ -236,6 +324,7 @@ def save_rig(name: str, fixtures: list[dict[str, Any]]) -> Path:
     _validate_name(name)
     _validate_unique_ids(fixtures)
     _validate_type_profile_invariant(fixtures)
+    _validate_payload_size_limits(fixtures)  # cycle-4 self-audit M3
     payload = {
         _SCHEMA_KEY: RIG_SCHEMA_VERSION,
         "name": name,
@@ -291,10 +380,15 @@ def list_rigs() -> list[dict[str, Any]]:
     Total function: never raises; returns [] if the rigs directory does
     not yet exist or any individual file is corrupt (corrupt files are
     skipped with a warning log).
+
+    Cycle-4 self-audit M1: opportunistically sweeps orphan `*.json.tmp`
+    files older than `_ORPHAN_TMP_MAX_AGE_SECONDS` on every call. The
+    UI polls this endpoint every ~5 s so orphans don't accumulate.
     """
     root = rigs_root()
     if not root.is_dir():
         return []
+    _sweep_orphan_tmp_files()  # cycle-4 self-audit M1
     items: list[dict[str, Any]] = []
     active = get_active_rig_name()
     for entry in sorted(root.glob("*.json")):

@@ -231,6 +231,39 @@ def test_f_log_endpoint_emits_request_and_response_logs(monkeypatch) -> None:
     assert "duration_ms" in response_events[0][1]
 
 
+def test_review_b_high6_duplicate_patch_with_same_args_does_not_retrigger_regen() -> None:
+    """Cycle-4 post-merge audit Review B HIGH-6: a duplicate PATCH with
+    the same selection_mode value (client timeout → retry scenario)
+    MUST NOT retrigger the regen. The `normalized_mode == current_mode`
+    short-circuit in `_regenerate_selection` closes this by design;
+    this test pins it so future refactors can't regress the guarantee.
+    """
+    ctx = _ctx_with_section()
+    call_count = {"n": 0}
+
+    def _counting_regen(mode, variance):
+        call_count["n"] += 1
+        return [{"id": f"sec-regen-{call_count['n']}",
+                 "section_role": "intro", "start_seconds": 0.0, "end_seconds": 60.0}]
+
+    ctx._regenerate_callback = _counting_regen
+    ctx._save_callback = lambda payload: None
+
+    # First PATCH: regen runs.
+    ctx.set_selection_mode("ai_assisted")
+    assert call_count["n"] == 1
+
+    # Client retry with the SAME value: must NOT re-run the regen.
+    ctx.set_selection_mode("ai_assisted")
+    assert call_count["n"] == 1, (
+        "duplicate PATCH with same args must short-circuit, not re-run regen"
+    )
+
+    # Different value: regen does run.
+    ctx.set_selection_mode("local_ollama_cpu")
+    assert call_count["n"] == 2
+
+
 def test_f_log_endpoint_records_duration_under_normal_load(monkeypatch) -> None:
     """F-LOG: the `duration_ms` field is populated and bounded for a
     normal-cost endpoint."""

@@ -710,6 +710,19 @@ class PlaybackContext:
             selection_variance if selection_variance is not None else current_variance
         )
         if normalized_mode == current_mode and normalized_variance == current_variance:
+            # Cycle-4 post-merge audit Review B HIGH-6: this no-op short-
+            # circuit doubles as the idempotency guard for client-side
+            # retries. Scenario:
+            #   1. client PATCH selection-mode=ai_assisted, 10s timeout
+            #   2. server regen completes, state flips to ai_assisted
+            #   3. client's fetch aborts on timeout anyway
+            #   4. user clicks again, second PATCH ai_assisted arrives
+            # Step 4 lands here (current mode == requested mode) and
+            # returns a snapshot without re-running the regen. A "double
+            # regen" is only possible if the client retries with a
+            # DIFFERENT value from what the server now holds, which is
+            # the user's current intent by definition. No further
+            # idempotency-key header needed.
             return self.snapshot()
 
         # Cycle-3 destructive review F-EXEC + F-TIMEOUT: run the
