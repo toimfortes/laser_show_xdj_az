@@ -17,6 +17,7 @@ import numpy as np
 from photonic_synesthesia.core.config import CVConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import CVState, PhotonicState
+from photonic_synesthesia.core.threadhygiene import StopSignal, join_or_raise
 
 logger = get_logger(__name__)
 
@@ -78,13 +79,23 @@ class CVSenseNode:
             capture_timestamp=0.0,
         )
         self._worker_thread: threading.Thread | None = None
-        self._worker_running = False
+        self._worker_stop = StopSignal()
 
     def start(self) -> None:
-        """Start background capture worker for threaded mode."""
-        if not self.enabled or not self.cv_threaded or self._worker_running:
+        """Start background capture worker for threaded mode.
+
+        Cycle-6 A1: guard against double-start. If a previous
+        `stop()` silently timed out and left a zombie worker (the
+        pattern that caused the 2026-04-20 incident), refuse to
+        spawn a second — the caller must fix the underlying wedge."""
+        if not self.enabled or not self.cv_threaded:
             return
-        self._worker_running = True
+        if self._worker_thread is not None and self._worker_thread.is_alive():
+            raise RuntimeError(
+                "CV-Sense worker already running; refusing to double-start. "
+                "Previous stop() likely timed out — see threadhygiene.join_or_raise."
+            )
+        self._worker_stop.clear()
         self._worker_thread = threading.Thread(
             target=self._worker_loop,
             name="CV-Sense",
@@ -93,11 +104,13 @@ class CVSenseNode:
         self._worker_thread.start()
 
     def stop(self) -> None:
-        """Stop background capture worker."""
-        self._worker_running = False
-        if self._worker_thread is not None:
-            self._worker_thread.join(timeout=1.0)
-            self._worker_thread = None
+        """Stop background capture worker.
+
+        Cycle-6 A1: uses `join_or_raise` so a stuck cv2/mss call
+        surfaces loudly instead of silently leaking the thread."""
+        self._worker_stop.stop()
+        join_or_raise(self._worker_thread, timeout=1.0, name="CV-Sense")
+        self._worker_thread = None
 
     def _load_digit_templates(self, template_dir: Path) -> None:
         """Load pre-rendered digit templates for template matching."""
@@ -150,12 +163,18 @@ class CVSenseNode:
         return state
 
     def _worker_loop(self) -> None:
-        """Capture CV state in a background thread for low-jitter graph reads."""
-        while self._worker_running:
+        """Capture CV state in a background thread for low-jitter graph reads.
+
+        Cycle-6 A1: wait on `_worker_stop` (StopSignal) instead of
+        `time.sleep()` so the loop wakes immediately on stop(), not
+        on the next sleep boundary."""
+        while not self._worker_stop.stopped():
             now = time.time()
             if now - self._last_capture_time >= self._capture_interval:
                 self._refresh_cached_state(now)
-            time.sleep(min(0.005, self._capture_interval / 4))
+            # `wait` returns True if stop fired during the sleep, in
+            # which case the while condition exits on the next iteration.
+            self._worker_stop.wait(min(0.005, self._capture_interval / 4))
 
     def _refresh_cached_state(self, capture_time: float) -> None:
         """Refresh cached CV state from the latest capture."""
