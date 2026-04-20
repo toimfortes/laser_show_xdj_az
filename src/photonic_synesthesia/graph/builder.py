@@ -77,6 +77,7 @@ class PhotonicGraph:
         nodes: dict[str, Any],
         control_plane_service: ControlPlaneStateService | None = None,
         safety_monitor: SafetyMonitor | None = None,
+        enable_out_of_process_watchdog: bool | None = None,
     ):
         self.graph = graph
         self.settings = settings
@@ -88,6 +89,21 @@ class PhotonicGraph:
         self._state_lock = Lock()
         self.hybrid_pacing = settings.runtime_flags.hybrid_pacing
         self.dual_loop = settings.runtime_flags.dual_loop
+
+        # Cycle-5 panel LS3: out-of-process watchdog. Opt-in via env
+        # var `PHOTONIC_WATCHDOG=1` (default off to preserve existing
+        # test behavior + single-process deployments). When enabled,
+        # the watchdog spawns on start() and SIGKILLs main on
+        # hard stalls. Graph tick writes heartbeat to shmem every
+        # step(). See `photonic_watchdog/` for the out-of-process
+        # module — stdlib-only imports required.
+        if enable_out_of_process_watchdog is None:
+            import os as _os
+            enable_out_of_process_watchdog = _os.environ.get("PHOTONIC_WATCHDOG", "0") == "1"
+        self._enable_watchdog = enable_out_of_process_watchdog
+        self._watchdog_proc: Any = None  # multiprocessing.Process | None
+        self._watchdog_shmem: Any = None  # WatchdogSharedState | None
+        self._tick_number = 0
 
     def start(self) -> None:
         """Start all sensor nodes and begin processing."""
@@ -111,6 +127,84 @@ class PhotonicGraph:
             self.nodes["safety_interlock"].start()
         if self.safety_monitor is not None:
             self.safety_monitor.start()
+        if self._enable_watchdog:
+            self._start_out_of_process_watchdog()
+
+    def _start_out_of_process_watchdog(self) -> None:
+        """Cycle-5 panel LS3: spawn the GIL-immune watchdog.
+
+        MUST use `spawn` start method. `fork` inherits lock state
+        from this process's daemon threads (SafetyMonitor,
+        ILDA-Emergency-Output) and can deadlock.
+        """
+        import multiprocessing
+        import os
+        import signal as _signal
+
+        try:
+            from photonic_watchdog.shmem import WatchdogSharedState
+            from photonic_watchdog.loop import watchdog_loop
+        except ImportError as exc:
+            logger.warning("out_of_process_watchdog_unavailable", error=str(exc))
+            self._enable_watchdog = False
+            return
+
+        try:
+            self._watchdog_shmem = WatchdogSharedState(create=True)
+        except Exception as exc:
+            logger.warning("watchdog_shmem_init_failed", error=str(exc))
+            self._enable_watchdog = False
+            return
+
+        # Install SIGUSR1 handler: watchdog's soft-escalation path.
+        # Runs in the Python interpreter thread when it next reaches
+        # a bytecode boundary. Triggers emergency_blackout on every
+        # output node that supports it.
+        def _on_sigusr1(signum: int, frame: Any) -> None:
+            logger.warning("watchdog_sigusr1_received_emergency_blackout")
+            for node_name in ("dmx_output", "ilda_output", "ilda_transport"):
+                node = self.nodes.get(node_name)
+                if node is None:
+                    continue
+                handler = (
+                    getattr(node, "emergency_blackout", None)
+                    or getattr(node, "request_blackout", None)
+                    or getattr(node, "blackout", None)
+                )
+                if callable(handler):
+                    try:
+                        handler()
+                    except Exception:  # pragma: no cover — defensive
+                        logger.exception("watchdog_sigusr1_handler_failed")
+
+        try:
+            _signal.signal(_signal.SIGUSR1, _on_sigusr1)
+        except (OSError, ValueError) as exc:
+            # Windows / non-main-thread context. Log + continue;
+            # SIGKILL path still works via the watchdog.
+            logger.warning("sigusr1_install_failed", error=str(exc))
+
+        ctx = multiprocessing.get_context("spawn")
+        self._watchdog_proc = ctx.Process(
+            target=watchdog_loop,
+            args=(os.getpid(),),
+            name="photonic-watchdog",
+            daemon=True,
+        )
+        self._watchdog_proc.start()
+
+        # Cycle-5 panel LS3 (Kilo F4): give the in-process ILDA emergency
+        # thread visibility into the watchdog's `blackout_requested` flag
+        # so a soft-stall escalation produces DAC blank frames even if
+        # SIGUSR1 is still pending delivery on the main thread.
+        ilda_node = self.nodes.get("ilda_output")
+        if ilda_node is not None and hasattr(ilda_node, "attach_watchdog_shmem"):
+            ilda_node.attach_watchdog_shmem(self._watchdog_shmem)
+        ilda_transport = self.nodes.get("ilda_transport")
+        if ilda_transport is not None and hasattr(ilda_transport, "attach_watchdog_shmem"):
+            ilda_transport.attach_watchdog_shmem(self._watchdog_shmem)
+
+        logger.info("out_of_process_watchdog_started", pid=self._watchdog_proc.pid)
 
     def stop(self) -> None:
         """Stop all processing and clean up resources."""
@@ -145,6 +239,24 @@ class PhotonicGraph:
         # the child process exits cleanly instead of leaking.
         if "feature_extract" in self.nodes and hasattr(self.nodes["feature_extract"], "close"):
             self.nodes["feature_extract"].close()
+        # Cycle-5 panel LS3: tear down the out-of-process watchdog
+        # cleanly. `daemon=True` would kill it at interpreter exit
+        # anyway, but a clean terminate + join() lets the /dev/shm
+        # segment be unlinked without a race against atexit.
+        if self._watchdog_proc is not None:
+            try:
+                self._watchdog_proc.terminate()
+                self._watchdog_proc.join(timeout=2.0)
+            except Exception:
+                pass
+            self._watchdog_proc = None
+        if self._watchdog_shmem is not None:
+            try:
+                self._watchdog_shmem.close()
+                self._watchdog_shmem.unlink()
+            except Exception:
+                pass
+            self._watchdog_shmem = None
 
     def _publish_playback_snapshot(self) -> None:
         """Publish one playback_snapshot per tick + reset frame-local artifacts.
@@ -187,6 +299,36 @@ class PhotonicGraph:
                     self._state,
                     node_stats=node_stats,
                 )
+            # Cycle-5 panel LS3: write heartbeat to shmem so the
+            # out-of-process watchdog knows the graph is alive. If
+            # this stops advancing, the watchdog escalates to
+            # SIGUSR1 (soft) then SIGKILL (hard). Writing heartbeat
+            # last so a partial-tick stall is still detected.
+            self._tick_number += 1
+            if self._watchdog_shmem is not None:
+                try:
+                    dmx_frames = 0
+                    ilda_frames = 0
+                    dmx_node = self.nodes.get("dmx_output")
+                    if dmx_node is not None and hasattr(dmx_node, "get_stats"):
+                        stats = dmx_node.get_stats()
+                        dmx_frames = int(stats.get("frames_sent", 0))
+                    ilda_node = self.nodes.get("ilda_transport")
+                    if ilda_node is not None and hasattr(ilda_node, "get_stats"):
+                        stats = ilda_node.get_stats()
+                        ilda_frames = int(stats.get("hardware_frames_sent", stats.get("frames_sent", 0)))
+                    self._watchdog_shmem.write_main(
+                        main_heartbeat=self._tick_number,
+                        tick_number=self._tick_number,
+                        dmx_frames_sent=dmx_frames,
+                        ilda_frames_sent=ilda_frames,
+                    )
+                except Exception:
+                    # Shmem write MUST NOT block the tick. If anything
+                    # goes wrong (segment gone, write fails), silently
+                    # continue — the watchdog will detect the missing
+                    # heartbeat and escalate.
+                    pass
             return self._state
 
     def _sync_control_state(self) -> None:

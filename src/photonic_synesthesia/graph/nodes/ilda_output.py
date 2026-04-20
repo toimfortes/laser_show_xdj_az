@@ -714,6 +714,22 @@ class ILDADACOutputNode:
         #     never fired → stale last-nonblank frame kept projecting.
         self._state_ticks = 0
         self._state_frames_sent = 0
+        # Cycle-5 panel LS3 (Kilo F4): optional attachment to the
+        # out-of-process watchdog's shared-memory segment. When set,
+        # `_emergency_loop` polls `blackout_requested` as a secondary
+        # actuation trigger — useful during a soft stall where SIGUSR1
+        # is pending but hasn't fired yet (or when structlog is
+        # serializing and signal delivery is masked).
+        self._watchdog_shmem: Any = None
+        # Sticky one-shot: when the shmem flag goes 1, arm a blackout
+        # hold so we don't rely on the flag staying set.
+        self._shmem_blackout_last: int = 0
+
+    def attach_watchdog_shmem(self, shmem: Any) -> None:
+        """Wire in the watchdog's shared-memory segment for secondary
+        blackout triggering. No-op if the graph is running without the
+        out-of-process watchdog (PHOTONIC_WATCHDOG unset)."""
+        self._watchdog_shmem = shmem
 
     def start(self) -> None:
         self._running = True
@@ -866,6 +882,25 @@ class ILDADACOutputNode:
 
     def _emergency_loop(self) -> None:
         while self._running and not self._thread_stop.is_set():
+            # Cycle-5 panel LS3 (Kilo F4): poll the watchdog's shmem flag
+            # as a secondary blackout trigger. If the watchdog detected
+            # a soft stall and raised `blackout_requested=1`, arm an
+            # emergency hold even if SIGUSR1 hasn't fired yet.
+            if self._watchdog_shmem is not None:
+                try:
+                    snapshot = self._watchdog_shmem.read()
+                    flag = int(snapshot.blackout_requested)
+                    if flag == 1 and self._shmem_blackout_last == 0:
+                        # Rising edge: arm the hold.
+                        self._emergency_until = (
+                            time.monotonic() + self.safety.ilda_blackout_hold_s
+                        )
+                    self._shmem_blackout_last = flag
+                except Exception:
+                    # Shmem poll MUST NOT kill the emergency loop — this
+                    # thread is the last line of defense against a stall.
+                    pass
+
             if self._emergency_until > 0 and time.monotonic() < self._emergency_until:
                 try:
                     self._stream_emergency_blank_frame()
