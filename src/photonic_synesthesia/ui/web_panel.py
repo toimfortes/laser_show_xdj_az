@@ -32,6 +32,7 @@ from photonic_synesthesia.platform import (
     get_shared_control_plane_service,
     get_shared_playback_context,
 )
+from photonic_synesthesia.platform import rig_storage
 
 logger = get_logger(__name__)
 
@@ -295,12 +296,20 @@ def _build_mock_fixture(
     defaults = copy.deepcopy(template["defaults"])
     defaults["x"] = _clamp(float(defaults["x"]) + same_type_count * 0.07, 0.08, 0.92)
     defaults["address"] = int(defaults["address"]) + same_type_count * 20
+    # Cycle-1 panel resolution: every freshly-built fixture gets a default
+    # `profile` (per `DEFAULT_PROFILE_BY_TYPE`) and `enabled=True` so the
+    # rig-storage save path's type-profile invariant doesn't reject the
+    # default rig (closes Kilo CRITICAL#3 + the snapshot UX).
+    from photonic_synesthesia.platform.rig_storage import DEFAULT_PROFILE_BY_TYPE
+    profile_default = DEFAULT_PROFILE_BY_TYPE.get(template["type"])
     return {
         "id": f"{template_slug}-{uuid.uuid4().hex[:8]}",
         "templateSlug": template["slug"],
         "type": template["type"],
         "label": label_override or f"{template['label']} {same_type_count + 1}",
         **defaults,
+        "profile": profile_default,
+        "enabled": True,
         "phaseOffset": random.random() * math.pi * 2.0,
     }
 
@@ -468,13 +477,32 @@ def _fixture_output(
 class MockRigStore:
     """Server-owned mock rig state for the browser preview."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, initial_fixtures: list[dict[str, Any]] | None = None) -> None:
+        """Construct a MockRigStore.
+
+        Cycle-1 panel rig-storage Phase A: if `initial_fixtures` is
+        supplied (e.g. from an active rig hydration in `create_app`),
+        skip `_seed_default_rig` and use the provided list directly.
+        Falls back to defaults on validation failure (caller logs the
+        warning) so the UI is never empty.
+        """
         self._lock = threading.Lock()
         self._fixtures: list[dict[str, Any]] = []
         self._scene_id = MOCK_SCENE_TEMPLATES[0]["scene_id"]
         self._master_intensity = 0.82
         self._master_speed = 1.0
         self._blackout = False
+        if initial_fixtures is not None:
+            try:
+                self._validate_fixture_list(initial_fixtures)
+                self._fixtures = copy.deepcopy(initial_fixtures)
+                return
+            except ValueError as exc:
+                logger.warning(
+                    "mock_rig_initial_fixtures_invalid",
+                    error=str(exc),
+                    fallback="default_rig",
+                )
         self._seed_default_rig()
 
     def _seed_default_rig(self) -> None:
@@ -483,6 +511,45 @@ class MockRigStore:
             self._fixtures.append(
                 _build_mock_fixture(entry["template"], self._fixtures, label_override=entry["label"])
             )
+
+    @staticmethod
+    def _validate_fixture_list(fixtures: list[dict[str, Any]]) -> None:
+        """Cycle-1 panel Claude M5: validate ID uniqueness + basic
+        structural invariants BEFORE swap so partial bad data cannot
+        replace a good in-memory state."""
+        if not isinstance(fixtures, list):
+            raise ValueError("fixtures payload must be a list")
+        seen: set[str] = set()
+        for fixture in fixtures:
+            if not isinstance(fixture, dict):
+                raise ValueError("each fixture must be a dict")
+            fid = fixture.get("id")
+            if not isinstance(fid, str) or not fid:
+                raise ValueError(f"fixture must have non-empty string id; got {fid!r}")
+            if fid in seen:
+                raise ValueError(f"duplicate fixture id {fid!r}")
+            seen.add(fid)
+            if "type" not in fixture:
+                raise ValueError(f"fixture {fid!r} missing `type`")
+
+    def replace_all(self, fixtures: list[dict[str, Any]]) -> None:
+        """Atomically replace the in-memory fixture list under `_lock`.
+
+        Cycle-1 panel Claude M5: validates BEFORE swap; on any failure
+        the prior state is preserved (no partial replace). After swap,
+        the UI MUST clear `selectedFixtureId` (the load endpoint hands
+        that out in its response payload).
+        """
+        self._validate_fixture_list(fixtures)
+        deep = copy.deepcopy(fixtures)
+        with self._lock:
+            self._fixtures = deep
+
+    def dump(self) -> list[dict[str, Any]]:
+        """Return a deep-copy of the current fixtures list (cycle-1
+        panel A7 — caller may mutate without touching internal state)."""
+        with self._lock:
+            return copy.deepcopy(self._fixtures)
 
     def catalog(self) -> dict[str, Any]:
         return {
@@ -575,6 +642,17 @@ class MockRigStore:
                     fixture["width"] = _normalize_float(value, 0.08, 0.35)
                 elif key == "pixel_count" and fixture["type"] == "led_bar":
                     fixture["pixel_count"] = _normalize_int(value, 2, 16)
+                # Cycle-1 panel Kilo CRITICAL#3 + Codex H#3: profile and
+                # enabled MUST be persistable via PATCH so the inspector's
+                # new fields actually save. Previously, the whitelist
+                # silently dropped these keys, making PATCH a no-op.
+                elif key == "profile":
+                    if value is None:
+                        fixture["profile"] = None
+                    else:
+                        fixture["profile"] = str(value).strip() or None
+                elif key == "enabled":
+                    fixture["enabled"] = bool(value)
 
             return copy.deepcopy(fixture)
 
@@ -773,6 +851,15 @@ def _render_control_plane_html() -> str:
                                 <div id="fixture-library" class="fixture-library"></div>
                             </div>
                         </details>
+
+                        <details open>
+                            <summary><div class="subhead"><h3>Saved Rigs</h3></div></summary>
+                            <div class="details-body">
+                                <div id="rig-controls" class="rig-controls">
+                                    Loading saved rigs…
+                                </div>
+                            </div>
+                        </details>
                     </section>
 
                     <section class="panel preview-panel" aria-label="Stage preview">
@@ -870,8 +957,24 @@ def _render_control_plane_html() -> str:
     """
 
 
-def create_app(services: ControlPlaneStateService | None = None) -> Any:
-    """Create the FastAPI control-plane application."""
+def create_app(
+    services: ControlPlaneStateService | None = None,
+    *,
+    fixtures_dir: Path | None = None,
+) -> Any:
+    """Create the FastAPI control-plane application.
+
+    `fixtures_dir` is the directory containing fixture profile YAMLs.
+    Cycle-1 panel Codex H#3: this MUST match the runtime's effective
+    `Settings.fixtures_dir` so the UI's profile dropdown lists the
+    same profiles the graph will actually load. Default is `Settings()`'s
+    default (`config/fixtures`); CLI passes the actual settings value.
+    """
+    if fixtures_dir is None:
+        from photonic_synesthesia.core.config import Settings as _Settings
+        fixtures_dir = _Settings().fixtures_dir
+    fixtures_dir = Path(fixtures_dir)
+
     (
         FastAPI,
         HTTPException,
@@ -968,7 +1071,26 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
 
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
-    app.state.mock_rig = MockRigStore()
+    # Cycle-1 panel C1 + Phase A startup wiring: hydrate MockRigStore from
+    # the active rig if one exists. `get_active_rig_name()` auto-clears a
+    # stale pointer so we never crash on a missing target. Any load
+    # failure (corrupt JSON, missing fixtures key, ValueError) is caught
+    # and the canvas falls back to defaults.
+    initial_fixtures: list[dict[str, Any]] | None = None
+    active_rig_name = rig_storage.get_active_rig_name()
+    if active_rig_name:
+        try:
+            initial_fixtures = list(rig_storage.load_rig(active_rig_name).get("fixtures", []) or [])
+        except (FileNotFoundError, ValueError, KeyError, OSError) as exc:
+            logger.warning(
+                "active_rig_load_failed",
+                name=active_rig_name,
+                error=str(exc),
+                fallback="default_rig",
+            )
+            initial_fixtures = None
+    app.state.mock_rig = MockRigStore(initial_fixtures=initial_fixtures)
+    app.state.fixtures_dir = fixtures_dir
     app.state.playback_context = get_shared_playback_context()
     mock_rig: MockRigStore = app.state.mock_rig
 
@@ -1308,6 +1430,222 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Fixture not found")
         return {"deleted": True, "state": mock_rig.snapshot()}
 
+    # ------------------------------------------------------------------
+    # Rig storage (Phase A — named rig presets)
+    #
+    # Cycle-1 panel resolution:
+    #   - C1: get_active_rig_name auto-clears stale pointers; load_rig
+    #     wrapped in try/except at every read site; missing files surface
+    #     as 404 not 500.
+    #   - H1: rig_storage._validate_name enforced AT THE STORAGE LAYER
+    #     (not just UI); reserved names rejected by the function itself.
+    #   - H2: A8 literal-1 fallback enforced inside load_rig; pinned by
+    #     test_load_rig_missing_schema_key_treated_as_v1...
+    #   - H4: empty-materialize policy decided by Phase B caller, not
+    #     this module.
+    #   - H5: profile/enabled persistence is closed by the elif branches
+    #     added to MockRigStore.update_fixture above.
+    #   - A10: PUT strips client-supplied schema_version/saved_at via
+    #     rig_storage._strip_server_fields; re-stamps server-side.
+
+    class RigPutRequest(BaseModel):
+        # Round-trip-symmetric (closes Codex H#2): accepts the same
+        # shape GET returns. Server-stamped fields (`_schema_version`,
+        # `saved_at`) are stripped + re-stamped (closes A10).
+        fixtures: list[dict[str, Any]]
+
+    def _conflicts_to_payload(rig_fixtures: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Run conflict detection against `app.state.fixtures_dir` and
+        return a JSON-serializable list (empty = clean)."""
+        return [
+            {
+                "universe": c.universe,
+                "channel": c.channel,
+                "fixture_a_id": c.fixture_a_id,
+                "fixture_b_id": c.fixture_b_id,
+                "description": c.describe(),
+            }
+            for c in rig_storage.detect_address_conflicts(rig_fixtures, fixtures_dir)
+        ]
+
+    def _bad_request(detail: str, **extra: Any) -> "HTTPException":
+        # Helper for 400 with structured body.
+        body = {"detail": detail, **extra}
+        return HTTPException(status_code=400, detail=body)
+
+    @app.get("/api/mock/rigs")
+    @log_endpoint("GET:/api/mock/rigs")
+    async def list_mock_rigs() -> dict[str, Any]:
+        return {
+            "rigs": rig_storage.list_rigs(),
+            "active": rig_storage.get_active_rig_name(),
+        }
+
+    @app.get("/api/mock/rigs/{name}")
+    @log_endpoint("GET:/api/mock/rigs/{name}")
+    async def get_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        except ValueError as exc:
+            # Includes "schema newer than build" → 422 to distinguish from
+            # malformed-on-disk; both are unrecoverable for this build.
+            msg = str(exc)
+            if "newer than this build" in msg:
+                raise HTTPException(status_code=422, detail={"detail": "schema_too_new", "reason": msg})
+            raise _bad_request("rig_corrupt", reason=msg)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        return rig
+
+    @app.put("/api/mock/rigs/{name}")
+    @log_endpoint("PUT:/api/mock/rigs/{name}")
+    async def put_mock_rig(name: str, request: RigPutRequest) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        # Strip client-supplied server fields (closes A10). Note the
+        # request model already lacks those keys, but defensive in case
+        # the schema is later loosened.
+        fixtures = list(request.fixtures or [])
+        try:
+            saved_path = rig_storage.save_rig(name, fixtures)
+        except ValueError as exc:
+            msg = str(exc)
+            if "MUST have a non-null profile" in msg:
+                raise _bad_request("type_profile_required", reason=msg)
+            if "duplicate fixture id" in msg:
+                raise _bad_request("duplicate_fixture_id", reason=msg)
+            raise _bad_request("rig_invalid", reason=msg)
+        rig = rig_storage.load_rig(name)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        rig["saved_path"] = str(saved_path)
+        return rig
+
+    @app.post("/api/mock/rigs/{name}/snapshot")
+    @log_endpoint("POST:/api/mock/rigs/{name}/snapshot")
+    async def snapshot_mock_rig(name: str) -> dict[str, Any]:
+        """Cycle-1 panel Codex H#2: separate from PUT. This is the
+        "save what's currently on the canvas" path. UI's [Save] button
+        calls this; PUT is for explicit document upload."""
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        fixtures = mock_rig.dump()
+        try:
+            saved_path = rig_storage.save_rig(name, fixtures)
+        except ValueError as exc:
+            msg = str(exc)
+            if "MUST have a non-null profile" in msg:
+                raise _bad_request("type_profile_required", reason=msg)
+            if "duplicate fixture id" in msg:
+                raise _bad_request("duplicate_fixture_id", reason=msg)
+            raise _bad_request("rig_invalid", reason=msg)
+        rig = rig_storage.load_rig(name)
+        rig["conflicts"] = _conflicts_to_payload(rig.get("fixtures", []))
+        rig["saved_path"] = str(saved_path)
+        return rig
+
+    @app.post("/api/mock/rigs/{name}/load")
+    @log_endpoint("POST:/api/mock/rigs/{name}/load")
+    async def load_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        except ValueError as exc:
+            raise _bad_request("rig_corrupt", reason=str(exc))
+        try:
+            mock_rig.replace_all(rig.get("fixtures", []) or [])
+        except ValueError as exc:
+            raise _bad_request("rig_fixtures_invalid", reason=str(exc))
+        # Cycle-1 panel Claude M5: response includes `clear_selection: true`
+        # so the UI knows to drop selectedFixtureId + pending PATCH timers.
+        return {
+            "loaded": name,
+            "state": mock_rig.snapshot(),
+            "clear_selection": True,
+            "conflicts": _conflicts_to_payload(rig.get("fixtures", [])),
+        }
+
+    @app.post("/api/mock/rigs/{name}/activate")
+    @log_endpoint("POST:/api/mock/rigs/{name}/activate")
+    async def activate_mock_rig(name: str) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            rig_storage.set_active_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        return {"active": name}
+
+    @app.post("/api/mock/rigs/{name}/duplicate")
+    @log_endpoint("POST:/api/mock/rigs/{name}/duplicate")
+    async def duplicate_mock_rig(name: str, as_name: str = "") -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        if not as_name:
+            raise _bad_request("missing_as_name", reason="?as=<newname> query param required")
+        try:
+            rig_storage._validate_name(as_name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        try:
+            source = rig_storage.load_rig(name)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        try:
+            rig_storage.save_rig(as_name, source.get("fixtures", []))
+        except ValueError as exc:
+            raise _bad_request("rig_invalid", reason=str(exc))
+        return {"duplicated_to": as_name}
+
+    @app.delete("/api/mock/rigs/{name}")
+    @log_endpoint("DELETE:/api/mock/rigs/{name}")
+    async def delete_mock_rig(name: str, force: bool = False) -> dict[str, Any]:
+        try:
+            rig_storage._validate_name(name)
+        except ValueError as exc:
+            raise _bad_request("invalid_rig_name", reason=str(exc))
+        active_before = rig_storage.get_active_rig_name()
+        if name == active_before and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "detail": "rig_is_active",
+                    "reason": "Use ?force=true to delete the active rig (active pointer will be cleared atomically).",
+                },
+            )
+        deleted = rig_storage.delete_rig(name, force=force)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="rig_not_found")
+        return {"deleted": name, "active": rig_storage.get_active_rig_name()}
+
+    @app.get("/api/mock/fixture-profiles")
+    @log_endpoint("GET:/api/mock/fixture-profiles")
+    async def list_fixture_profiles() -> dict[str, Any]:
+        # Cycle-1 panel Codex H#3: uses the same fixtures_dir the runtime
+        # graph reads, so the dropdown CANNOT list profiles the runtime
+        # won't actually load.
+        return {
+            "profiles": rig_storage.list_available_profiles(fixtures_dir),
+            "fixtures_dir": str(fixtures_dir),
+        }
+
     @app.post("/api/mock/scene")
     @log_endpoint("POST:/api/mock/scene")
     async def update_mock_scene(request: MockSceneStateRequest) -> dict[str, Any]:
@@ -1494,8 +1832,14 @@ def serve_in_thread(
     services: ControlPlaneStateService | None = None,
     host: str = "127.0.0.1",
     port: int = 8000,
+    fixtures_dir: Path | None = None,
 ) -> tuple[Any, threading.Thread]:
-    """Start the control-plane app in a background thread."""
+    """Start the control-plane app in a background thread.
+
+    Cycle-1 panel Codex H#3: `fixtures_dir` is plumbed through so the
+    web UI's profile dropdown lists the same profiles the runtime graph
+    will load. CLI passes `settings.fixtures_dir`.
+    """
     try:
         import uvicorn
     except ImportError as exc:  # pragma: no cover - exercised only in minimal envs
@@ -1503,7 +1847,7 @@ def serve_in_thread(
             "uvicorn is required for embedded web serving. Install with: pip install -e '.[web]'"
         ) from exc
 
-    app = create_app(services=services)
+    app = create_app(services=services, fixtures_dir=fixtures_dir)
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="photonic-web", daemon=True)

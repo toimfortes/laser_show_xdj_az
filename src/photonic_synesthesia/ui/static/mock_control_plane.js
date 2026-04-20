@@ -12,6 +12,15 @@ const appState = {
   playback: null,
   wsStatus: "connecting",
   dragFixtureId: null,
+  // Cycle-1 panel rig-storage Phase A — UI state for saved rigs.
+  // `rigs` and `activeRig` are server-owned (refreshed via metadata-only
+  // polling every 5s, closes Codex M1 / Gemini M2 / Claude M9). `selectedRig`
+  // is purely client-side (which rig is currently shown in the dropdown).
+  // `fixtureProfiles` caches `/api/mock/fixture-profiles` for the inspector.
+  rigs: [],
+  activeRig: null,
+  selectedRig: "",
+  fixtureProfiles: [],
 };
 
 const elements = {};
@@ -2513,6 +2522,45 @@ function renderInspector() {
     );
   }
 
+  // Cycle-1 panel Kilo CRITICAL#3 + Codex H#3: profile + enabled live in
+  // the inspector for laser fixtures. Profile dropdown is sourced from
+  // `/api/mock/fixture-profiles` (cached in appState.fixtureProfiles) so
+  // it lists the same profiles the runtime graph actually loads.
+  // Greyed out for non-laser types (no runtime path today).
+  const isLaser = fixture.type === "laser";
+  const profileOptions = appState.fixtureProfiles || [];
+  const profileSelectMarkup = (() => {
+    const opts = [`<option value="">— None (visual only)</option>`];
+    for (const prof of profileOptions) {
+      const sel = (fixture.profile || "") === prof.slug ? " selected" : "";
+      const channelHint = prof.channels ? ` (${prof.channels}ch)` : " (ILDA)";
+      opts.push(
+        `<option value="${prof.slug}"${sel}>${prof.slug}${channelHint}</option>`,
+      );
+    }
+    const disabledAttr = isLaser ? "" : " disabled";
+    const hintHtml = isLaser
+      ? ""
+      : `<small class="muted-small">No runtime profile available for ${fixture.type}.</small>`;
+    return `
+      <div class="field">
+        <label for="field-profile">Runtime Profile</label>
+        <select id="field-profile" data-key="profile"${disabledAttr}>${opts.join("")}</select>
+        ${hintHtml}
+      </div>
+    `;
+  })();
+
+  const enabledChecked = fixture.enabled === false ? "" : " checked";
+  const enabledMarkup = `
+    <div class="field">
+      <label for="field-enabled">
+        <input id="field-enabled" type="checkbox" data-key="enabled"${enabledChecked} />
+        Enabled (sends DMX)
+      </label>
+    </div>
+  `;
+
   elements.fixtureInspector.className = "inspector-grid";
   elements.fixtureInspector.innerHTML = `
     <div class="subhead">
@@ -2520,14 +2568,26 @@ function renderInspector() {
       <p>${safeText(fixture.type)} fixture · drag it on the stage to repatch quickly</p>
     </div>
     ${[...commonFields, ...typeFields].join("")}
+    ${profileSelectMarkup}
+    ${enabledMarkup}
     <button type="button" class="danger" id="duplicate-fixture">Duplicate Fixture</button>
   `;
 
   elements.fixtureInspector.querySelectorAll("input").forEach((input) => {
+    const key = input.dataset.key;
+    if (!key) return;
+    if (input.type === "checkbox") {
+      input.addEventListener("change", (event) => {
+        const value = event.currentTarget.checked;
+        updateFixtureLocal(fixture.id, { [key]: value });
+        renderFixtureList();
+        scheduleFixturePatch(fixture.id, { [key]: value });
+      });
+      return;
+    }
     const eventName = input.type === "range" || input.type === "color" ? "input" : "change";
     input.addEventListener(eventName, (event) => {
       const target = event.currentTarget;
-      const key = target.dataset.key;
       let value = target.value;
       if (target.type === "number" || target.type === "range") {
         value = Number(value);
@@ -2537,6 +2597,15 @@ function renderInspector() {
       scheduleFixturePatch(fixture.id, { [key]: value });
     });
   });
+
+  const profileSelect = elements.fixtureInspector.querySelector('select[data-key="profile"]');
+  if (profileSelect) {
+    profileSelect.addEventListener("change", (event) => {
+      const value = event.currentTarget.value || null;
+      updateFixtureLocal(fixture.id, { profile: value });
+      scheduleFixturePatch(fixture.id, { profile: value });
+    });
+  }
 
   elements.fixtureInspector.querySelector("#duplicate-fixture").addEventListener("click", async () => {
     const response = await api(`/api/mock/fixtures/${fixture.id}/duplicate`, { method: "POST" });
@@ -3837,12 +3906,15 @@ async function boot() {
   elements.playbackPanel = qs("playback-panel");
   elements.showEditor = qs("show-editor");
   elements.fixtureActivity = qs("fixture-activity");
+  elements.rigControls = qs("rig-controls");
 
   await loadCatalog();
   await loadMockState();
   await loadRuntimeSnapshot();
   await refreshUniverseSnapshot();
   await loadPlaybackState();
+  await loadFixtureProfiles();
+  await refreshRigs();
 
   bindControls();
   bindStageInteractions();
@@ -3856,6 +3928,7 @@ async function boot() {
   startUniversePolling();
   startPlaybackPolling();
   startOperatorWorkspacePolling();
+  startRigsPolling();
   window.requestAnimationFrame(renderStage);
 }
 
@@ -3992,6 +4065,253 @@ async function refreshOperatorWorkspace() {
 function startOperatorWorkspacePolling() {
   refreshOperatorWorkspace();
   setInterval(refreshOperatorWorkspace, 2000);
+}
+
+// --- Rig storage (Phase A — named rig presets) ----------------------------
+//
+// Cycle-1 panel resolution:
+//   - C1 / startup hydration: server-side; this module just reads/writes.
+//   - H1: server enforces name validation; UI also slugifies on Save As.
+//   - H2: server enforces literal-1 schema fallback.
+//   - H4: server-side warning surfaced via response payload conflicts/empty.
+//   - M5: on POST /load response, clear selectedFixtureId and pending PATCH
+//         timers so stale debounced patches against the OLD rig don't fire
+//         against the new state (closes Codex M1).
+//   - M9 / Codex M1 / Gemini M2: refreshRigs is METADATA-ONLY at 5s. It
+//     updates the dropdown + active badge but NEVER replaces canvas state.
+//     The canvas is replaced ONLY when the user explicitly clicks Load.
+
+let rigsFetchInFlight = false;
+
+async function loadFixtureProfiles() {
+  try {
+    const response = await api("/api/mock/fixture-profiles");
+    appState.fixtureProfiles = response.profiles || [];
+  } catch (error) {
+    console.error("fixture profile fetch failed", error);
+    appState.fixtureProfiles = [];
+  }
+}
+
+async function refreshRigs() {
+  // Metadata-only refresh. Updates the dropdown + active badge.
+  // Does NOT touch canvas state.
+  if (rigsFetchInFlight) return;
+  rigsFetchInFlight = true;
+  try {
+    const payload = await api("/api/mock/rigs");
+    appState.rigs = payload.rigs || [];
+    appState.activeRig = payload.active || null;
+    if (!appState.selectedRig && appState.activeRig) {
+      appState.selectedRig = appState.activeRig;
+    }
+    renderRigList();
+  } catch (error) {
+    console.error("rig list fetch failed", error);
+  } finally {
+    rigsFetchInFlight = false;
+  }
+}
+
+function startRigsPolling() {
+  setInterval(refreshRigs, 5000);
+}
+
+function slugifyRigName(text) {
+  // Lowercase, replace non-alnum with `_`, trim leading/trailing dashes.
+  // Keep this in sync with rig_storage._NAME_RE = `^[a-z0-9][a-z0-9_-]{0,63}$`.
+  let slug = String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^[-_]+/, "")  // strip leading dash/underscore so first char is alnum
+    .slice(0, 64);
+  return slug;
+}
+
+function renderRigList() {
+  const root = elements.rigControls;
+  if (!root) return;
+
+  const rigs = appState.rigs || [];
+  const active = appState.activeRig || null;
+  const selected = appState.selectedRig || "";
+
+  // Conflict count for the selected rig (best-effort: pulled from refresh).
+  const selectedRigMeta = rigs.find((r) => r.name === selected);
+
+  const optionsHtml = rigs.length
+    ? rigs
+        .map((r) => {
+          const sel = r.name === selected ? " selected" : "";
+          const tag = r.name === active ? " ●" : "";
+          return `<option value="${r.name}"${sel}>${r.name}${tag} (${r.fixture_count})</option>`;
+        })
+        .join("")
+    : `<option value="" disabled selected>(no saved rigs)</option>`;
+
+  const activeBadge = active
+    ? `<span class="rig-badge active">active: ${active}</span>`
+    : `<span class="rig-badge">no active rig</span>`;
+
+  const savedAt = selectedRigMeta?.saved_at
+    ? `<small class="muted-small">saved ${selectedRigMeta.saved_at}</small>`
+    : "";
+
+  root.innerHTML = `
+    <div class="rig-row">
+      <select id="rig-select" class="rig-select">${optionsHtml}</select>
+      ${activeBadge}
+    </div>
+    <div class="rig-actions">
+      <button type="button" id="rig-save">Save</button>
+      <button type="button" id="rig-save-as">Save As…</button>
+      <button type="button" id="rig-load" ${selected ? "" : "disabled"}>Load</button>
+      <button type="button" id="rig-activate" ${selected ? "" : "disabled"}>Set Active</button>
+      <button type="button" id="rig-duplicate" ${selected ? "" : "disabled"}>Duplicate</button>
+      <button type="button" id="rig-delete" class="danger" ${selected ? "" : "disabled"}>Delete</button>
+    </div>
+    ${savedAt}
+  `;
+
+  const sel = root.querySelector("#rig-select");
+  if (sel) {
+    sel.addEventListener("change", (e) => {
+      appState.selectedRig = e.currentTarget.value;
+      renderRigList();
+    });
+  }
+  const saveBtn = root.querySelector("#rig-save");
+  if (saveBtn) saveBtn.addEventListener("click", () => saveCurrentRig(selected));
+  const saveAsBtn = root.querySelector("#rig-save-as");
+  if (saveAsBtn) saveAsBtn.addEventListener("click", saveAsRig);
+  const loadBtn = root.querySelector("#rig-load");
+  if (loadBtn) loadBtn.addEventListener("click", () => loadRig(selected));
+  const actBtn = root.querySelector("#rig-activate");
+  if (actBtn) actBtn.addEventListener("click", () => activateRig(selected));
+  const dupBtn = root.querySelector("#rig-duplicate");
+  if (dupBtn) dupBtn.addEventListener("click", () => duplicateRig(selected));
+  const delBtn = root.querySelector("#rig-delete");
+  if (delBtn) delBtn.addEventListener("click", () => deleteRig(selected));
+}
+
+function _surfaceRigError(error) {
+  const message = error && error.message ? error.message : String(error);
+  console.warn("rig action failed", message);
+  alert("Rig action failed: " + message);
+}
+
+async function saveCurrentRig(name) {
+  // No name selected → behave as Save As…
+  if (!name) {
+    return saveAsRig();
+  }
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(name)}/snapshot`, { method: "POST" });
+    appState.selectedRig = name;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function saveAsRig() {
+  const raw = prompt(
+    "Save current rig as (lowercase letters, digits, _ and - only):",
+    appState.selectedRig || "antonios_lights",
+  );
+  if (raw === null) return;
+  const slug = slugifyRigName(raw);
+  if (!slug) {
+    _surfaceRigError(new Error("invalid name"));
+    return;
+  }
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(slug)}/snapshot`, { method: "POST" });
+    appState.selectedRig = slug;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function loadRig(name) {
+  if (!name) return;
+  if (!confirm(`Replace canvas with rig "${name}"? Unsaved canvas edits will be lost.`)) {
+    return;
+  }
+  try {
+    const response = await api(`/api/mock/rigs/${encodeURIComponent(name)}/load`, { method: "POST" });
+    // Cycle-1 panel Claude M5 + Codex M1: clear selectedFixtureId AND
+    // any pending PATCH timers so stale debounced edits cannot apply
+    // to the new state.
+    if (response.clear_selection) {
+      appState.selectedFixtureId = null;
+      for (const [, pending] of fixturePatchTimers) {
+        window.clearTimeout(pending.timerId);
+      }
+      fixturePatchTimers.clear();
+    }
+    applyMockState(response.state, { preserveSelection: false });
+    renderFixtureList();
+    renderInspector();
+    updateMetrics();
+    await refreshUniverseSnapshot();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function activateRig(name) {
+  if (!name) return;
+  try {
+    await api(`/api/mock/rigs/${encodeURIComponent(name)}/activate`, { method: "POST" });
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function duplicateRig(name) {
+  if (!name) return;
+  const raw = prompt(`Duplicate "${name}" as:`, name + "_copy");
+  if (raw === null) return;
+  const slug = slugifyRigName(raw);
+  if (!slug) {
+    _surfaceRigError(new Error("invalid name"));
+    return;
+  }
+  try {
+    await api(
+      `/api/mock/rigs/${encodeURIComponent(name)}/duplicate?as=${encodeURIComponent(slug)}`,
+      { method: "POST" },
+    );
+    appState.selectedRig = slug;
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
+}
+
+async function deleteRig(name) {
+  if (!name) return;
+  const isActive = name === appState.activeRig;
+  const promptMsg = isActive
+    ? `"${name}" is the active rig. Force delete? (active pointer will be cleared)`
+    : `Delete rig "${name}"? This cannot be undone.`;
+  if (!confirm(promptMsg)) return;
+  const url = isActive
+    ? `/api/mock/rigs/${encodeURIComponent(name)}?force=true`
+    : `/api/mock/rigs/${encodeURIComponent(name)}`;
+  try {
+    await api(url, { method: "DELETE" });
+    if (appState.selectedRig === name) {
+      appState.selectedRig = "";
+    }
+    await refreshRigs();
+  } catch (error) {
+    _surfaceRigError(error);
+  }
 }
 
 window.addEventListener("DOMContentLoaded", () => {

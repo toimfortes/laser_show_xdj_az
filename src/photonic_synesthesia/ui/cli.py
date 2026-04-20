@@ -1327,6 +1327,7 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
                 services=control_plane_service,
                 host=web_host,
                 port=web_port,
+                fixtures_dir=settings.fixtures_dir,
             )
             click.echo(f"Web UI: http://{web_host}:{web_port}/")
 
@@ -1703,6 +1704,7 @@ def run_file(
                 services=control_plane_service,
                 host=web_host,
                 port=web_port,
+                fixtures_dir=settings.fixtures_dir,
             )
             click.echo(f"Web UI: http://{web_host}:{web_port}/")
 
