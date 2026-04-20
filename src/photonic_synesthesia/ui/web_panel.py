@@ -1930,21 +1930,40 @@ def serve_in_thread(
     thread = threading.Thread(target=server.run, name="photonic-web", daemon=True)
     thread.start()
 
-    deadline = time.time() + 5.0
-    while not server.started:
-        if not thread.is_alive():
-            raise RuntimeError("Embedded web server terminated before startup completed")
-        if time.time() >= deadline:
-            raise RuntimeError("Timed out waiting for embedded web server startup")
-        time.sleep(0.05)
+    # Cycle-6 E5/H7: every error path between here and the successful
+    # `return` below MUST tear down `server` + `thread`. Pre-E5 a
+    # bind failure or startup timeout raised a RuntimeError without
+    # calling `shutdown_server`, leaving the daemon uvicorn thread
+    # running until process exit. With cycle-6 E2's tight leak canary
+    # active, that's a hard test failure too — but the operational
+    # impact is worse: the port stays bound, blocking the retry path
+    # that the operator inevitably attempts after fixing whatever
+    # caused the initial failure.
+    try:
+        deadline = time.time() + 5.0
+        while not server.started:
+            if not thread.is_alive():
+                raise RuntimeError("Embedded web server terminated before startup completed")
+            if time.time() >= deadline:
+                raise RuntimeError("Timed out waiting for embedded web server startup")
+            time.sleep(0.05)
 
-    # Ensure the port is actually accepting connections before returning.
-    while time.time() < deadline:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.2)
-            if sock.connect_ex((host, port)) == 0:
-                break
-        time.sleep(0.05)
+        # Ensure the port is actually accepting connections before returning.
+        while time.time() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.2)
+                if sock.connect_ex((host, port)) == 0:
+                    break
+            time.sleep(0.05)
+    except BaseException:
+        # Tear down the daemon thread before re-raising. `shutdown_server`
+        # is the single canonical teardown path; no need to duplicate
+        # its should_exit / force_exit / join logic here.
+        try:
+            shutdown_server(server, thread, soft_timeout=2.0, force_timeout=1.0)
+        except Exception:  # pragma: no cover — defensive
+            pass
+        raise
 
     return server, thread
 

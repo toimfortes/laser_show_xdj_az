@@ -14,6 +14,8 @@ import threading
 import time
 from unittest import mock
 
+import pytest
+
 from photonic_synesthesia.ui.web_panel import shutdown_server
 
 
@@ -75,6 +77,48 @@ def test_shutdown_server_escalates_to_force_exit_when_soft_times_out() -> None:
     assert server.force_exit is True
     assert observed_force_exit.is_set()
     assert not thread.is_alive()
+
+
+def test_serve_in_thread_calls_shutdown_on_startup_failure() -> None:
+    """Cycle-6 E5/H7: if the startup wait raises (timeout, port-bind
+    failure, server thread terminating early), serve_in_thread MUST
+    call shutdown_server before re-raising. Pre-E5 the daemon
+    uvicorn thread leaked until process exit and held the port bound,
+    blocking the operator's retry."""
+    from photonic_synesthesia.ui import web_panel
+
+    # Stand-in for uvicorn.Server: never flips `.started`, so the
+    # startup wait hits the deadline. `.run()` returns immediately.
+    fake_server = mock.MagicMock()
+    fake_server.started = False
+    fake_server.run = lambda: None
+
+    fake_uvicorn = mock.MagicMock()
+    fake_uvicorn.Config.return_value = mock.MagicMock()
+    fake_uvicorn.Server.return_value = fake_server
+
+    with (
+        mock.patch.dict("sys.modules", {"uvicorn": fake_uvicorn}),
+        mock.patch.object(web_panel, "create_app", return_value=mock.MagicMock()),
+        mock.patch.object(web_panel, "shutdown_server") as fake_shutdown,
+    ):
+        # Jump time forward on each call so the 5s deadline arrives
+        # in a few microseconds instead of hanging the test.
+        time_now = [time.time()]
+
+        def _fake_time() -> float:
+            time_now[0] += 1.0
+            return time_now[0]
+
+        with mock.patch.object(web_panel.time, "time", _fake_time):
+            with pytest.raises(RuntimeError, match="(Timed out waiting|terminated before startup)"):
+                web_panel.serve_in_thread(host="127.0.0.1", port=0)
+
+    fake_shutdown.assert_called_once()
+    args, kwargs = fake_shutdown.call_args
+    assert args[0] is fake_server
+    assert isinstance(args[1], threading.Thread)
+    assert args[1].daemon is True
 
 
 def test_shutdown_server_logs_error_but_returns_when_both_timeouts_exhausted() -> None:
