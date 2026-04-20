@@ -132,50 +132,65 @@ class DMXOutputNode:
     def stop(self) -> None:
         """Stop DMX transmission.
 
-        Cycle-6 A2: serial close happens BEFORE the thread join. If
-        the transmit worker is blocked inside `self._serial.write(...)`
-        (FTDI unplug, kernel tty stall), `close()` wakes the blocked
-        write with EIO so the loop can see the stop signal. Without
-        this ordering, `join(timeout=1.0)` silently returned while the
-        worker was still holding the serial handle — the main thread
-        then issued `send_break`/`write`/`close` concurrently against
-        the same handle, undefined pyserial behaviour. See
-        2026-04-20 incident post-mortem.
+        Cycle-6 A2: shutdown order depends on transport.
+
+        FTDI/serial path — close BEFORE join. If the worker is
+        blocked inside `self._serial.write(...)` (FTDI unplug, kernel
+        tty stall), `close()` wakes the blocked write with EIO so the
+        loop can see the stop signal. No post-stop blackout — reopen
+        is unsafe after close and the DAC's fail-safe covers us.
+
+        Art-Net/UDP path — join BEFORE close. UDP sends don't block,
+        so join returns promptly. We then have exclusive access to
+        the socket and can send a final blackout packet before
+        closing (receivers need one explicit zero frame; they do not
+        auto-fail-safe like a DAC).
+
+        See 2026-04-20 incident post-mortem.
         """
         self._stop_signal.stop()
 
-        # Close the serial/artnet FIRST so a blocked write wakes with
-        # EIO. Keep references to the handles so the post-join blackout
-        # send can still use them IF the thread exited cleanly.
         serial = self._serial
         artnet = self._artnet
+
         if serial is not None:
+            # Close first so a wedged write wakes with EIO, then join.
+            self._serial = None
             try:
                 serial.close()
             except Exception:
                 pass
-            self._serial = None
-        if artnet is not None:
             try:
-                artnet.close()
-            except Exception:
-                pass
-            self._artnet = None
+                join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
+            finally:
+                self._thread = None
+        else:
+            # Art-Net or no transport: join first (UDP send doesn't
+            # block, so the worker exits on the stop signal within one
+            # frame period).
+            try:
+                join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
+            finally:
+                self._thread = None
 
-        # Now join loudly. Since the handle is closed, a wedged write
-        # will raise and the loop will exit on the stop signal.
-        try:
-            join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
-        finally:
-            self._thread = None
-
-        # Post-stop single-shot blackout. The thread is guaranteed
-        # exited (join_or_raise would have raised otherwise), so there
-        # is no concurrent-access race with the handle we already
-        # closed above. Reopen is intentionally not attempted — if the
-        # close succeeded we are in the desired blackout state; if it
-        # failed the hardware is in an unknown state and the DAC's own
-        # fail-safe behaviour covers us.
+            if artnet is not None:
+                # Exclusive handle access now — send a final zero frame
+                # then close.
+                self._artnet = None
+                try:
+                    blackout = bytes(create_universe_buffer())
+                    artnet.send_dmx(
+                        universe=self._artnet_universe_address(),
+                        dmx_data=extract_channel_payload(blackout),
+                        sequence=self._artnet_sequence,
+                    )
+                    self._artnet_sequence = (self._artnet_sequence + 1) % 256
+                except Exception:
+                    pass
+                try:
+                    artnet.close()
+                except Exception:
+                    pass
 
         logger.info(
             "DMX output stopped",
