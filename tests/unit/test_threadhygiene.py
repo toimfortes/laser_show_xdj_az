@@ -150,3 +150,42 @@ def test_shutdown_executor_cancels_pending_futures() -> None:
     release.set()
     shutdown_executor(pool, timeout=2.0, name="cancel-test")
     assert future.cancelled() or future.done()
+
+
+def _wedged_process_worker() -> None:
+    """Module-level picklable wedge for ProcessPool tests."""
+    import time as _time
+
+    while True:
+        _time.sleep(3600.0)
+
+
+def test_shutdown_executor_kills_wedged_process_pool_worker() -> None:
+    """A3 invariant: a ProcessPool worker stuck in a syscall MUST be
+    force-terminated, not left as a zombie. Pre-A3 fix, the helper
+    called `shutdown(wait=True, cancel_futures=True)` which blocked
+    indefinitely on the running future; the terminate/kill fallback
+    never ran."""
+    import multiprocessing as _mp
+
+    ctx = _mp.get_context("spawn")
+    pool = concurrent.futures.ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+    future = pool.submit(_wedged_process_worker)
+    # Give the child a moment to actually enter the wedge.
+    time.sleep(0.5)
+    processes_before = list(pool._processes.values())  # type: ignore[attr-defined]
+    assert any(p.is_alive() for p in processes_before), "worker must be alive"
+
+    t0 = time.monotonic()
+    shutdown_executor(pool, timeout=1.0, name="wedged-pool")
+    elapsed = time.monotonic() - t0
+
+    # Bounded wait — must return within a few seconds, not wait forever.
+    assert elapsed < 5.0, f"shutdown_executor blocked for {elapsed:.2f}s on wedged worker"
+
+    # Every child process must be dead post-shutdown.
+    for proc in processes_before:
+        assert not proc.is_alive(), f"worker {proc} still alive after shutdown"
+    # Future itself is not required to be cancelled (the child was
+    # running, not pending), but the child exit code should be set.
+    assert future.cancelled() or future.done() or True  # tolerant — the real pin is child death

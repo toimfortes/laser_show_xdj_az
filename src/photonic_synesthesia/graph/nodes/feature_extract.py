@@ -62,6 +62,7 @@ from numpy.typing import NDArray
 
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import AudioFeatures, PhotonicState
+from photonic_synesthesia.core.threadhygiene import shutdown_executor
 
 logger = get_logger(__name__)
 
@@ -309,6 +310,7 @@ class _HarmonicAnalyzer:
         except Exception as exc:
             logger.warning("harmonic_analyzer_failed", error=str(exc))
             result = None
+        old_executor: concurrent.futures.ProcessPoolExecutor | None = None
         with self._lock:
             if result is not None:
                 self._latest = result
@@ -316,12 +318,10 @@ class _HarmonicAnalyzer:
             if executor_is_broken:
                 old_executor = self._executor
                 self._executor = None
-                # Shutdown outside the lock if possible.
-        if executor_is_broken and old_executor is not None:
-            try:
-                old_executor.shutdown(wait=False)
-            except Exception:
-                pass
+        # Shutdown outside the lock — terminate/kill escalation ensures a
+        # segfaulted worker doesn't leave a zombie subprocess.
+        if executor_is_broken:
+            shutdown_executor(old_executor, timeout=2.0, name="harmonic-analyzer-broken")
 
     def _compute(self, y: NDArray, sr: int) -> dict[str, float]:
         """Synchronous fallback — delegates to the module-level
@@ -342,14 +342,19 @@ class _HarmonicAnalyzer:
             return dict(self._latest)
 
     def close(self) -> None:
+        """Stop the analyzer and terminate the worker subprocess.
+
+        Cycle-6 A3: uses `threadhygiene.shutdown_executor` so a wedged
+        pyin / hpss / cqt call gets a bounded wait then SIGTERM then
+        SIGKILL. Pre-A3 this was `shutdown(wait=False)` which returned
+        immediately but left the child subprocess running — every close
+        orphaned the interpreter until the OS reaped it.
+        """
         with self._lock:
             self._stopped = True
-        # `wait=False` so a slow in-flight pyin doesn't block process
-        # shutdown. The thread is daemonized via the executor anyway.
-        try:
-            self._executor.shutdown(wait=False)
-        except Exception:
-            pass
+            executor = self._executor
+            self._executor = None
+        shutdown_executor(executor, timeout=5.0, name="harmonic-analyzer")
 
 
 class FeatureExtractNode:

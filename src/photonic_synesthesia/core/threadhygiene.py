@@ -105,35 +105,68 @@ def shutdown_executor(
     cancel_futures. On timeout, escalates to terminate() then kill() on
     any child processes still alive.
 
-    Passing `executor=None` is safe (no-op). Swallows only the specific
-    errors that mean the executor is already shutting down; re-raises
-    anything else so the failure is visible.
+    Passing `executor=None` is safe (no-op).
+
+    Implementation note: `shutdown(wait=True, cancel_futures=True)`
+    blocks indefinitely on a wedged worker because `wait=True` joins
+    the queue-management thread which waits for the running future.
+    That defeats the whole point of this helper during a hang. We use
+    `wait=False` + per-child `proc.join(timeout=...)` so the bound is
+    real. `ThreadPoolExecutor` has no `_processes`; for it we fall
+    back to `wait=True` since threads can't be terminated cleanly.
     """
     if executor is None:
         return
+
+    is_process_pool = hasattr(executor, "_processes")
+
+    # Snapshot child processes BEFORE calling shutdown — newer CPython
+    # clears `_processes` inside `shutdown(wait=False, cancel_futures=True)`,
+    # which meant the terminate/kill loop was iterating an empty dict and
+    # every wedged child survived. Caught by
+    # `test_shutdown_executor_kills_wedged_process_pool_worker`.
+    processes_snapshot: list[Any] = []
+    if is_process_pool:
+        current = getattr(executor, "_processes", None) or {}
+        processes_snapshot = list(current.values())
+
     try:
-        executor.shutdown(wait=True, cancel_futures=True)
+        executor.shutdown(wait=not is_process_pool, cancel_futures=True)
     except Exception:
         # shutdown() should not raise — if it does, escalate.
         pass
 
-    # ProcessPoolExecutor: if any child process is still alive after
-    # shutdown, force-terminate. ThreadPoolExecutor has no child
-    # processes; the `_processes` attribute is absent and this is a no-op.
-    processes = getattr(executor, "_processes", None)
-    if not processes:
+    if not is_process_pool:
         return
-    for proc in list(processes.values()):
+
+    deadline_split = max(timeout / 2.0, 0.1)
+    for proc in processes_snapshot:
         if proc is None or not proc.is_alive():
             continue
         try:
-            proc.terminate()
-            proc.join(timeout=timeout)
+            # Give the child a bounded chance to exit naturally (e.g.,
+            # once it finishes the in-flight future), then escalate.
+            proc.join(timeout=deadline_split)
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=deadline_split)
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=0.5)
         except Exception:  # pragma: no cover — defensive
             pass
+
+    # Final `shutdown(wait=True)` lets the executor's internal
+    # `_queue_management_thread` exit cleanly now that children are
+    # dead. Without this, the module-level `atexit` in `concurrent.
+    # futures.process` blocks indefinitely at interpreter shutdown
+    # trying to join a thread that is itself waiting on a now-dead
+    # child. Caught as an 8-minute post-suite hang when the full
+    # pytest run included a wedge test.
+    try:
+        executor.shutdown(wait=True, cancel_futures=True)
+    except Exception:  # pragma: no cover — defensive
+        pass
 
 
 __all__ = ["StopSignal", "join_or_raise", "shutdown_executor"]
