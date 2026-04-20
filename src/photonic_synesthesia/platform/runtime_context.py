@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import atexit
 import concurrent.futures
 import copy
 import hashlib
@@ -15,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from photonic_synesthesia.core.logging import get_logger
+from photonic_synesthesia.core.threadhygiene import shutdown_executor
 from photonic_synesthesia.platform.operator_workspace import build_operator_workspace_banks
 from photonic_synesthesia.platform.staging_lane import (
     commit_staged_look as _commit_staged_look_helper,
@@ -96,6 +98,23 @@ _REGEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
 )
 _REGEN_INFLIGHT = Lock()
 _REGEN_TIMEOUT_SECONDS = 5.0
+
+
+# Cycle-6 B4: the module-level executor never had a shutdown path. At
+# interpreter exit, Python's `concurrent.futures.thread._python_exit`
+# atexit handler fires `shutdown(wait=True)` — if a regen worker is
+# wedged (e.g., stuck inside a deep director.palettes computation),
+# that blocks interpreter exit indefinitely. Register our own atexit
+# that beats Python's to the punch and uses the bounded-wait helper.
+# ThreadPool has no children to kill, so the helper falls back to
+# `shutdown(wait=True)` — but by the time Python's handler runs, ours
+# has already set `_shutdown_thread=True` and cleared the queue, so
+# the second shutdown is a cheap no-op.
+def _shutdown_regen_executor_at_exit() -> None:
+    shutdown_executor(_REGEN_EXECUTOR, timeout=2.0, name="playback-regen")
+
+
+atexit.register(_shutdown_regen_executor_at_exit)
 
 
 def _try_acquire_regen_slot() -> bool:
