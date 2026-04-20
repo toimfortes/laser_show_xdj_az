@@ -3835,10 +3835,16 @@ function bindControls() {
   });
 }
 
+// Post-merge cycle-4 audit HIGH-5 (Review B): track reconnect attempts so
+// the UI can show "reconnecting (N)" and so subsequent fixes (exp backoff)
+// have a counter to key off.
+let wsReconnectAttempts = 0;
+
 function connectWebSocket() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${protocol}://${window.location.host}/ws/live`);
   socket.addEventListener("open", () => {
+    wsReconnectAttempts = 0;
     appState.wsStatus = "live";
     qs("ws-status").textContent = "live";
   });
@@ -3847,9 +3853,24 @@ function connectWebSocket() {
     updateRuntimeSummary();
     renderSceneBank();
   });
+  // Post-merge cycle-4 audit CRITICAL-4 (Review B): without an `error`
+  // listener, network failures / server 500s / CORS issues fire a silent
+  // error event and the socket can enter a broken state without firing
+  // `close`. Force a close on error so reconnect logic fires.
+  socket.addEventListener("error", () => {
+    appState.wsStatus = "error";
+    qs("ws-status").textContent = "error";
+    try { socket.close(); } catch (_) { /* best-effort */ }
+  });
   socket.addEventListener("close", () => {
+    // Post-merge cycle-4 audit HIGH-5 (Review B): on disconnect, clear
+    // stale snapshot so the user sees "reconnecting" state, not last-seen
+    // frame (which after a server restart may be completely wrong).
+    appState.runtimeSnapshot = null;
+    wsReconnectAttempts += 1;
     appState.wsStatus = "reconnecting";
-    qs("ws-status").textContent = "reconnecting";
+    qs("ws-status").textContent = `reconnecting (${wsReconnectAttempts})`;
+    updateRuntimeSummary();
     window.setTimeout(connectWebSocket, 1500);
   });
 }

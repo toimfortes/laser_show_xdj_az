@@ -735,6 +735,14 @@ class PlaybackContext:
                 "Show-plan regeneration already in flight — wait for it "
                 "to finish before triggering another."
             )
+        # Post-merge cycle-4 audit HIGH-4 (Review B): assign
+        # `slot_released_by_worker` BEFORE the inner try so any exception
+        # (including a TimeoutError that happens before our `else` branch
+        # could reach the assignment) leaves the flag in a defined state.
+        # This removes the `except UnboundLocalError:` defensive catch
+        # that used to guard against this; the flag is now always bound
+        # when `finally` runs.
+        slot_released_by_worker = False
         try:
             try:
                 future = _REGEN_EXECUTOR.submit(
@@ -770,22 +778,16 @@ class PlaybackContext:
                     f"Show-plan regeneration timed out after {_REGEN_TIMEOUT_SECONDS}s "
                     f"for mode={normalized_mode!r}, variance={normalized_variance:.3f}"
                 ) from exc
-            else:
-                slot_released_by_worker = False
             if not isinstance(regenerated_sections, list):
                 raise RuntimeError("Playback regeneration did not return show sections")
         finally:
-            # Release on the success / non-timeout-error path. The
-            # timeout branch sets `slot_released_by_worker` and the
-            # `add_done_callback` handles release when the worker
-            # finishes naturally.
-            try:
-                if not slot_released_by_worker:
-                    _release_regen_slot()
-            except UnboundLocalError:
-                # Edge case: exception thrown before `slot_released_by_worker`
-                # was assigned (shouldn't happen with the above structure
-                # but defensive). Release defensively.
+            # Post-merge cycle-4 audit HIGH-4 (Review B): `slot_released_by_worker`
+            # is pre-assigned above so this `finally` is unconditional and
+            # needs no UnboundLocalError guard. The timeout branch flips
+            # the flag to True and hands off to `add_done_callback`; every
+            # other path keeps it False and we release here. `_release_regen_slot`
+            # itself is idempotent (catches RuntimeError from re-release).
+            if not slot_released_by_worker:
                 _release_regen_slot()
 
         # Cycle-3-rev-2 R1+R3 lock pattern.

@@ -196,6 +196,25 @@ def test_delete_404_for_missing_rig(client):
     assert r.status_code == 404
 
 
+def test_duplicate_to_self_returns_400(client):
+    """Post-merge cycle-4 audit M2 (self): duplicate-to-self is rejected
+    so the user isn't surprised by a silent overwrite."""
+    client.put("/api/mock/rigs/source", json={"fixtures": [_laser_fixture()]})
+    r = client.post("/api/mock/rigs/source/duplicate?as=source")
+    assert r.status_code == 400
+    assert r.json()["detail"]["detail"] == "duplicate_to_self"
+
+
+def test_duplicate_to_new_name_succeeds(client):
+    client.put("/api/mock/rigs/source", json={"fixtures": [_laser_fixture()]})
+    r = client.post("/api/mock/rigs/source/duplicate?as=copy")
+    assert r.status_code == 200
+    assert r.json()["duplicated_to"] == "copy"
+    # Source still exists untouched.
+    assert client.get("/api/mock/rigs/source").status_code == 200
+    assert client.get("/api/mock/rigs/copy").status_code == 200
+
+
 # ---------------------------------------------------------------------------
 # Profile / enabled persistence (Cycle-1 panel Kilo CRITICAL#3)
 

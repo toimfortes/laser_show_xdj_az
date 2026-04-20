@@ -1591,9 +1591,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="rig_not_found")
         return {"active": name}
 
+    from fastapi import Query as _Query  # local — fastapi is optional at module level
+
     @app.post("/api/mock/rigs/{name}/duplicate")
     @log_endpoint("POST:/api/mock/rigs/{name}/duplicate")
-    async def duplicate_mock_rig(name: str, as_name: str = "") -> dict[str, Any]:
+    async def duplicate_mock_rig(
+        name: str,
+        # Query alias so the wire param is `?as=<newname>` (the Python name
+        # `as` is a reserved word, so we bind to `as_name` and alias).
+        as_name: str = _Query(default="", alias="as"),
+    ) -> dict[str, Any]:
         try:
             rig_storage._validate_name(name)
         except ValueError as exc:
@@ -1604,6 +1611,15 @@ def create_app(
             rig_storage._validate_name(as_name)
         except ValueError as exc:
             raise _bad_request("invalid_rig_name", reason=str(exc))
+        # Post-merge cycle-4 audit M2 (self): duplicate-to-self would
+        # silently overwrite the source rig's `saved_at` timestamp under
+        # the disguise of a "duplicate" action. Reject so the user isn't
+        # surprised when their source rig's timestamp jumps.
+        if as_name == name:
+            raise _bad_request(
+                "duplicate_to_self",
+                reason="target name must differ from source",
+            )
         try:
             source = rig_storage.load_rig(name)
         except FileNotFoundError:
@@ -1805,7 +1821,22 @@ def create_app(
         await websocket.accept()
         try:
             while True:
-                await websocket.send_json(services.snapshot().model_dump(mode="json"))
+                # Post-merge cycle-4 audit CRITICAL-5 (Review B): send_json
+                # can hang forever if the client TCP buffer is full, a
+                # network partition has silently dropped the connection,
+                # or the client is frozen but hasn't sent RST. Bound each
+                # send with a 5s timeout so a wedged client can't leak
+                # this coroutine.
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_json(
+                            services.snapshot().model_dump(mode="json")
+                        ),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("ws_live_send_timeout")
+                    break  # close the socket; client will reconnect
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
