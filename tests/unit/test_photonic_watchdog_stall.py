@@ -111,16 +111,13 @@ def test_advancing_heartbeat_prevents_escalation(
 
     thread = _run_loop_in_thread(main_pid)
 
-    try:
-        # Advance heartbeat faster than MAX_SOFT_STALL_MS.
-        deadline = time.monotonic() + 0.3
-        hb = 1
-        while time.monotonic() < deadline:
-            hb += 1
-            shmem.write_main(main_heartbeat=hb)
-            time.sleep(0.015)  # well under 50ms soft threshold
-    finally:
-        shmem.write_watchdog(blackout_requested=0)  # reset just in case
+    # Advance heartbeat faster than MAX_SOFT_STALL_MS for ~300 ms.
+    deadline = time.monotonic() + 0.3
+    hb = 1
+    while time.monotonic() < deadline:
+        hb += 1
+        shmem.write_main(main_heartbeat=hb)
+        time.sleep(0.015)  # well under 50ms soft threshold
 
     snap = shmem.read()
     assert snap.blackout_requested == 0, (
@@ -130,9 +127,11 @@ def test_advancing_heartbeat_prevents_escalation(
         f"advancing heartbeat should never trigger os.kill; got {kill_recorder}"
     )
 
-    # Let the thread drain — it will continue spinning until process
-    # exit; that's fine for a daemon thread in a test.
-    del thread
+    # Drain the thread: stop heartbeating and wait for the hard-stall
+    # path to exit the loop (~150 ms threshold + 1 loop-tick). Joining
+    # here prevents the daemon thread from piling up across the suite.
+    thread.join(timeout=0.5)
+    assert not thread.is_alive(), "watchdog thread must exit after hard stall"
 
 
 def test_soft_stall_sets_blackout_and_sends_sigusr1(
@@ -165,7 +164,9 @@ def test_soft_stall_sets_blackout_and_sends_sigusr1(
     )
     assert sigusr1_calls[0][0] == main_pid
 
-    del thread
+    # Let the loop run to hard-stall → SIGKILL exit, then join.
+    thread.join(timeout=0.5)
+    assert not thread.is_alive(), "watchdog thread must exit after hard stall"
 
 
 def test_hard_stall_sends_sigkill(

@@ -93,7 +93,7 @@ Homepage = "https://github.com/toimfortes/laser_show_xdj_az"
 Repository = "https://github.com/toimfortes/laser_show_xdj_az"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/photonic_synesthesia"]
+packages = ["src/photonic_synesthesia", "photonic_watchdog"]
 
 [tool.black]
 line-length = 100
