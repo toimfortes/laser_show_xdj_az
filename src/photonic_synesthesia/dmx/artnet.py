@@ -57,11 +57,26 @@ class ArtNetTransmitter:
         self._socket: socket.socket | None = None
 
     def open(self) -> None:
+        """Open the UDP socket and set broadcast option if requested.
+
+        Cycle-6 E3/H1: previously, if `setsockopt` raised (broadcast
+        not permitted, exotic stack, sandbox restrictions), the
+        partially configured `sock` fell out of scope unclosed —
+        leaking a file descriptor until GC. Now we close the partial
+        socket on any exception and re-raise.
+        """
         if self._socket is not None:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        if self.broadcast:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            if self.broadcast:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        except BaseException:
+            try:
+                sock.close()
+            except Exception:
+                pass
+            raise
         self._socket = sock
 
     def close(self) -> None:

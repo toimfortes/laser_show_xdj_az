@@ -61,17 +61,20 @@ def test_ilda_dac_stop_is_loud_when_emergency_thread_wedges() -> None:
     node = _build_node()
     wedge = threading.Event()
     # Replace the emergency thread with an unkillable one.
-    node._thread = threading.Thread(
+    worker = threading.Thread(
         target=lambda: wedge.wait(5.0), name="ILDA-Emergency-Output", daemon=True
     )
-    node._thread.start()
+    worker.start()
+    node._thread = worker
 
-    with pytest.raises(RuntimeError, match="ILDA-Emergency-Output.*failed to exit"):
-        node.stop()
-
-    wedge.set()
-    if node._thread is not None:
-        node._thread.join(timeout=1.0)
+    try:
+        with pytest.raises(RuntimeError, match="ILDA-Emergency-Output.*failed to exit"):
+            node.stop()
+    finally:
+        # `stop()` nulls `node._thread` in its finally block; keep our
+        # own ref to drain the wedged worker before the canary checks.
+        wedge.set()
+        worker.join(timeout=1.0)
 
 
 def test_ilda_dac_stop_returns_fast_under_clean_shutdown() -> None:

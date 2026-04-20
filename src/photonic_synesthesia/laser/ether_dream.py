@@ -121,13 +121,34 @@ class EtherDreamClient:
         self._current_point_rate: int | None = None
 
     def connect(self) -> None:
+        """Connect to the Ether Dream DAC and read its initial broadcast.
+
+        Cycle-6 E3/H3: previously assigned `self._socket = sock` BEFORE
+        `_recv_response()`. If recv timed out or the DAC dropped the
+        connection mid-handshake, `self._socket` was already set —
+        every subsequent `connect()` short-circuited on `if self._socket
+        is not None: return`, leaving a poisoned socket retained
+        forever and the DAC effectively unrecoverable until process
+        restart. Now we keep `sock` local until handshake completes;
+        on any error we close it and clear state before re-raising.
+        """
         with self._lock:
             if self._socket is not None:
                 return
             sock = socket.create_connection((self.host, self.port), timeout=self.timeout_s)
             sock.settimeout(self.timeout_s)
-            self._socket = sock
-            self._recv_response()
+            try:
+                # Temporarily attach so `_recv_response` (which reads
+                # from `self._socket`) can use it. Roll back on failure.
+                self._socket = sock
+                self._recv_response()
+            except BaseException:
+                self._socket = None
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+                raise
 
     def close(self) -> None:
         with self._lock:

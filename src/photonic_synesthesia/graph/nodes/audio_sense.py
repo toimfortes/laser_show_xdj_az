@@ -118,8 +118,17 @@ class AudioSenseNode:
             else:
                 device_id = None  # Use default
 
-            # Create input stream
-            self._stream = sd.InputStream(
+            # Create input stream.
+            #
+            # Cycle-6 E3/H5: keep the stream local until BOTH `__init__`
+            # and `.start()` succeed. Pre-E3, a failure inside
+            # `_stream.start()` (device disappeared between query and
+            # start, PortAudio internal error) left `self._stream`
+            # holding a partially opened PortAudio handle. Future
+            # `start()` calls would skip construction because
+            # `self._stream` was truthy — leaking the broken handle and
+            # never reopening.
+            stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 blocksize=self.block_size,
                 device=device_id,
@@ -128,7 +137,15 @@ class AudioSenseNode:
                 callback=self._audio_callback,
                 latency=self.config.latency,
             )
-            self._stream.start()
+            try:
+                stream.start()
+            except BaseException:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+                raise
+            self._stream = stream
             self._running = True
             logger.info("Audio capture started")
 
