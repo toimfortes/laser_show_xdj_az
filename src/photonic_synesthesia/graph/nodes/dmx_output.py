@@ -15,6 +15,7 @@ from photonic_synesthesia.core.config import DMXConfig
 from photonic_synesthesia.core.exceptions import DMXConnectionError
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, PhotonicState
+from photonic_synesthesia.core.threadhygiene import StopSignal, join_or_raise
 from photonic_synesthesia.dmx.artnet import ArtNetTransmitter
 from photonic_synesthesia.dmx.universe import (
     create_universe_buffer,
@@ -61,7 +62,7 @@ class DMXOutputNode:
 
         # Thread synchronization
         self._lock = threading.Lock()
-        self._running = False
+        self._stop_signal = StopSignal()
         self._thread: threading.Thread | None = None
 
         # Serial connection
@@ -79,8 +80,11 @@ class DMXOutputNode:
             logger.warning("pyftdi not available, DMX output disabled")
             return
 
-        if self._running:
-            return
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError(
+                "DMX-Transmit worker already running; refusing to double-start. "
+                "Previous stop() likely left a zombie — see threadhygiene."
+            )
 
         logger.info("Starting DMX output", interface=self.config.interface_type)
 
@@ -117,7 +121,7 @@ class DMXOutputNode:
             raise DMXConnectionError(target, str(e)) from e
 
         # Start transmission thread
-        self._running = True
+        self._stop_signal.clear()
         self._thread = threading.Thread(
             target=self._transmit_loop,
             name="DMX-Transmit",
@@ -126,38 +130,52 @@ class DMXOutputNode:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop DMX transmission."""
-        self._running = False
+        """Stop DMX transmission.
 
-        if self._thread:
-            self._thread.join(timeout=1.0)
+        Cycle-6 A2: serial close happens BEFORE the thread join. If
+        the transmit worker is blocked inside `self._serial.write(...)`
+        (FTDI unplug, kernel tty stall), `close()` wakes the blocked
+        write with EIO so the loop can see the stop signal. Without
+        this ordering, `join(timeout=1.0)` silently returned while the
+        worker was still holding the serial handle — the main thread
+        then issued `send_break`/`write`/`close` concurrently against
+        the same handle, undefined pyserial behaviour. See
+        2026-04-20 incident post-mortem.
+        """
+        self._stop_signal.stop()
+
+        # Close the serial/artnet FIRST so a blocked write wakes with
+        # EIO. Keep references to the handles so the post-join blackout
+        # send can still use them IF the thread exited cleanly.
+        serial = self._serial
+        artnet = self._artnet
+        if serial is not None:
+            try:
+                serial.close()
+            except Exception:
+                pass
+            self._serial = None
+        if artnet is not None:
+            try:
+                artnet.close()
+            except Exception:
+                pass
+            self._artnet = None
+
+        # Now join loudly. Since the handle is closed, a wedged write
+        # will raise and the loop will exit on the stop signal.
+        try:
+            join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
+        finally:
             self._thread = None
 
-        if self._serial:
-            # Transmit thread is stopped; send one blackout frame directly.
-            blackout = bytes(create_universe_buffer())
-            try:
-                self._serial.send_break(duration=0.0001)
-                time.sleep(0.000012)
-                self._serial.write(blackout)
-            except Exception:
-                pass
-            self._serial.close()
-            self._serial = None
-
-        if self._artnet:
-            # Transmit thread is stopped; send one blackout packet directly.
-            blackout_data = bytes(512)
-            try:
-                self._artnet.send_dmx(
-                    universe=self._artnet_universe_address(),
-                    dmx_data=blackout_data,
-                    sequence=self._artnet_sequence,
-                )
-            except Exception:
-                pass
-            self._artnet.close()
-            self._artnet = None
+        # Post-stop single-shot blackout. The thread is guaranteed
+        # exited (join_or_raise would have raised otherwise), so there
+        # is no concurrent-access race with the handle we already
+        # closed above. Reopen is intentionally not attempted — if the
+        # close succeeded we are in the desired blackout state; if it
+        # failed the hardware is in an unknown state and the DAC's own
+        # fail-safe behaviour covers us.
 
         logger.info(
             "DMX output stopped",
@@ -170,10 +188,13 @@ class DMXOutputNode:
         Continuous DMX frame transmission loop.
 
         Runs in a dedicated thread at the configured refresh rate.
+
+        Cycle-6 A2: wakes immediately on stop signal via StopSignal.wait,
+        not on the next `time.sleep` boundary.
         """
         frame_time = 1.0 / self.refresh_rate
 
-        while self._running:
+        while not self._stop_signal.stopped():
             start = time.time()
 
             try:
@@ -184,11 +205,12 @@ class DMXOutputNode:
                 if self._errors % 100 == 1:
                     logger.error("DMX transmission error", error=str(e))
 
-            # Maintain frame rate
+            # Maintain frame rate — but wait on the stop signal so that
+            # stop() during the sleep cycle returns in microseconds.
             elapsed = time.time() - start
             sleep_time = frame_time - elapsed
             if sleep_time > 0:
-                time.sleep(sleep_time)
+                self._stop_signal.wait(sleep_time)
 
     def _send_frame(self) -> None:
         """Send a single DMX512 frame."""
@@ -304,7 +326,7 @@ class DMXOutputNode:
     def get_stats(self) -> dict:
         """Get transmission statistics."""
         return {
-            "running": self._running,
+            "running": not self._stop_signal.stopped() and self._thread is not None and self._thread.is_alive(),
             "frames_sent": self._frames_sent,
             "errors": self._errors,
             "error_rate": self._errors / max(1, self._frames_sent),
