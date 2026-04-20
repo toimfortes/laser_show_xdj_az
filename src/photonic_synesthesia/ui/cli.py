@@ -1319,7 +1319,7 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
         set_shared_control_plane_service,
         set_shared_playback_context,
     )
-    from photonic_synesthesia.ui.web_panel import serve_in_thread
+    from photonic_synesthesia.ui.web_panel import serve_in_thread, shutdown_server
 
     click.echo(f"Photonic Synesthesia v{__version__}")
     click.echo("=" * 50)
@@ -1425,10 +1425,7 @@ def run(ctx: click.Context, mock: bool, fps: float, web_mode: bool, web_host: st
     finally:
         if graph is not None:
             graph.stop()  # idempotent: stop() is safe to call multiple times
-        if web_server is not None:
-            web_server.should_exit = True
-            if web_thread is not None and web_thread.is_alive():
-                web_thread.join(timeout=5.0)
+        shutdown_server(web_server, web_thread)
         clear_shared_control_plane_service()
         clear_shared_playback_context()
 
@@ -1499,7 +1496,7 @@ def run_file(
         set_shared_control_plane_service,
         set_shared_playback_context,
     )
-    from photonic_synesthesia.ui.web_panel import serve_in_thread
+    from photonic_synesthesia.ui.web_panel import serve_in_thread, shutdown_server
 
     if fps <= 0:
         click.echo("Error: --fps must be greater than 0", err=True)
@@ -1859,10 +1856,7 @@ def run_file(
             )
         if graph is not None:
             graph.stop()
-        if web_server is not None:
-            web_server.should_exit = True
-        if web_thread is not None:
-            web_thread.join(timeout=3.0)
+        shutdown_server(web_server, web_thread, soft_timeout=3.0)
         clear_shared_control_plane_service()
         clear_shared_playback_context()
 

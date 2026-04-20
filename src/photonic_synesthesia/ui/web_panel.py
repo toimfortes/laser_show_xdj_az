@@ -1947,3 +1947,47 @@ def serve_in_thread(
         time.sleep(0.05)
 
     return server, thread
+
+
+def shutdown_server(
+    server: Any,
+    thread: threading.Thread | None,
+    *,
+    soft_timeout: float = 5.0,
+    force_timeout: float = 2.0,
+) -> None:
+    """Cleanly stop an embedded uvicorn server started via serve_in_thread.
+
+    Cycle-6 A4: three-phase shutdown so a hung request or websocket
+    can't wedge the main process.
+
+      1. Soft: set `should_exit`. Uvicorn finishes in-flight requests
+         and closes listeners. Join with `soft_timeout`.
+      2. Hard: if the thread is still alive, set `force_exit` so
+         uvicorn aborts active connections. Join with `force_timeout`.
+      3. Loud: if the thread is STILL alive, log a warning. The
+         thread is a daemon so the process can still exit, but a
+         future incarnation of yesterday's crash class would be
+         visible in logs instead of silent.
+
+    Safe to call with None for either argument (no-op).
+    """
+    if server is None or thread is None or not thread.is_alive():
+        return
+
+    server.should_exit = True
+    thread.join(timeout=soft_timeout)
+    if not thread.is_alive():
+        return
+
+    logger.warning(
+        "embedded_web_server_soft_shutdown_timed_out",
+        soft_timeout=soft_timeout,
+    )
+    server.force_exit = True
+    thread.join(timeout=force_timeout)
+    if thread.is_alive():
+        logger.error(
+            "embedded_web_server_failed_to_exit",
+            total_timeout=soft_timeout + force_timeout,
+        )
