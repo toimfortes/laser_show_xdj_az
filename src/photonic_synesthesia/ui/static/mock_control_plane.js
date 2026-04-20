@@ -505,6 +505,24 @@ function renderPlayback() {
   const selectionVariancePercent = Math.round(selectionVariance * 100);
   const hasAudio = Boolean(playback.audio_url);
   const seekable = Boolean(playback.seekable);
+
+  // Cycle-3 destructive review F-AUDIO fix: every prior renderPlayback()
+  // call rewrote `playbackPanel.innerHTML`, which DESTROYS the
+  // `<audio id="track-audio">` element. Operator selection-mode and
+  // exploration changes therefore stopped browser audio deterministically
+  // even when the backend regen succeeded. Detach the existing audio
+  // element BEFORE the innerHTML rewrite, reattach it AFTER, so its
+  // playback state (src, currentTime, paused) survives the re-render.
+  // If the new render decides hasAudio=false (no audio_url), discard the
+  // detached element.
+  let preservedAudio = elements.playbackPanel.querySelector("#track-audio");
+  if (preservedAudio) {
+    if (!hasAudio || preservedAudio.src !== playback.audio_url) {
+      preservedAudio = null;  // src changed (new track) or audio gone — let render rebuild
+    } else {
+      preservedAudio.remove();  // detach so innerHTML rewrite doesn't destroy it
+    }
+  }
   elements.playbackPanel.innerHTML = `
     <div class="playback-meta">
       <div>
@@ -557,6 +575,17 @@ function renderPlayback() {
     <canvas id="waveform-canvas" width="640" height="96"></canvas>`
       : `<div class="playback-live-note">Live metadata session: track binding and phrase timeline are active without local browser audio.</div>`}
   `;
+
+  // F-AUDIO: if we preserved the prior audio element, swap it in for the
+  // freshly-rendered placeholder so playback state continues uninterrupted.
+  if (preservedAudio) {
+    const placeholder = elements.playbackPanel.querySelector("#track-audio");
+    if (placeholder) {
+      placeholder.replaceWith(preservedAudio);
+    } else {
+      elements.playbackPanel.appendChild(preservedAudio);
+    }
+  }
 
   const audio = elements.playbackPanel.querySelector("#track-audio");
   const waveformCanvas = elements.playbackPanel.querySelector("#waveform-canvas");

@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import functools
 import math
 import os
 import random
@@ -19,6 +20,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from photonic_synesthesia import __version__
+from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.platform import (
     CommandType,
     ControlPlaneStateService,
@@ -30,6 +32,54 @@ from photonic_synesthesia.platform import (
     get_shared_control_plane_service,
     get_shared_playback_context,
 )
+
+logger = get_logger(__name__)
+
+
+def log_endpoint(op: str):
+    """Decorator: log endpoint entry, exit-with-duration, and exceptions.
+
+    Cycle-3 destructive review D1 fix: previously 0/36 endpoints had any
+    logging; debugging the catastrophic crash was impossible because no
+    application telemetry survived the failure. This decorator emits:
+        - INFO at entry with the operation name + key request fields
+        - INFO at exit with `op` + `duration_ms`
+        - ERROR with full exception context if the handler raises
+
+    Uses the in-repo `get_logger` (structlog-style kwargs, falls back to
+    stdlib logging when structlog isn't installed).
+    """
+    def decorator(handler):
+        @functools.wraps(handler)
+        async def wrapper(*args, **kwargs):
+            start = time.perf_counter()
+            # Best-effort capture of the first BaseModel arg for context.
+            req_summary = None
+            for value in (*args, *kwargs.values()):
+                if isinstance(value, BaseModel):
+                    try:
+                        req_summary = value.model_dump(exclude_none=True)
+                    except Exception:
+                        req_summary = None
+                    break
+            logger.info("endpoint_request", op=op, request=req_summary)
+            try:
+                result = await handler(*args, **kwargs)
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                logger.exception(
+                    "endpoint_error", op=op, duration_ms=round(duration_ms, 2),
+                    error_type=type(exc).__name__, error=str(exc)[:200],
+                ) if hasattr(logger, "exception") else logger.error(
+                    "endpoint_error", op=op, duration_ms=round(duration_ms, 2),
+                    error_type=type(exc).__name__, error=str(exc)[:200],
+                )
+                raise
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info("endpoint_response", op=op, duration_ms=round(duration_ms, 2))
+            return result
+        return wrapper
+    return decorator
 
 MOCK_FIXTURE_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -880,10 +930,12 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return _render_control_plane_html()
 
     @app.get("/healthz")
+    @log_endpoint("GET:/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/api/live/health")
+    @log_endpoint("GET:/api/live/health")
     async def live_health() -> dict[str, Any]:
         return services.health(
             version=__version__,
@@ -901,6 +953,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         ).model_dump(mode="json")
 
     @app.get("/api/live/state")
+    @log_endpoint("GET:/api/live/state")
     async def live_state() -> dict[str, Any]:
         services.publish_event(
             PlatformEventType.LIVE_STATE_PUBLISHED,
@@ -909,6 +962,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return services.snapshot().model_dump(mode="json")
 
     @app.get("/api/live/safety")
+    @log_endpoint("GET:/api/live/safety")
     async def live_safety() -> dict[str, Any]:
         snapshot = services.snapshot()
         return {
@@ -922,18 +976,22 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         }
 
     @app.get("/api/mock/catalog")
+    @log_endpoint("GET:/api/mock/catalog")
     async def mock_catalog() -> dict[str, Any]:
         return mock_rig.catalog()
 
     @app.get("/api/mock/state")
+    @log_endpoint("GET:/api/mock/state")
     async def mock_state() -> dict[str, Any]:
         return mock_rig.snapshot()
 
     @app.get("/api/mock/universes")
+    @log_endpoint("GET:/api/mock/universes")
     async def mock_universes() -> dict[str, Any]:
         return mock_rig.universe_snapshot()
 
     @app.get("/api/mock/playback")
+    @log_endpoint("GET:/api/mock/playback")
     async def mock_playback() -> dict[str, Any]:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -941,6 +999,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.get("/api/mock/playback/audio")
+    @log_endpoint("GET:/api/mock/playback/audio")
     async def mock_playback_audio(session: str | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -958,6 +1017,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.get("/api/mock/playback/ilda-export")
+    @log_endpoint("GET:/api/mock/playback/ilda-export")
     async def mock_playback_ilda_export(session: str | None = None) -> Any:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -972,6 +1032,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return FileResponse(export_path, media_type=media_type, filename=filename)
 
     @app.patch("/api/mock/playback/show-sections/{section_id}")
+    @log_endpoint("PATCH:/api/mock/playback/show-sections/{section_id}")
     async def update_playback_show_section(
         section_id: str, request: PlaybackShowSectionUpdateRequest
     ) -> dict[str, Any]:
@@ -984,6 +1045,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.patch("/api/mock/playback/selection-mode")
+    @log_endpoint("PATCH:/api/mock/playback/selection-mode")
     async def update_playback_selection_mode(
         request: PlaybackSelectionModeRequest,
     ) -> dict[str, Any]:
@@ -996,6 +1058,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.patch("/api/mock/playback/selection-variance")
+    @log_endpoint("PATCH:/api/mock/playback/selection-variance")
     async def update_playback_selection_variance(
         request: PlaybackSelectionVarianceRequest,
     ) -> dict[str, Any]:
@@ -1008,6 +1071,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/operator-intents")
+    @log_endpoint("POST:/api/mock/playback/operator-intents")
     async def apply_playback_operator_intent(
         request: PlaybackOperatorIntentRequest,
     ) -> dict[str, Any]:
@@ -1026,6 +1090,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/operator/workspace")
+    @log_endpoint("GET:/api/operator/workspace")
     async def operator_workspace() -> dict[str, Any]:
         """Return the operator workspace banks + live active scene id.
 
@@ -1045,6 +1110,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return body
 
     @app.post("/api/operator/stage")
+    @log_endpoint("POST:/api/operator/stage")
     async def stage_operator_look(
         request: PlaybackStagedLookRequest,
     ) -> dict[str, Any]:
@@ -1067,6 +1133,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/operator/commit")
+    @log_endpoint("POST:/api/operator/commit")
     async def commit_operator_look() -> dict[str, Any]:
         """Commit the currently-staged look into the authored section.
 
@@ -1086,6 +1153,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/pro-dj-link/track")
+    @log_endpoint("POST:/api/mock/playback/pro-dj-link/track")
     async def bind_playback_pro_dj_link_track(
         request: PlaybackProDJLinkTrackRequest,
     ) -> dict[str, Any]:
@@ -1113,6 +1181,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/mock/playback/seek")
+    @log_endpoint("POST:/api/mock/playback/seek")
     async def seek_playback(request: PlaybackSeekRequest) -> dict[str, Any]:
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
@@ -1124,6 +1193,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return playback_context.snapshot()
 
     @app.post("/api/mock/fixtures")
+    @log_endpoint("POST:/api/mock/fixtures")
     async def create_mock_fixture(request: MockFixtureCreateRequest) -> dict[str, Any]:
         if request.template_slug not in _FIXTURE_TEMPLATE_INDEX:
             raise HTTPException(status_code=404, detail="Unknown fixture template")
@@ -1131,6 +1201,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.patch("/api/mock/fixtures/{fixture_id}")
+    @log_endpoint("PATCH:/api/mock/fixtures/{fixture_id}")
     async def update_mock_fixture(
         fixture_id: str, request: MockFixtureUpdateRequest
     ) -> dict[str, Any]:
@@ -1140,6 +1211,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.post("/api/mock/fixtures/{fixture_id}/duplicate")
+    @log_endpoint("POST:/api/mock/fixtures/{fixture_id}/duplicate")
     async def duplicate_mock_fixture(fixture_id: str) -> dict[str, Any]:
         fixture = mock_rig.duplicate_fixture(fixture_id)
         if fixture is None:
@@ -1147,18 +1219,21 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         return {"fixture": fixture, "state": mock_rig.snapshot()}
 
     @app.delete("/api/mock/fixtures/{fixture_id}")
+    @log_endpoint("DELETE:/api/mock/fixtures/{fixture_id}")
     async def delete_mock_fixture(fixture_id: str) -> dict[str, Any]:
         if not mock_rig.delete_fixture(fixture_id):
             raise HTTPException(status_code=404, detail="Fixture not found")
         return {"deleted": True, "state": mock_rig.snapshot()}
 
     @app.post("/api/mock/scene")
+    @log_endpoint("POST:/api/mock/scene")
     async def update_mock_scene(request: MockSceneStateRequest) -> dict[str, Any]:
         if not mock_rig.update_scene(request.scene_id):
             raise HTTPException(status_code=404, detail="Unknown mock scene")
         return mock_rig.snapshot()
 
     @app.post("/api/mock/masters")
+    @log_endpoint("POST:/api/mock/masters")
     async def update_mock_masters(request: MockMasterStateRequest) -> dict[str, Any]:
         return mock_rig.update_masters(
             master_intensity=request.master_intensity,
@@ -1167,11 +1242,13 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/lease/acquire")
+    @log_endpoint("POST:/api/control/lease/acquire")
     async def acquire_control_lease(request: LeaseAcquireRequest) -> dict[str, Any]:
         response = services.acquire_control_lease(request)
         return response.model_dump(mode="json")
 
     @app.post("/api/control/lease/release")
+    @log_endpoint("POST:/api/control/lease/release")
     async def release_control_lease(request: ReleaseLeaseRequest) -> dict[str, Any]:
         released = services.release_control_lease(request.session_id, force=request.force)
         if not released:
@@ -1182,6 +1259,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         }
 
     @app.post("/api/control/arm")
+    @log_endpoint("POST:/api/control/arm")
     async def arm_live(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1194,6 +1272,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/disarm")
+    @log_endpoint("POST:/api/control/disarm")
     async def disarm_live(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1206,6 +1285,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/blackout")
+    @log_endpoint("POST:/api/control/blackout")
     async def activate_blackout(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1218,6 +1298,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/clear-blackout")
+    @log_endpoint("POST:/api/control/clear-blackout")
     async def clear_blackout(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1230,6 +1311,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/intensity")
+    @log_endpoint("POST:/api/control/intensity")
     async def set_intensity(request: IntensityCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1243,6 +1325,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/speed")
+    @log_endpoint("POST:/api/control/speed")
     async def set_speed(request: SpeedCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1256,6 +1339,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/launch")
+    @log_endpoint("POST:/api/control/scenes/launch")
     async def launch_scene(request: SceneCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1269,6 +1353,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/hold")
+    @log_endpoint("POST:/api/control/scenes/hold")
     async def hold_scene(request: SceneCommandRequest) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(
@@ -1282,6 +1367,7 @@ def create_app(services: ControlPlaneStateService | None = None) -> Any:
         )
 
     @app.post("/api/control/scenes/release-hold")
+    @log_endpoint("POST:/api/control/scenes/release-hold")
     async def release_scene_hold(request: SessionEnvelope) -> dict[str, Any]:
         require_control(request.session_id)
         return accept_command(

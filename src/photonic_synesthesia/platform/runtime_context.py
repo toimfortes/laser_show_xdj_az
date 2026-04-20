@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import hashlib
 import json
@@ -66,6 +67,43 @@ logger = get_logger(__name__)
 _LOCK = Lock()
 _SHARED_CONTROL_PLANE_SERVICE: ControlPlaneStateService | None = None
 _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
+
+# Cycle-3 destructive review F-EXEC + F-TIMEOUT: serialize show-plan
+# regeneration on a single dedicated worker thread so two FastAPI
+# requests can never run the AI scorer concurrently (eliminates
+# module-level shared-state races inside `_default_show_sections` /
+# `_ai_assisted_pattern_score`). Bounds the lock-hold time even if
+# the regen wedges (5 second hard ceiling); the FastAPI handler
+# returns RuntimeError instead of holding `_lock` indefinitely.
+#
+# On timeout, the worker thread can't be cancelled (Python limitation),
+# so we discard the executor and create a fresh one — the hung thread
+# leaks until it eventually returns or the process exits, but new
+# regens are not queued behind it.
+_REGEN_LOCK = Lock()
+_REGEN_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+_REGEN_TIMEOUT_SECONDS = 5.0
+
+
+def _get_regen_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _REGEN_EXECUTOR
+    with _REGEN_LOCK:
+        if _REGEN_EXECUTOR is None:
+            _REGEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="playback-regen",
+            )
+        return _REGEN_EXECUTOR
+
+
+def _replace_regen_executor() -> None:
+    """Discard the current regen executor (e.g. after a timeout) so the
+    next call creates a fresh one rather than queueing behind a hung
+    worker."""
+    global _REGEN_EXECUTOR
+    with _REGEN_LOCK:
+        if _REGEN_EXECUTOR is not None:
+            _REGEN_EXECUTOR.shutdown(wait=False)
+            _REGEN_EXECUTOR = None
 
 
 def _compute_authored_hash(
@@ -200,8 +238,18 @@ class PlaybackContext:
     _authored_cache: dict[str, Any] | None = field(default=None, repr=False)
     _authored_cache_hash: str = field(default="", repr=False)
 
-    # Persistence serializer lock (cycle-1 panel UF-15, cycle-2 panel NC-2:
-    # caller-locked contract; held alongside `_lock` on every write path).
+    # Persistence serializer lock. Cycle-3 destructive review D2 fix:
+    # held INDEPENDENTLY of `_lock`. Pattern on every write path:
+    #     with self._lock:                 # short — memory only
+    #         self.<mutate state>
+    #         payload = self._show_plan_payload_locked()
+    #     with self._persistence_lock:     # serializes writers; graph never blocks
+    #         self._persist_show_plan_locked(payload)
+    # Cycle-1 panel UF-15 (concurrent writers reordering disk writes) is
+    # closed by `_persistence_lock`; the cycle-2 panel NC-2 fix mistakenly
+    # held BOTH locks across the disk write, which let `_publish_playback_snapshot`
+    # block the 50 Hz graph tick on synchronous disk I/O. The cycle-3 review
+    # D2 corrected the lock-hold scope.
     _persistence_lock: Lock = field(default_factory=Lock, repr=False)
 
     # Hint for persisted timeline_flags ordering across rebind (cycle-2
@@ -226,14 +274,21 @@ class PlaybackContext:
             )
             self._flags_hash = _compute_flags_hash(self.timeline_flags)
 
-    def _refresh_operator_intents_locked(self) -> None:
+    def _refresh_operator_intents_locked(self) -> int:
         """Recompute show_sections from base + active intents, in place.
+
+        Returns: count of intents removed by expiry (cycle-3 destructive
+        review D3). Callers can skip the SHA1 hash recompute when the
+        result is 0 — i.e. when no intent expired and so authored content
+        cannot have changed via this path. Drops per-tick cost in
+        `update_transport` from ~0.5 ms to negligible.
 
         Cycle-2 panel UF-4 fix: writes `self.show_sections[:]` instead of
         `self.show_sections = ...` so the list identity is preserved. The
         plan's "_replace_show_sections_locked is the only reassignment
         path" invariant relies on this.
         """
+        prior_intent_count = len(self.operator_intents)
         active_intents = [
             copy.deepcopy(intent_payload)
             for intent_payload in self.operator_intents
@@ -268,6 +323,7 @@ class PlaybackContext:
         self.operator_intents = active_intents
         # Index-wise in-place update preserves list identity.
         self.show_sections[:] = sections
+        return prior_intent_count - len(active_intents)
 
     def _replace_show_sections_locked(self, show_sections: list[dict[str, Any]]) -> None:
         """Single authoritative writer for show_sections + derived state.
@@ -324,15 +380,15 @@ class PlaybackContext:
             self._timeline_flag_revision += 1
 
     def replace_show_sections(self, show_sections: list[dict[str, Any]]) -> dict[str, Any]:
-        """Public writer. Joint-lock; persistence ordered with memory.
-
-        Cycle-1 panel UF-15: lock ordering `_lock` → `_persistence_lock`.
-        Cycle-2 panel NC-2: persistence helper is caller-locked
-        (`_persist_show_plan_locked`).
+        """Public writer. Memory mutation under `_lock`; disk write under
+        `_persistence_lock` only — `_lock` is RELEASED before the I/O so
+        the 50 Hz graph tick never blocks on synchronous disk write
+        (cycle-3 destructive review D2).
         """
-        with self._lock, self._persistence_lock:
+        with self._lock:
             self._replace_show_sections_locked(show_sections)
             payload = self._show_plan_payload_locked()
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return self.snapshot()
 
@@ -349,10 +405,16 @@ class PlaybackContext:
 
         Cycle-4 panel Codex-HIGH-1 fix: `_refresh_operator_intents_locked()`
         can change `self.show_sections` when an intent expires (playhead
-        moved past TTL). The post-refresh `_recompute_authored_hash_locked()`
+        moved past TTL). Post-refresh `_recompute_authored_hash_locked()`
         catches that case so the authored cache and `_timeline_flag_revision`
-        stay in sync. The hash recompute is a no-op when nothing changed
-        (sub-100µs SHA1 over ~20KB of authored state).
+        stay in sync.
+
+        Cycle-3 destructive review D3 fix: gate the hash recompute on actual
+        intent-expiry (refresh returns the count). Cycle-4 measured 0.5 ms
+        per call at 70 KB authored state; at 50 Hz that's 24 ms/sec
+        unconditionally — meaningful CPU burn. Intents expire rarely;
+        skipping the recompute when nothing expired drops the steady-state
+        cost to near-zero.
         """
         with self._lock:
             self.playhead_seconds = max(0.0, min(playhead_seconds, self.duration_seconds))
@@ -360,8 +422,9 @@ class PlaybackContext:
             self.finished = finished
             self.realtime = realtime
             self.speed = max(0.01, speed)
-            self._refresh_operator_intents_locked()
-            self._recompute_authored_hash_locked()
+            expired_count = self._refresh_operator_intents_locked()
+            if expired_count > 0:
+                self._recompute_authored_hash_locked()
             self.server_time = time.time()
             self.transport_revision += 1
 
@@ -465,7 +528,8 @@ class PlaybackContext:
         for hash bookkeeping; persistence uses caller-locked helper.
         """
         updated_section: dict[str, Any] | None = None
-        with self._lock, self._persistence_lock:
+        payload: dict[str, Any] | None = None
+        with self._lock:
             for index, section in enumerate(self.show_sections):
                 if str(section.get("id")) != section_id:
                     continue
@@ -500,9 +564,12 @@ class PlaybackContext:
                     new_base.append(copy.deepcopy(updated))
                 self._replace_show_sections_locked(new_base)
                 payload = self._show_plan_payload_locked()
-                self._persist_show_plan_locked(payload)
                 updated_section = copy.deepcopy(self.show_sections[index])
                 break
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        if payload is not None:
+            with self._persistence_lock:
+                self._persist_show_plan_locked(payload)
         return updated_section
 
     def _show_plan_payload_locked(self) -> dict[str, Any]:
@@ -559,12 +626,15 @@ class PlaybackContext:
     def persist_current_show_plan(self) -> str | None:
         """Persist the current show plan if a callback is configured.
 
-        Cycle-3 panel 3C-H2: holds joint-lock for the entire read-and-persist
-        so disk state cannot diverge from memory state.
+        Cycle-3 destructive review D2: payload built under `_lock` (memory
+        only), then disk write under `_persistence_lock` only. The graph
+        tick never blocks on the synchronous I/O.
         """
-        with self._lock, self._persistence_lock:
+        with self._lock:
             payload = self._show_plan_payload_locked()
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
+        with self._lock:
             return self.show_plan_path or None
 
     def request_seek(self, position_seconds: float) -> float:
@@ -581,8 +651,11 @@ class PlaybackContext:
         with self._lock:
             self.playhead_seconds = max(0.0, min(float(new_position), self.duration_seconds))
             self.finished = self.playhead_seconds >= self.duration_seconds
-            self._refresh_operator_intents_locked()
-            self._recompute_authored_hash_locked()
+            # Cycle-3 destructive review D3: gate hash recompute on actual
+            # expiry (a seek across an intent's TTL → expiry → hash bump).
+            expired_count = self._refresh_operator_intents_locked()
+            if expired_count > 0:
+                self._recompute_authored_hash_locked()
             self.server_time = time.time()
             self.transport_revision += 1
             return self.playhead_seconds
@@ -607,11 +680,39 @@ class PlaybackContext:
         if normalized_mode == current_mode and normalized_variance == current_variance:
             return self.snapshot()
 
-        regenerated_sections = regenerate_callback(normalized_mode, normalized_variance)
+        # Cycle-3 destructive review F-EXEC + F-TIMEOUT: run the
+        # regen_callback (which calls into `_default_show_sections` →
+        # AI scorer) on a dedicated single-thread executor with a hard
+        # timeout. Closes:
+        #   - F-EXEC: AI scorer's module-level caches (`_pattern_candidates`,
+        #     `_stable_weighted_choice` state) are not guaranteed thread-safe;
+        #     serializing on one thread eliminates the race.
+        #   - F-TIMEOUT: if the scorer wedges (math NaN, semantic profile
+        #     corruption, infinite softmax loop), the timeout bounds the
+        #     lock-hold-via-blocked-handler scenario.
+        try:
+            future = _get_regen_executor().submit(
+                regenerate_callback, normalized_mode, normalized_variance,
+            )
+            regenerated_sections = future.result(timeout=_REGEN_TIMEOUT_SECONDS)
+        except concurrent.futures.TimeoutError as exc:
+            logger.error(
+                "playback_regenerate_timeout",
+                mode=normalized_mode,
+                variance=normalized_variance,
+                timeout_seconds=_REGEN_TIMEOUT_SECONDS,
+            )
+            # Hung worker can't be cancelled — discard the executor so the
+            # next regen attempt isn't queued behind it.
+            _replace_regen_executor()
+            raise RuntimeError(
+                f"Show-plan regeneration timed out after {_REGEN_TIMEOUT_SECONDS}s "
+                f"for mode={normalized_mode!r}, variance={normalized_variance:.3f}"
+            ) from exc
         if not isinstance(regenerated_sections, list):
             raise RuntimeError("Playback regeneration did not return show sections")
 
-        with self._lock, self._persistence_lock:
+        with self._lock:
             self.selection_mode = normalized_mode
             self.selection_variance = normalized_variance
             # Cycle-3 panel 3C-H2: route through canonical helper for hash
@@ -620,6 +721,8 @@ class PlaybackContext:
             self.staged_look = None
             self._replace_show_sections_locked(regenerated_sections)
             payload = self._show_plan_payload_locked()
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return self.snapshot()
 
@@ -653,7 +756,7 @@ class PlaybackContext:
         normalized_target = _normalize_operator_target(target)
         normalized_amount = round(_clamp(float(amount), 0.0, 1.0), 3)
 
-        with self._lock, self._persistence_lock:
+        with self._lock:
             target_ids = _section_ids_for_scope(self._base_show_sections, self.playhead_seconds, normalized_scope)
             intent_payload = {
                 "intent": normalized_intent,
@@ -673,6 +776,8 @@ class PlaybackContext:
             # `operator_intents` and overlays them.
             self._replace_show_sections_locked(copy.deepcopy(self._base_show_sections))
             payload = self._show_plan_payload_locked()
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return self.snapshot()
 
@@ -693,7 +798,7 @@ class PlaybackContext:
         if not isinstance(binding, dict):
             raise RuntimeError("Playback metadata binding did not return a payload")
 
-        with self._lock, self._persistence_lock:
+        with self._lock:
             self.track_title = str(binding.get("track_title") or self.track_title or self.file_name)
             self.track_artist = str(binding.get("track_artist") or self.track_artist)
             self.track_key = str(binding.get("track_key") or self.track_key)
@@ -760,6 +865,8 @@ class PlaybackContext:
             self._replace_show_sections_locked(binding_show_sections)
             self.transport_revision += 1
             payload = self._show_plan_payload_locked()
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return self.snapshot()
 
@@ -784,7 +891,7 @@ class PlaybackContext:
         """
         if not isinstance(cue_recipe, dict) or not isinstance(laser_program, dict):
             raise RuntimeError("Invalid staged look payload")
-        with self._lock, self._persistence_lock:
+        with self._lock:
             if not any(str(section.get("id")) == section_id for section in self.show_sections):
                 raise RuntimeError("Unknown section id")
             self.staged_look = _stage_look_helper(
@@ -797,6 +904,8 @@ class PlaybackContext:
             self._recompute_authored_hash_locked()
             payload = self._show_plan_payload_locked()
             staged = copy.deepcopy(self.staged_look)
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return staged
 
@@ -812,7 +921,7 @@ class PlaybackContext:
         `staged_look` is cleared and the merged section becomes the new
         authored state.
         """
-        with self._lock, self._persistence_lock:
+        with self._lock:
             if not self.staged_look:
                 raise RuntimeError("No staged look")
             committed = _commit_staged_look_helper(self.staged_look)
@@ -841,6 +950,8 @@ class PlaybackContext:
             self.staged_look = None
             self._replace_show_sections_locked(updated_sections)
             payload = self._show_plan_payload_locked()
+        # Disk I/O OUTSIDE `_lock` (cycle-3 destructive review D2).
+        with self._persistence_lock:
             self._persist_show_plan_locked(payload)
         return committed
 
