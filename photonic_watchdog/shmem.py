@@ -164,13 +164,25 @@ class WatchdogSharedState:
                 pass
 
     def close(self) -> None:
-        if self._closed:
-            return
-        try:
-            self._shm.close()
-        except Exception:
-            pass
-        self._closed = True
+        """Release the shmem fd.
+
+        Cycle-6 B6: acquires `_local_lock` so it serializes with any
+        in-flight writer. Pre-B6, a concurrent `write_main()` could
+        observe `self._shm.buf` invalidating mid-pack, producing a
+        `ValueError: operation forbidden on released memoryview`
+        OR — worse — a torn segfault if the memoryview was freed
+        between `_read_seq()` and `_LAYOUT.pack_into()`. After B6,
+        writers that arrive post-close find `_closed=True` and
+        return cleanly.
+        """
+        with self._local_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._shm.close()
+            except Exception:
+                pass
 
     def unlink(self) -> None:
         """Manual unlink (for tests that want explicit cleanup)."""
@@ -190,13 +202,25 @@ class WatchdogSharedState:
         struct.pack_into("=I", self._shm.buf, 0, value & 0xFFFFFFFF)
 
     @contextmanager
-    def _writer(self) -> Iterator[None]:
-        """Yield inside a critical section where fields can be written.
+    def _writer(self) -> Iterator[bool]:
+        """Yield `True` inside a critical section where fields can be
+        written. Yields `False` (and skips seq bump) if the shmem is
+        already closed — callers branch on the value rather than
+        accessing a released memoryview.
+
         Bumps seq to odd on entry, even on exit (seqlock invariant).
         Serialized within-process by `_local_lock`; across-process
         races are resolved by the seqlock retry pattern on the reader
-        side."""
+        side.
+
+        Cycle-6 B6: the close-check happens under `_local_lock`, so
+        `close()` cannot sneak in between the check and the writes —
+        it's blocked on the same lock.
+        """
         with self._local_lock:
+            if self._closed:
+                yield False
+                return
             current = self._read_seq()
             # If current is odd, another writer is in progress; wait
             # briefly (advisory — we're racing but both writers will
@@ -204,7 +228,7 @@ class WatchdogSharedState:
             # states). Bump to odd (=writer active).
             self._write_seq(current | 1 if (current & 1) == 0 else current + 1)
             try:
-                yield
+                yield True
             finally:
                 # Bump to next even value (=stable).
                 now = self._read_seq()
@@ -213,28 +237,42 @@ class WatchdogSharedState:
     def read(self) -> WatchdogState:
         """Consistent snapshot read. Retries until two identical `seq`
         values bracket a stable field snapshot. Raises `StaleRead`
-        if no consistent snapshot is available within MAX_READ_RETRIES."""
-        for _ in range(self._MAX_READ_RETRIES):
-            seq1 = self._read_seq()
-            if seq1 & 1:
-                # Writer in progress; yield briefly and retry.
+        if no consistent snapshot is available within MAX_READ_RETRIES.
+
+        Cycle-6 B6: reads are lock-free (that's the point of the
+        seqlock pattern). A concurrent close() can still release the
+        memoryview mid-retry; Python raises `ValueError` on buf
+        access in that case. We catch it and convert to `StaleRead`
+        so callers get the same bounded-retry behaviour whether the
+        cause is a busy writer or a shutting-down process.
+        """
+        if self._closed:
+            raise StaleRead("shared memory already closed")
+        try:
+            for _ in range(self._MAX_READ_RETRIES):
+                seq1 = self._read_seq()
+                if seq1 & 1:
+                    # Writer in progress; yield briefly and retry.
+                    time.sleep(0.0001)
+                    continue
+                fields = _LAYOUT.unpack_from(self._shm.buf, 0)
+                seq2 = self._read_seq()
+                if seq1 == seq2:
+                    return WatchdogState(
+                        seq=fields[0],
+                        main_heartbeat=fields[1],
+                        tick_number=fields[2],
+                        dmx_frames_sent=fields[3],
+                        ilda_frames_sent=fields[4],
+                        watchdog_heartbeat=fields[5],
+                        watchdog_pid=fields[6],
+                        blackout_requested=fields[7],
+                        emergency_stop=fields[8],
+                    )
                 time.sleep(0.0001)
-                continue
-            fields = _LAYOUT.unpack_from(self._shm.buf, 0)
-            seq2 = self._read_seq()
-            if seq1 == seq2:
-                return WatchdogState(
-                    seq=fields[0],
-                    main_heartbeat=fields[1],
-                    tick_number=fields[2],
-                    dmx_frames_sent=fields[3],
-                    ilda_frames_sent=fields[4],
-                    watchdog_heartbeat=fields[5],
-                    watchdog_pid=fields[6],
-                    blackout_requested=fields[7],
-                    emergency_stop=fields[8],
-                )
-            time.sleep(0.0001)
+        except ValueError as exc:
+            # memoryview released by a concurrent close().
+            raise StaleRead(f"shared memory closed mid-read: {exc}") from exc
         raise StaleRead(
             f"Could not get a consistent snapshot after "
             f"{self._MAX_READ_RETRIES} retries (writer live-lock?)"
@@ -253,8 +291,15 @@ class WatchdogSharedState:
     ) -> None:
         """Main process writer. Updates fields owned by main; leaves
         watchdog's fields untouched. Caller passes only fields that
-        changed; unchanged kwargs default to None and are preserved."""
-        with self._writer():
+        changed; unchanged kwargs default to None and are preserved.
+
+        Cycle-6 B6: a no-op post-close — the writer context reports
+        `active=False` and we skip. Prevents `ValueError: operation
+        forbidden on released memoryview` during graph teardown when
+        the DSP tick fires one last time after shmem.close()."""
+        with self._writer() as active:
+            if not active:
+                return
             current = _LAYOUT.unpack_from(self._shm.buf, 0)
             new_values = (
                 current[0],  # seq (controlled by _writer context)
@@ -278,8 +323,13 @@ class WatchdogSharedState:
         blackout_requested: int | None = None,
     ) -> None:
         """Watchdog process writer. Updates fields owned by the
-        watchdog; leaves main's fields untouched."""
-        with self._writer():
+        watchdog; leaves main's fields untouched.
+
+        Cycle-6 B6: same post-close no-op contract as `write_main`.
+        """
+        with self._writer() as active:
+            if not active:
+                return
             current = _LAYOUT.unpack_from(self._shm.buf, 0)
             new_values = (
                 current[0],
