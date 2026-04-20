@@ -1,0 +1,38 @@
+# Windows runtime environment for the Rekordbox laptop.
+#
+# Create and activate a Python 3.12 virtualenv, then install with:
+#   python -m pip install -r requirements.txt
+#
+# This file is intentionally runtime-focused: core app deps, hardware IO,
+# and web-control-plane support. It omits heavyweight dev tooling.
+# `madmom` is left as an optional/manual install because it is the least
+# reliable cross-platform dependency in this project and the beat tracker
+# already degrades gracefully when it is unavailable.
+
+numpy>=1.24.0
+scipy>=1.11.0
+librosa>=0.10.0
+sounddevice>=0.4.6
+
+mido>=1.3.0
+python-rtmidi>=1.5.0
+
+opencv-python>=4.8.0
+mss>=9.0.0
+
+pyftdi>=0.55.0
+
+pyyaml>=6.0
+pydantic>=2.0
+pydantic-settings>=2.0
+structlog>=23.0.0
+click>=8.1.0
+
+fastapi>=0.103.0
+uvicorn>=0.23.0
+websockets>=11.0
+httpx>=0.28.0
+
+# Optional/manual install if you want the madmom backend specifically:
+# cython>=3.0
+# madmom>=0.16.1
