@@ -179,3 +179,26 @@ def test_engine_conflict_clears_cached_authority_and_fails_closed() -> None:
     assert second.state == "conflict"
     assert third.state == "unbound"
     assert third.authority_player is None
+
+
+def test_engine_keeps_fresher_authority_when_older_snapshot_arrives() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+
+    first = engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.2)],
+        now=100.25,
+    )
+    second = engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.0)],
+        now=100.3,
+    )
+    third = engine.evaluate([], now=100.8)
+
+    assert first.state == "bound"
+    assert first.last_update_at == 100.2
+    assert second.state == "bound"
+    assert second.authority_player == 3
+    assert second.last_update_at == 100.2
+    assert third.state == "stale"
+    assert third.authority_player == 3
+    assert third.last_update_at == 100.2

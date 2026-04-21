@@ -26,8 +26,27 @@ class LiveDeckAutoBindEngine:
 
         if len(authoritative) == 1:
             deck = authoritative[0]
+            deck_updated_at = float(deck.updated_at)
+            if (
+                self._last_authority_player is not None
+                and deck_updated_at < self._last_authority_at
+            ):
+                if now - self._last_authority_at >= self.stale_after_seconds:
+                    return BindingStatus(
+                        state="stale",
+                        reason="authoritative deck timed out",
+                        authority_player=self._last_authority_player,
+                        last_update_at=self._last_authority_at,
+                    )
+                return BindingStatus(
+                    state="bound",
+                    reason="authoritative deck resolved",
+                    authority_player=self._last_authority_player,
+                    last_update_at=self._last_authority_at,
+                )
+
             self._last_authority_player = deck.player_number
-            self._last_authority_at = float(deck.updated_at)
+            self._last_authority_at = deck_updated_at
             if now - self._last_authority_at >= self.stale_after_seconds:
                 return BindingStatus(
                     state="stale",
