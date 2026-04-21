@@ -3,10 +3,10 @@
 ## Summary
 
 This design closes the next highest-value live-wiring gaps in authored
-`show_sections` by making these fields affect runtime behavior:
+`show_sections` by making these existing fields affect runtime behavior:
 
 - `scene_id`
-- `section_mode` (hard rename from `fixture_mode`)
+- `fixture_mode`
 - `laser_pattern`
 - `mover_pattern`
 - `wash_pattern`
@@ -23,7 +23,7 @@ section-dynamics work:
 
 - Make authored `scene_id` drive live scene selection by default during playback
 - Make authored family pattern fields change live runtime behavior for the active section
-- Replace the misleading `fixture_mode` name with the standard-aligned `section_mode`
+- Make existing `fixture_mode` carry a defined live runtime meaning
 - Keep runtime behavior layered on top of the current graph instead of replacing the planner/director architecture
 - Preserve operator override paths and safety behavior
 
@@ -31,8 +31,8 @@ section-dynamics work:
 
 - Introducing a new runtime override subsystem
 - Adding fixture-specific hardware personality/mode switching
-- Reworking the preview canvas / mock rig semantics outside the required field rename
-- Preserving backward compatibility for `fixture_mode`
+- Reworking the preview canvas / mock rig semantics beyond the live behavior needed here
+- Renaming `fixture_mode`
 - Replacing `laser_program` phrase-window timing or scene JSON structure
 
 ## Key Decisions
@@ -46,9 +46,10 @@ Priority order:
 
 1. `scene_hold`
 2. `launched_scene`
-3. active section `scene_id`
-4. director target scene
-5. structure fallback
+3. MIDI pad override
+4. active section `scene_id`
+5. director target scene
+6. structure fallback
 
 This gives authored sections real live effect while preserving operator
 authority. It is explicitly not a hard lock: manual hold/launch must
@@ -80,25 +81,26 @@ That means:
 - `wash_pattern` and `led_pattern` override panel-family render mode
   selection for the current active section
 
-### 3. Hard rename `fixture_mode` to `section_mode`
+### 3. `fixture_mode` stays, but gets explicit runtime semantics
 
-`fixture_mode` is not standard terminology for the current data shape.
-The authored values (`peak_return`, `rebuild`, `breakdown`, `intro`,
-`outro`) are section behavior presets, not hardware fixture
-personalities.
+`fixture_mode` is not ideal terminology for the current data shape, but
+renaming it in this slice would add contract risk without adding runtime
+value.
 
-The field is therefore hard-renamed repo-wide:
+This slice therefore keeps the existing field name everywhere:
 
-- old field: `fixture_mode`
-- new canonical field: `section_mode`
+- planner output
+- API payloads
+- persisted show sections
+- runtime snapshots
+- UI form keys
 
-This slice intentionally does not keep a compatibility alias. All
-repo-owned producers, consumers, tests, and UI surfaces should be
-updated in one pass.
+The change in this slice is behavioral, not contractual: `fixture_mode`
+now has an explicit live meaning instead of being mostly decorative.
 
-### 4. `section_mode` is a cross-family behavior preset
+### 4. `fixture_mode` is a cross-family behavior preset
 
-`section_mode` should shape shared live behavior, not low-level fixture
+`fixture_mode` should shape shared live behavior, not low-level fixture
 hardware mode channels.
 
 It should bias:
@@ -138,7 +140,7 @@ Extend the shared active-section runtime helper so it returns normalized
 values for:
 
 - `scene_id`
-- `section_mode`
+- `fixture_mode`
 - `laser_pattern`
 - `mover_pattern`
 - `wash_pattern`
@@ -150,7 +152,7 @@ runtime overrides.
 Normalization rules:
 
 - missing `scene_id` resolves to `None`
-- missing `section_mode` resolves to `""`
+- missing `fixture_mode` resolves to `""`
 - missing pattern fields resolve to `""`
 - malformed values degrade to empty strings rather than raising
 
@@ -160,12 +162,15 @@ Normalization rules:
 
 - no scene hold is active
 - no launched scene is pending
+- no MIDI pad override is active
 
 Validation rules:
 
 - if the active section `scene_id` is not present in the scene catalog,
   log/debug it and continue to the director/structure fallback path
 - scene transitions still use existing transition timing and rules
+- tests must cover short sections whose duration is smaller than the
+  transition time so the resulting behavior is explicit and stable
 
 This preserves the current authority chain while making section-authored
 scene changes live.
@@ -222,7 +227,7 @@ explicitly:
 - wash-side panel behavior follows `wash_pattern`
 - LED-side panel behavior follows `led_pattern`
 
-`section_mode` should then bias the shared envelope on top of that
+`fixture_mode` should then bias the shared envelope on top of that
 family-specific pattern choice.
 
 This is important because otherwise wash and LED pattern fields collapse
@@ -237,10 +242,6 @@ Expected primary touch points:
 - `src/photonic_synesthesia/graph/nodes/fixture_control.py`
 - `src/photonic_synesthesia/graph/nodes/ilda_output.py`
 - `src/photonic_synesthesia/platform/runtime_context.py`
-- `src/photonic_synesthesia/showplan/sections.py`
-- `src/photonic_synesthesia/showplan/cue_recipe.py`
-- `src/photonic_synesthesia/showplan/model_payloads.py`
-- `src/photonic_synesthesia/showplan/validation.py`
 - `src/photonic_synesthesia/ui/web_panel.py`
 - `src/photonic_synesthesia/ui/static/mock_control_plane.js`
 
@@ -253,23 +254,17 @@ Expected test touch points:
 - `tests/unit/test_runtime_context_helpers.py`
 - `tests/unit/test_web_panel.py`
 - `tests/unit/test_production_hardening.py`
-- planner tests that assert authored field names/contents
+- planner tests that assert authored field behavior/contents
 
-## Migration and Contract Impact
+## Contract Impact
 
-This is a deliberate breaking rename inside the repo-owned contract.
+This slice intentionally avoids a field-name contract change.
 
 After this slice:
 
-- `section_mode` is the only supported field name
-- `fixture_mode` is removed from planner/runtime/UI/test expectations
-
-Consequences:
-
-- in-repo snapshots, API payloads, UI forms, and tests should all use
-  `section_mode`
-- persisted external payloads using `fixture_mode` are out of contract
-  after this change unless separately migrated
+- `fixture_mode` remains the field name everywhere
+- runtime consumers are expected to honor it live
+- no migration of saved sections or external payload names is required
 
 ## Safety and Control Constraints
 
@@ -302,9 +297,9 @@ Add focused tests that prove live effect rather than metadata presence.
   selection
 - `mover_pattern` changes live mover family behavior
 - `wash_pattern` and `led_pattern` change live panel-family behavior
-- `section_mode` changes live shared emphasis/envelope behavior
-- no remaining repo-owned runtime/editor/planner payloads expose
-  `fixture_mode`
+- `fixture_mode` changes live shared emphasis/envelope behavior
+- existing repo-owned runtime/editor/planner payloads still expose
+  `fixture_mode` consistently while now affecting live behavior
 
 ### Regression checks
 
@@ -316,11 +311,11 @@ Add focused tests that prove live effect rather than metadata presence.
 
 ## Risks
 
-### 1. Hard rename breakage
+### 1. Pattern/runtime mapping drift
 
-The rename is cleanest architecturally, but it is a deliberate contract
-break. Missing one producer/consumer/test path will create inconsistent
-payloads quickly.
+If the implementation does not define explicit mapping tables from
+authored patterns into DMX/ILDA/mover/panel runtime behavior, different
+runtime paths can interpret the same authored field differently.
 
 ### 2. Overriding too much
 
@@ -329,9 +324,9 @@ look objects instead of just family selection, it can erase useful
 phrase-window behavior and over-couple section editing to low-level
 runtime internals.
 
-### 3. `section_mode` becoming a junk drawer
+### 3. `fixture_mode` becoming a junk drawer
 
-`section_mode` must stay a small preset layer. If it starts controlling
+`fixture_mode` must stay a small preset layer. If it starts controlling
 too many unrelated knobs directly, it becomes ambiguous and hard to
 reason about.
 
@@ -348,8 +343,7 @@ This slice is complete when:
 - authored `scene_id` changes live scene selection by default
 - authored family pattern fields change real live output for the active
   section
-- `fixture_mode` has been replaced repo-wide by `section_mode`
-- `section_mode` has a clear, limited runtime meaning as a section
+- `fixture_mode` has a clear, limited runtime meaning as a section
   behavior preset
 - operator authority and safety behavior remain intact
-- tests prove live runtime effect and the rename is complete
+- tests prove live runtime effect without requiring a field-name migration
