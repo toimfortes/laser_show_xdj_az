@@ -37,6 +37,98 @@ let playbackFollowEnabled = false;
 const PLAYBACK_POLL_MS = 250;
 const PLAYBACK_STALE_MS = 900;
 const PLAYBACK_HARD_SYNC_MS = 1200;
+
+// Per-section field help. Tags: WIRED = the live graph reads it.
+// PREVIEW-ONLY = mock canvas reads it but the graph does not.
+// METADATA = neither — only the show plan document stores it.
+// See cycle-6 wiring audit for the matrix.
+const SECTION_FIELD_HELP = {
+  scene_id:
+    "METADATA — labels the section's preset 'vibe' (intro_ambient / break_sweep / drop_intense). " +
+    "The live SceneSelectNode picks scenes from current_structure (auto), MIDI pads, or operator " +
+    "launch — not from this field. Changing it updates the show plan but does not affect the show.",
+  fixture_mode:
+    "PREVIEW-ONLY — labels where in the song arc this section sits (intro / rebuild / peak_return / " +
+    "breakdown / outro). The mock canvas branches on it; the live hardware path does not read it.",
+  intensity_multiplier:
+    "PREVIEW-ONLY (per-section override) — scales overall brightness in the mock canvas " +
+    "(0.18-1.28). The live graph does not read it directly; operator-intent ops can mutate it but " +
+    "downstream nodes still don't consume it. To change live brightness use the master intensity " +
+    "control or laser_program intensities.",
+  motion_multiplier:
+    "PREVIEW-ONLY — scales mover speed in the canvas preview (0.22-2.2). Live mover motion is " +
+    "driven by the director and the per-fixture program, not this field.",
+  strobe_level:
+    "PREVIEW-ONLY — drives the canvas strobe preview. Hard-capped per role + venue (vocal / " +
+    "breakdown / intro all force 0). Live strobes are gated by the safety interlock's " +
+    "max_rate_hz / max_duration_s, not this value.",
+  laser_pattern:
+    "METADATA + fallback — names the section's laser gesture (fan / tunnel / starburst / etc). " +
+    "The live ILDA path uses laser_program.launch.pattern; this field is only read as a fallback " +
+    "when launch.pattern is missing. Drives the mock canvas directly.",
+  mover_pattern:
+    "PREVIEW-ONLY — names the mover gesture (drift / cross_sweep / rise / etc). Mock canvas " +
+    "renders it; the live mover_control reads the per-fixture program, not this name.",
+  wash_pattern:
+    "PREVIEW-ONLY — names the wash envelope (ambient / bloom / drop_slam / fade / etc). Mock " +
+    "canvas only.",
+  led_pattern:
+    "PREVIEW-ONLY — names the LED bar/panel pattern (pulse / chase / audio_spectrum / etc). " +
+    "Mock canvas only.",
+  "laser_expression.content_family":
+    "WIRED — the laser content family (beam / sheet / scan / etc) feeds director/palettes and " +
+    "drives ILDA generator selection. Changing this affects the live show.",
+  "laser_expression.target_bias":
+    "WIRED — overhead vs crowd targeting bias. Combined with laser_program.zone_policy to enforce " +
+    "audience-safety zones. Live.",
+  "laser_expression.target_strategy":
+    "WIRED — how the laser sweeps within its zone (wide_zone_sweep / focused_punch / etc). " +
+    "Director consumes this. Live.",
+  "laser_expression.blanking_strategy":
+    "WIRED — when the laser blanks between hits (continuous / hit_only / phrase_anchored). " +
+    "Affects live point output.",
+  "laser_expression.color_strategy":
+    "WIRED — palette selection mode (single_hue_focus / contrast_flips / morph / etc). " +
+    "Drives palette & per-tick RGB.",
+  "laser_expression.phrase_envelope.launch_intensity":
+    "WIRED (partial) — intensity at the section's launch hook (first downbeat). Affects director " +
+    "envelope.",
+  "laser_expression.phrase_envelope.sustain_intensity":
+    "WIRED (partial) — intensity during the section's main body.",
+  "laser_expression.phrase_envelope.release_intensity":
+    "WIRED (partial) — intensity during the section's final tail.",
+  "laser_expression.variation_plan":
+    "METADATA + partial — free-form notes for variation. Some downstream director nodes read it.",
+  "laser_program.zone_policy":
+    "WIRED (safety-critical) — overhead_only / overhead_bias / mixed_air / crowd_punctuate. " +
+    "fixture_control.py + ilda_output.py enforce this every tick. small_room venues always " +
+    "tighten to overhead_only regardless.",
+  "laser_program.phrase_role":
+    "WIRED — which window in the program this section is in (launch / sustain / fill / release). " +
+    "Drives windowing logic.",
+  "laser_program.fill_trigger_every_bars":
+    "WIRED — how often the fill window fires (1-16 bars). Affects live cadence.",
+  laser_enabled:
+    "WIRED — gates lasers ON/OFF for this section. safety_interlock + ilda_output both filter on " +
+    "this. Forced OFF for vocal/breakdown sections regardless.",
+  movers_enabled:
+    "PREVIEW-ONLY — toggles movers in the mock canvas. Live movers stay enabled at the " +
+    "fixture-config level.",
+  washes_enabled:
+    "PREVIEW-ONLY — toggles washes in the mock canvas. Live washes stay enabled at fixture-config.",
+  leds_enabled:
+    "PREVIEW-ONLY — toggles LED bars/panels in the mock canvas. Live LEDs stay enabled at " +
+    "fixture-config.",
+};
+
+function helpIcon(field) {
+  const text = SECTION_FIELD_HELP[field];
+  if (!text) return "";
+  // Use both `title` (browser native tooltip — works always) and a
+  // `data-help` attribute for any future custom-tooltip wiring.
+  const escaped = text.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return ` <span class="field-help" tabindex="0" role="button" aria-label="Help: ${escaped}" title="${escaped}" data-help="${escaped}">?</span>`;
+}
 const LASER_PATTERN_OPTIONS = [
   ["fan", "Fan"],
   ["beam_fan_narrow", "Beam Fan Narrow"],
@@ -1184,88 +1276,88 @@ function renderShowEditor() {
           ${sectionTimelineMarkup(section)}
           <div class="show-section-grid">
             <label>
-              <span>Scene</span>
+              <span>Scene${helpIcon("scene_id")}</span>
               <select data-field="scene_id">${sceneOptions}</select>
             </label>
             <label>
-              <span>Mode</span>
+              <span>Mode${helpIcon("fixture_mode")}</span>
               <select data-field="fixture_mode">${modeOptions}</select>
             </label>
             <label>
-              <span>Intensity</span>
+              <span>Intensity${helpIcon("intensity_multiplier")}</span>
               <input data-field="intensity_multiplier" type="range" min="0" max="1.4" step="0.05" value="${section.intensity_multiplier}" />
             </label>
             <label>
-              <span>Motion</span>
+              <span>Motion${helpIcon("motion_multiplier")}</span>
               <input data-field="motion_multiplier" type="range" min="0.1" max="2.2" step="0.05" value="${section.motion_multiplier}" />
             </label>
             <label>
-              <span>Strobe</span>
+              <span>Strobe${helpIcon("strobe_level")}</span>
               <input data-field="strobe_level" type="range" min="0" max="1" step="0.05" value="${section.strobe_level}" />
             </label>
             <label>
-              <span>Laser Pattern</span>
+              <span>Laser Pattern${helpIcon("laser_pattern")}</span>
               <select data-field="laser_pattern">${laserPatternOptions}</select>
             </label>
             <label>
-              <span>Mover Pattern</span>
+              <span>Mover Pattern${helpIcon("mover_pattern")}</span>
               <select data-field="mover_pattern">${moverPatternOptions}</select>
             </label>
             <label>
-              <span>Wash Pattern</span>
+              <span>Wash Pattern${helpIcon("wash_pattern")}</span>
               <select data-field="wash_pattern">${washPatternOptions}</select>
             </label>
             <label>
-              <span>LED Pattern</span>
+              <span>LED Pattern${helpIcon("led_pattern")}</span>
               <select data-field="led_pattern">${ledPatternOptions}</select>
             </label>
             <label>
-              <span>Laser Family</span>
+              <span>Laser Family${helpIcon("laser_expression.content_family")}</span>
               <select data-field="laser_expression.content_family">${laserContentOptions}</select>
             </label>
             <label>
-              <span>Target Bias</span>
+              <span>Target Bias${helpIcon("laser_expression.target_bias")}</span>
               <select data-field="laser_expression.target_bias">${laserTargetBiasOptions}</select>
             </label>
             <label>
-              <span>Target Strategy</span>
+              <span>Target Strategy${helpIcon("laser_expression.target_strategy")}</span>
               <select data-field="laser_expression.target_strategy">${targetStrategyOptions}</select>
             </label>
             <label>
-              <span>Blanking</span>
+              <span>Blanking${helpIcon("laser_expression.blanking_strategy")}</span>
               <select data-field="laser_expression.blanking_strategy">${blankingStrategyOptions}</select>
             </label>
             <label>
-              <span>Color Strategy</span>
+              <span>Color Strategy${helpIcon("laser_expression.color_strategy")}</span>
               <select data-field="laser_expression.color_strategy">${colorStrategyOptions}</select>
             </label>
             <label>
-              <span>Launch</span>
+              <span>Launch${helpIcon("laser_expression.phrase_envelope.launch_intensity")}</span>
               <input data-field="laser_expression.phrase_envelope.launch_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.launch_intensity", 1)}" />
             </label>
             <label>
-              <span>Sustain</span>
+              <span>Sustain${helpIcon("laser_expression.phrase_envelope.sustain_intensity")}</span>
               <input data-field="laser_expression.phrase_envelope.sustain_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.sustain_intensity", 0.7)}" />
             </label>
             <label>
-              <span>Release</span>
+              <span>Release${helpIcon("laser_expression.phrase_envelope.release_intensity")}</span>
               <input data-field="laser_expression.phrase_envelope.release_intensity" type="range" min="0" max="1.4" step="0.05" value="${pathValue(section, "laser_expression.phrase_envelope.release_intensity", 0.4)}" />
             </label>
             <label class="show-variation-plan">
-              <span>Variation Plan</span>
+              <span>Variation Plan${helpIcon("laser_expression.variation_plan")}</span>
               <textarea data-field="laser_expression.variation_plan" rows="3">${(pathValue(section, "laser_expression.variation_plan", []) || []).join("\n")}</textarea>
             </label>
             <div class="laser-program-grid">
               <label class="laser-program-meta">
-                <span>Zone Policy</span>
+                <span>Zone Policy${helpIcon("laser_program.zone_policy")}</span>
                 <select data-field="laser_program.zone_policy">${zonePolicyOptions}</select>
               </label>
               <label class="laser-program-meta">
-                <span>Phrase Role</span>
+                <span>Phrase Role${helpIcon("laser_program.phrase_role")}</span>
                 <input data-field="laser_program.phrase_role" type="text" value="${pathValue(section, "laser_program.phrase_role", "")}" />
               </label>
               <label class="laser-program-meta">
-                <span>Fill Cadence</span>
+                <span>Fill Cadence${helpIcon("laser_program.fill_trigger_every_bars")}</span>
                 <input data-field="laser_program.fill_trigger_every_bars" type="number" min="1" max="16" step="1" value="${pathValue(section, "laser_program.fill_trigger_every_bars", 4)}" />
               </label>
               ${laserLookEditor(section, "laser_program.launch", "Launch Hook")}
@@ -1274,10 +1366,10 @@ function renderShowEditor() {
               ${laserLookEditor(section, "laser_program.release", "Release Hook")}
             </div>
             <div class="show-toggle-row">
-              <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers</label>
-              <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers</label>
-              <label><input data-field="washes_enabled" type="checkbox" ${section.washes_enabled ? "checked" : ""} />Washes</label>
-              <label><input data-field="leds_enabled" type="checkbox" ${section.leds_enabled ? "checked" : ""} />LEDs</label>
+              <label><input data-field="laser_enabled" type="checkbox" ${section.laser_enabled ? "checked" : ""} />Lasers${helpIcon("laser_enabled")}</label>
+              <label><input data-field="movers_enabled" type="checkbox" ${section.movers_enabled ? "checked" : ""} />Movers${helpIcon("movers_enabled")}</label>
+              <label><input data-field="washes_enabled" type="checkbox" ${section.washes_enabled ? "checked" : ""} />Washes${helpIcon("washes_enabled")}</label>
+              <label><input data-field="leds_enabled" type="checkbox" ${section.leds_enabled ? "checked" : ""} />LEDs${helpIcon("leds_enabled")}</label>
             </div>
           </div>
         </div>

@@ -480,6 +480,34 @@ select {
   font-weight: 600;
 }
 
+/* Help-icon affordance next to per-section field labels. The browser's
+   native `title` tooltip is what shows the text; this just makes the
+   icon look like an info button. */
+.field-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--ink);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: help;
+  user-select: none;
+  vertical-align: middle;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.field-help:hover,
+.field-help:focus {
+  background: rgba(110, 168, 254, 0.55);
+  outline: none;
+  transform: scale(1.1);
+}
+
 .show-section-grid input,
 .show-section-grid select,
 .show-section-grid textarea {

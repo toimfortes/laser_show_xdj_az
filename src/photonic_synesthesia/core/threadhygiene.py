@@ -28,7 +28,10 @@ Executor lifecycle is analogously covered by `shutdown_executor()`.
 from __future__ import annotations
 
 import concurrent.futures
+import concurrent.futures.thread as _threadpool_impl
+import sys
 import threading
+import weakref
 from typing import Any
 
 
@@ -65,6 +68,66 @@ class StopSignal:
         """Reset for reuse. Callers that start + stop + re-start the
         same worker should call this between cycles."""
         self._event.clear()
+
+
+class DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
+    """ThreadPoolExecutor variant whose worker threads are daemonized.
+
+    This is for long-lived process-singleton pools where the honest
+    shutdown contract is "best effort, bounded wait." A wedged worker
+    must not pin interpreter exit forever once the caller has already
+    accepted that the work cannot be recovered in-process.
+
+    Implementation note: CPython's `_worker` function signature
+    changed in 3.13 (added a `ctx` parameter). We dispatch on
+    `sys.version_info` so the same source works on 3.12 and 3.13+
+    without depending on private internals that may not exist on the
+    running interpreter. Caught by the regen-executor exit-hang test:
+    on 3.12 the 3.13-only `_create_worker_context()` call raised
+    AttributeError when the pool tried to spawn its first worker.
+    """
+
+    def _adjust_thread_count(self) -> None:
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_, q=self._work_queue):
+            q.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads >= self._max_workers:
+            return
+
+        thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
+
+        if sys.version_info >= (3, 13):
+            # 3.13+ adds an opaque worker-context object as the second
+            # positional arg to `_worker`.
+            worker_args = (
+                weakref.ref(self, weakref_cb),
+                self._create_worker_context(),
+                self._work_queue,
+                self._initializer,
+                self._initargs,
+            )
+        else:
+            # 3.12 signature: (executor_ref, work_queue, initializer, initargs).
+            worker_args = (
+                weakref.ref(self, weakref_cb),
+                self._work_queue,
+                self._initializer,
+                self._initargs,
+            )
+
+        worker = threading.Thread(
+            name=thread_name,
+            target=_threadpool_impl._worker,
+            args=worker_args,
+            daemon=True,
+        )
+        worker.start()
+        self._threads.add(worker)
+        _threadpool_impl._threads_queues[worker] = self._work_queue
 
 
 def join_or_raise(
@@ -204,6 +267,13 @@ def shutdown_executor(
     still_alive = [t for t in threads_snapshot if t.is_alive()]
     if still_alive:
         non_daemon = [t for t in still_alive if not t.daemon]
+        daemon = [t for t in still_alive if t.daemon]
+        if daemon:
+            try:
+                for thread in daemon:
+                    _threadpool_impl._threads_queues.pop(thread, None)
+            except Exception:
+                pass
         # Log via stderr write to stay safe even if logging itself is
         # in a wedged state (this helper is reachable from atexit).
         import sys as _sys
@@ -211,13 +281,19 @@ def shutdown_executor(
             _sys.stderr.write(
                 f"[threadhygiene] shutdown_executor: {len(still_alive)} "
                 f"thread(s) for {name!r} did not exit within {timeout}s "
-                f"(non_daemon={len(non_daemon)}). Threads cannot be killed; "
-                f"daemon threads will die at interpreter exit, non-daemons "
-                f"will block exit indefinitely.\n"
+                f"(daemon={len(daemon)}, non_daemon={len(non_daemon)}). "
+                f"Threads cannot be killed; daemon workers are detached "
+                f"from concurrent.futures atexit joins, non-daemons will "
+                f"still block exit indefinitely.\n"
             )
             _sys.stderr.flush()
         except Exception:  # pragma: no cover — defensive
             pass
 
 
-__all__ = ["StopSignal", "join_or_raise", "shutdown_executor"]
+__all__ = [
+    "DaemonThreadPoolExecutor",
+    "StopSignal",
+    "join_or_raise",
+    "shutdown_executor",
+]
