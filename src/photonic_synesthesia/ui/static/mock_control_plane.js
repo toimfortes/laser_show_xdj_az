@@ -124,11 +124,95 @@ const SECTION_FIELD_HELP = {
 function helpIcon(field) {
   const text = SECTION_FIELD_HELP[field];
   if (!text) return "";
-  // Use both `title` (browser native tooltip — works always) and a
-  // `data-help` attribute for any future custom-tooltip wiring.
+  // `title` covers hover (mouse), and the global click handler below
+  // builds a click-toggle popover (touch / explicit click). Both
+  // surfaces show the same data-help text.
   const escaped = text.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
   return ` <span class="field-help" tabindex="0" role="button" aria-label="Help: ${escaped}" title="${escaped}" data-help="${escaped}">?</span>`;
 }
+
+// Click-toggle popover. Single shared `<div>` reparented next to whichever
+// `.field-help` is active; click outside or on another `?` closes/moves it.
+let _activeHelpIcon = null;
+function _ensureHelpPopoverEl() {
+  let el = document.getElementById("field-help-popover");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "field-help-popover";
+    el.className = "field-help-popover";
+    el.setAttribute("role", "tooltip");
+    el.hidden = true;
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function _closeHelpPopover() {
+  const el = document.getElementById("field-help-popover");
+  if (el) el.hidden = true;
+  if (_activeHelpIcon) _activeHelpIcon.classList.remove("active");
+  _activeHelpIcon = null;
+}
+
+function _openHelpPopoverFor(icon) {
+  const text = icon.dataset.help || icon.getAttribute("title") || "";
+  if (!text) return;
+  const el = _ensureHelpPopoverEl();
+  el.textContent = text;
+  el.hidden = false;
+  // Position below the icon, clamped to the viewport.
+  const rect = icon.getBoundingClientRect();
+  const popRect = el.getBoundingClientRect();
+  const viewportW = document.documentElement.clientWidth;
+  const margin = 8;
+  let left = rect.left + window.scrollX;
+  let top = rect.bottom + window.scrollY + 6;
+  if (left + popRect.width + margin > window.scrollX + viewportW) {
+    left = window.scrollX + viewportW - popRect.width - margin;
+  }
+  if (left < margin) left = margin;
+  el.style.left = `${left}px`;
+  el.style.top = `${top}px`;
+  if (_activeHelpIcon && _activeHelpIcon !== icon) {
+    _activeHelpIcon.classList.remove("active");
+  }
+  icon.classList.add("active");
+  _activeHelpIcon = icon;
+}
+
+document.addEventListener("click", (event) => {
+  const icon = event.target.closest(".field-help");
+  if (icon) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (_activeHelpIcon === icon) {
+      _closeHelpPopover();
+    } else {
+      _openHelpPopoverFor(icon);
+    }
+    return;
+  }
+  // Click outside the popover/icon closes it.
+  const popover = document.getElementById("field-help-popover");
+  if (popover && !popover.hidden && !popover.contains(event.target)) {
+    _closeHelpPopover();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") _closeHelpPopover();
+  if (event.key === "Enter" || event.key === " ") {
+    const icon = event.target.closest && event.target.closest(".field-help");
+    if (icon) {
+      event.preventDefault();
+      if (_activeHelpIcon === icon) {
+        _closeHelpPopover();
+      } else {
+        _openHelpPopoverFor(icon);
+      }
+    }
+  }
+});
 const LASER_PATTERN_OPTIONS = [
   ["fan", "Fan"],
   ["beam_fan_narrow", "Beam Fan Narrow"],

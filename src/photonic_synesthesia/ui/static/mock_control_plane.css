@@ -502,10 +502,35 @@ select {
 }
 
 .field-help:hover,
-.field-help:focus {
+.field-help:focus,
+.field-help.active {
   background: rgba(110, 168, 254, 0.55);
   outline: none;
   transform: scale(1.1);
+}
+
+/* Click-toggle popover that appears when a `?` icon is clicked or
+   focused-and-Entered. Body-anchored so it can escape any container's
+   `overflow: hidden`. */
+.field-help-popover {
+  position: absolute;
+  max-width: 360px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(20, 24, 36, 0.96);
+  color: var(--ink, #f5f6fa);
+  font-size: 0.82rem;
+  font-weight: 400;
+  line-height: 1.4;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  z-index: 9999;
+  pointer-events: auto;
+  white-space: pre-wrap;
+}
+
+.field-help-popover[hidden] {
+  display: none;
 }
 
 .show-section-grid input,
