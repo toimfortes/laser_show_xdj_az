@@ -5,6 +5,32 @@ from dataclasses import dataclass
 from photonic_synesthesia.platform.live_deck_models import BindingStatus, LiveDeckFact
 
 
+def resolve_track_identity(
+    *,
+    title: str,
+    artist: str,
+    duration_seconds: float,
+    candidates: list[dict[str, object]],
+) -> dict[str, object]:
+    exact = [
+        candidate
+        for candidate in candidates
+        if str(candidate.get("track_title") or "") == title
+        and str(candidate.get("track_artist") or "") == artist
+        and abs(float(candidate.get("duration_seconds") or 0.0) - duration_seconds) <= 0.5
+    ]
+    if len(exact) == 1:
+        winner = exact[0]
+        return {
+            "state": "bound",
+            "resolved_track_key": str(winner.get("track_key") or ""),
+            "match_confidence": 1.0,
+        }
+    if len(exact) > 1:
+        return {"state": "ambiguous", "resolved_track_key": "", "match_confidence": 0.0}
+    return {"state": "unbound", "resolved_track_key": "", "match_confidence": 0.0}
+
+
 @dataclass(slots=True)
 class LiveDeckAutoBindEngine:
     stale_after_seconds: float = 0.5

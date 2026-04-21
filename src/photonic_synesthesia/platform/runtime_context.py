@@ -481,6 +481,46 @@ class PlaybackContext:
             self.server_time = time.time()
             self.transport_revision += 1
 
+    def apply_live_binding(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            if str(payload.get("state") or "") != "bound":
+                return copy.deepcopy(self._snapshot_internal_locked())
+            self.track_key = str(payload.get("resolved_track_key") or self.track_key)
+            self.track_title = str(payload.get("track_title") or self.track_title)
+            self.track_artist = str(payload.get("track_artist") or self.track_artist)
+            self.metadata_source = _normalize_metadata_source(
+                payload.get("metadata_source", self.metadata_source)
+            )
+            try:
+                if payload.get("duration_seconds") is not None:
+                    self.duration_seconds = max(0.0, float(payload.get("duration_seconds") or 0.0))
+            except (TypeError, ValueError):
+                pass
+            try:
+                if payload.get("playhead_seconds") is not None:
+                    self.playhead_seconds = max(
+                        0.0,
+                        min(float(payload.get("playhead_seconds") or 0.0), self.duration_seconds),
+                    )
+            except (TypeError, ValueError):
+                pass
+            if payload.get("playing") is not None:
+                self.playing = bool(payload["playing"])
+            if payload.get("finished") is not None:
+                self.finished = bool(payload["finished"])
+            if payload.get("realtime") is not None:
+                self.realtime = bool(payload["realtime"])
+            if payload.get("speed") is not None:
+                try:
+                    self.speed = max(0.01, float(payload["speed"]))
+                except (TypeError, ValueError):
+                    pass
+            self.metadata_bound_at = time.time()
+            self.server_time = self.metadata_bound_at
+            self.transport_revision += 1
+            aliased = self._snapshot_internal_locked()
+        return copy.deepcopy(aliased)
+
     def snapshot(self) -> dict[str, Any]:
         """PUBLIC snapshot — deep-copied so callers can freely mutate the result.
 

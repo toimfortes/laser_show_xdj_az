@@ -118,6 +118,25 @@ def test_shared_playback_context_is_process_local() -> None:
     clear_shared_playback_context()
 
 
+def test_playback_context_apply_live_binding_updates_transport_and_track() -> None:
+    ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0, track_title="Live Track")
+    snapshot = ctx.apply_live_binding(
+        {
+            "state": "bound",
+            "resolved_track_key": "ARTBAT / Pete Tong|Age of Love",
+            "track_title": "Age of Love",
+            "track_artist": "ARTBAT / Pete Tong",
+            "duration_seconds": 445.4,
+            "playhead_seconds": 183.2,
+            "metadata_source": "pro_dj_link",
+        }
+    )
+
+    assert snapshot["track_title"] == "Age of Love"
+    assert snapshot["playhead_seconds"] == 183.2
+    assert snapshot["metadata_source"] == "pro_dj_link"
+
+
 def test_playback_snapshot_deep_copies_nested_show_sections() -> None:
     clear_shared_playback_context()
     playback = set_shared_playback_context(
