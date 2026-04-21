@@ -202,3 +202,23 @@ def test_engine_keeps_fresher_authority_when_older_snapshot_arrives() -> None:
     assert third.state == "stale"
     assert third.authority_player == 3
     assert third.last_update_at == 100.2
+
+
+def test_engine_switches_to_new_player_even_when_update_is_older() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+
+    first = engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.3)],
+        now=100.35,
+    )
+    second = engine.evaluate(
+        [LiveDeckFact(player_number=4, on_air=True, master=True, updated_at=100.0)],
+        now=100.3,
+    )
+
+    assert first.state == "bound"
+    assert first.authority_player == 3
+    assert first.last_update_at == 100.3
+    assert second.state == "bound"
+    assert second.authority_player == 4
+    assert second.last_update_at == 100.0

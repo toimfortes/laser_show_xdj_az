@@ -29,6 +29,7 @@ class LiveDeckAutoBindEngine:
             deck_updated_at = float(deck.updated_at)
             if (
                 self._last_authority_player is not None
+                and deck.player_number == self._last_authority_player
                 and deck_updated_at < self._last_authority_at
             ):
                 if now - self._last_authority_at >= self.stale_after_seconds:
