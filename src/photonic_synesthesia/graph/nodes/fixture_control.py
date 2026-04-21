@@ -756,6 +756,16 @@ class PanelControlNode:
         if not self.fixtures:
             return state
 
+        dynamics = resolve_active_section_dynamics(state)
+        panel_enabled = self._panel_enabled_for_dynamics(dynamics)
+        if not panel_enabled:
+            for fixture in self.fixtures:
+                if not fixture.enabled:
+                    continue
+                state["fixture_commands"].append(self._generate_disabled_panel_commands(fixture))
+            state["processing_times"]["panel_control"] = time.time() - start_time
+            return state
+
         structure = state["current_structure"]
         beat_phase = state["beat_info"]["beat_phase"]
         bar_position = state["beat_info"]["bar_position"]
@@ -783,12 +793,25 @@ class PanelControlNode:
                 color_drive=color_drive,
                 strobe_budget_hz=strobe_budget_hz,
                 subphrase_role=subphrase_role,
+                intensity_multiplier=dynamics["intensity_multiplier"],
+                motion_multiplier=dynamics["motion_multiplier"],
+                strobe_level=dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0,
             )
 
             state["fixture_commands"].append(commands)
 
         state["processing_times"]["panel_control"] = time.time() - start_time
         return state
+
+    @staticmethod
+    def _panel_enabled_for_dynamics(dynamics: dict[str, Any]) -> bool:
+        """Resolve the per-tick panel gate from inferred family dynamics."""
+        panel_family = dynamics.get("panel_family")
+        if panel_family == "wash":
+            return bool(dynamics["washes_enabled"])
+        if panel_family == "led":
+            return bool(dynamics["leds_enabled"])
+        return bool(dynamics["washes_enabled"] or dynamics["leds_enabled"])
 
     def _generate_panel_commands(
         self,
@@ -804,6 +827,9 @@ class PanelControlNode:
         color_drive: float,
         strobe_budget_hz: float,
         subphrase_role: str,
+        intensity_multiplier: float,
+        motion_multiplier: float,
+        strobe_level: float,
     ) -> FixtureCommand:
         """Generate DMX values for a single LED panel / bar.
 
@@ -815,9 +841,14 @@ class PanelControlNode:
         """
         base = fixture.start_address
         values: dict[int, int] = {}
+        motion_gain = max(0.25, min(2.0, motion_multiplier))
+        intensity_gain = max(0.0, min(1.5, intensity_multiplier))
+        strobe_gain = max(0.0, min(1.0, strobe_level))
 
         # -- Baseline palette color, beat-synced dual_cycle on energy ---
-        beats_per_cycle = 2.0 if structure in (MusicStructure.DROP, MusicStructure.BUILDUP) else 4.0
+        beats_per_cycle = (
+            2.0 if structure in (MusicStructure.DROP, MusicStructure.BUILDUP) else 4.0
+        ) / max(0.5, motion_gain)
         beat_clock = bar_position + beat_phase
         phase = (beat_clock / beats_per_cycle) * 2.0 * math.pi
         beat_hit = beat_phase < 0.15
@@ -854,24 +885,43 @@ class PanelControlNode:
             dimmer = int(90 + 60 * max(0.0, min(1.0, energy)))
         else:
             dimmer = int(60 + 120 * max(0.0, min(1.0, energy)))
+        dimmer = int(dimmer * intensity_gain)
 
         # -- Strobe channel ----------------------------------------------
         # strobe_budget_hz is 0..~12 Hz from director. Map to the
         # fixture's standard strobe-rate band (DMX 16..240 is typical
         # "slow..fast"). Values below the cut-in threshold stay 0 so the
         # fixture is fully open rather than chattering at near-zero Hz.
-        if strobe_budget_hz >= 0.6:
-            strobe_ratio = max(0.0, min(1.0, strobe_budget_hz / 12.0))
-            strobe_value = int(16 + round(strobe_ratio * (240 - 16)))
-        else:
+        if strobe_gain <= 0.01 or strobe_budget_hz < 0.6:
             strobe_value = 0
+        else:
+            strobe_ratio = max(0.0, min(1.0, (strobe_budget_hz / 12.0) * strobe_gain))
+            strobe_value = int(16 + round(strobe_ratio * (240 - 16)))
         values[base + self.channel_map["strobe"]] = strobe_value
 
+        # No panel-specific nonzero mode contract exists in the repo, and the
+        # pre-fix active path implicitly ran with the universe's zero-init
+        # value. Write that value explicitly so active ticks recover from any
+        # prior disable/garbage state instead of relying on universe history.
+        values[base + self.channel_map["mode"]] = 0
         values[base + self.channel_map["dimmer"]] = max(0, min(255, dimmer))
         values[base + self.channel_map["red"]] = rgb[0]
         values[base + self.channel_map["green"]] = rgb[1]
         values[base + self.channel_map["blue"]] = rgb[2]
 
+        return FixtureCommand(
+            fixture_id=fixture.id,
+            fixture_type="panel",
+            channel_values=values,
+        )
+
+    def _generate_disabled_panel_commands(self, fixture: FixtureConfig) -> FixtureCommand:
+        """Force mapped panel channels into a neutral/off state."""
+        base = fixture.start_address
+        values = {
+            base + channel_offset: 0
+            for channel_offset in set(self.channel_map.values())
+        }
         return FixtureCommand(
             fixture_id=fixture.id,
             fixture_type="panel",

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 from photonic_synesthesia.core.config import DMXConfig, FixtureConfig, LaserSafetyConfig, MovingHeadSafetyConfig
 from photonic_synesthesia.core.state import MusicStructure, PhotonicState, create_initial_state
 from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
-from photonic_synesthesia.graph.nodes.fixture_control import LaserControlNode, MovingHeadControlNode
+from photonic_synesthesia.graph.nodes.fixture_control import LaserControlNode, MovingHeadControlNode, PanelControlNode
 from photonic_synesthesia.platform.runtime_context import (
     PlaybackContext,
     clear_shared_playback_context,
@@ -30,6 +31,17 @@ def _moving_head_fixture() -> FixtureConfig:
         name="Mover Main",
         type="moving_head",
         profile="moving_head_generic",
+        start_address=1,
+        enabled=True,
+    )
+
+
+def _panel_fixture() -> FixtureConfig:
+    return FixtureConfig(
+        id="panel-main",
+        name="Panel Main",
+        type="panel",
+        profile="generic_panel",
         start_address=1,
         enabled=True,
     )
@@ -353,6 +365,287 @@ def test_motion_intensity_and_strobe_from_section_dynamics() -> None:
     assert boosted[1 + node.channel_map["dimmer"]] > reduced[1 + node.channel_map["dimmer"]]
     assert reduced[1 + node.channel_map["strobe"]] == 0
     assert boosted[1 + node.channel_map["strobe"]] > 0
+
+
+def test_panel_family_for_enable_gate_clears_panel_dmx_output() -> None:
+    panel_node = PanelControlNode([_panel_fixture()])
+    dmx_output = DMXOutputNode(DMXConfig(interface_type="artnet"))
+
+    active_state = create_initial_state()
+    active_state["timestamp"] = 1.0
+    active_state["current_structure"] = MusicStructure.DROP
+    active_state["beat_info"]["beat_phase"] = 0.02
+    active_state["beat_info"]["bar_position"] = 1
+    active_state["audio_features"]["rms_energy"] = 0.8
+    active_state["control_state"]["armed_live"] = True
+    active_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_active",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "wash",
+                "washes_enabled": True,
+                "leds_enabled": False,
+                "fixture_role_map": {
+                    "wash": {"role": "hero"},
+                    "led": {"role": "support"},
+                },
+            }
+        ],
+    }
+
+    disabled_state = create_initial_state()
+    disabled_state["timestamp"] = 1.0
+    disabled_state["current_structure"] = MusicStructure.DROP
+    disabled_state["beat_info"]["beat_phase"] = 0.02
+    disabled_state["beat_info"]["bar_position"] = 1
+    disabled_state["audio_features"]["rms_energy"] = 0.8
+    disabled_state["control_state"]["armed_live"] = True
+    disabled_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_disabled",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "wash",
+                "washes_enabled": False,
+                "leds_enabled": True,
+                "fixture_role_map": {
+                    "wash": {"role": "hero"},
+                    "led": {"role": "support"},
+                },
+            }
+        ],
+    }
+
+    active_result = dmx_output(panel_node(active_state))
+    disabled_result = dmx_output(panel_node(disabled_state))
+
+    active_universe = active_result["dmx_universe"]
+    disabled_universe = disabled_result["dmx_universe"]
+
+    assert any(active_universe[channel] > 0 for channel in range(1, 7))
+    assert all(disabled_universe[channel] == 0 for channel in range(1, 7))
+
+
+def test_panel_family_for_enable_gate_falls_back_to_any_enabled_family() -> None:
+    panel_node = PanelControlNode([_panel_fixture()])
+    dmx_output = DMXOutputNode(DMXConfig(interface_type="artnet"))
+
+    active_state = create_initial_state()
+    active_state["timestamp"] = 1.0
+    active_state["current_structure"] = MusicStructure.DROP
+    active_state["beat_info"]["beat_phase"] = 0.02
+    active_state["beat_info"]["bar_position"] = 1
+    active_state["audio_features"]["rms_energy"] = 0.8
+    active_state["control_state"]["armed_live"] = True
+    active_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_active_fallback",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "mover",
+                "washes_enabled": False,
+                "leds_enabled": True,
+                "fixture_role_map": {
+                    "wash": "support",
+                    "led": "hero",
+                },
+            }
+        ],
+    }
+
+    disabled_state = create_initial_state()
+    disabled_state["timestamp"] = 1.0
+    disabled_state["current_structure"] = MusicStructure.DROP
+    disabled_state["beat_info"]["beat_phase"] = 0.02
+    disabled_state["beat_info"]["bar_position"] = 1
+    disabled_state["audio_features"]["rms_energy"] = 0.8
+    disabled_state["control_state"]["armed_live"] = True
+    disabled_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_disabled_fallback",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "mover",
+                "washes_enabled": False,
+                "leds_enabled": False,
+                "fixture_role_map": {
+                    "wash": "support",
+                    "led": "hero",
+                },
+            }
+        ],
+    }
+
+    active_result = dmx_output(panel_node(active_state))
+    disabled_result = dmx_output(panel_node(disabled_state))
+
+    active_universe = active_result["dmx_universe"]
+    disabled_universe = disabled_result["dmx_universe"]
+
+    assert any(active_universe[channel] > 0 for channel in range(1, 7))
+    assert all(disabled_universe[channel] == 0 for channel in range(1, 7))
+
+
+def test_panel_control_reenable_restores_active_mode_after_disabled_tick() -> None:
+    panel_node = PanelControlNode([_panel_fixture()])
+    dmx_output = DMXOutputNode(DMXConfig(interface_type="artnet"))
+
+    active_state = create_initial_state()
+    active_state["timestamp"] = 1.0
+    active_state["current_structure"] = MusicStructure.DROP
+    active_state["beat_info"]["beat_phase"] = 0.02
+    active_state["beat_info"]["bar_position"] = 1
+    active_state["audio_features"]["rms_energy"] = 0.8
+    active_state["control_state"]["armed_live"] = True
+    active_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_active_reenable",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "led",
+                "washes_enabled": False,
+                "leds_enabled": True,
+                "fixture_role_map": {"led": {"role": "hero"}},
+            }
+        ],
+    }
+
+    disabled_state = create_initial_state()
+    disabled_state["timestamp"] = 1.0
+    disabled_state["current_structure"] = MusicStructure.DROP
+    disabled_state["beat_info"]["beat_phase"] = 0.02
+    disabled_state["beat_info"]["bar_position"] = 1
+    disabled_state["audio_features"]["rms_energy"] = 0.8
+    disabled_state["control_state"]["armed_live"] = True
+    disabled_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [
+            {
+                "id": "section_disabled_reenable",
+                "start_seconds": 0.0,
+                "end_seconds": 12.0,
+                "lead_family": "led",
+                "washes_enabled": True,
+                "leds_enabled": False,
+                "fixture_role_map": {"led": {"role": "hero"}},
+            }
+        ],
+    }
+
+    mode_channel = 1 + panel_node.channel_map["mode"]
+    dimmer_channel = 1 + panel_node.channel_map["dimmer"]
+
+    active_result = dmx_output(panel_node(active_state))
+    disabled_result = dmx_output(panel_node(disabled_state))
+    dmx_output.set_channel(mode_channel, 77)
+    reenabled_result = dmx_output(panel_node(active_state))
+
+    assert active_result["dmx_universe"][dimmer_channel] > 0
+    assert disabled_result["dmx_universe"][mode_channel] == 0
+    assert reenabled_result["dmx_universe"][dimmer_channel] > 0
+    assert reenabled_result["dmx_universe"][mode_channel] == 0
+
+
+def test_panel_control_applies_section_dynamics_after_operator_intents() -> None:
+    node = PanelControlNode([_panel_fixture()])
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=12.0,
+            show_sections=[
+                {
+                    "id": "section_000",
+                    "start_seconds": 0.0,
+                    "end_seconds": 12.0,
+                    "lead_family": "led",
+                    "washes_enabled": True,
+                    "leds_enabled": True,
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 0.5,
+                    "strobe_level": 0.8,
+                    "fixture_role_map": {"led": {"role": "hero"}},
+                }
+            ],
+        )
+    )
+    authored_section = copy.deepcopy(playback.snapshot()["show_sections"][0])
+    playback.apply_operator_intent(intent="darken", scope="track", target="all", amount=0.4)
+    playback.apply_operator_intent(intent="less_strobe", scope="track", target="strobes", amount=1.0)
+    playback.update_transport(
+        playhead_seconds=2.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    state = create_initial_state()
+    state["timestamp"] = 1.0
+    state["current_structure"] = MusicStructure.DROP
+    state["beat_info"]["beat_phase"] = 0.33
+    state["beat_info"]["bar_position"] = 1
+    state["audio_features"]["rms_energy"] = 0.8
+    state["director_state"]["strobe_budget_hz"] = 8.0
+
+    try:
+        mutated_command = node(state)["fixture_commands"][0]["channel_values"]
+        mutated_snapshot = playback.snapshot()
+    finally:
+        clear_shared_playback_context()
+
+    baseline_state = create_initial_state()
+    baseline_state["timestamp"] = 1.0
+    baseline_state["current_structure"] = MusicStructure.DROP
+    baseline_state["beat_info"]["beat_phase"] = 0.33
+    baseline_state["beat_info"]["bar_position"] = 1
+    baseline_state["audio_features"]["rms_energy"] = 0.8
+    baseline_state["director_state"]["strobe_budget_hz"] = 8.0
+    baseline_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [authored_section],
+    }
+    baseline_command = node(baseline_state)["fixture_commands"][0]["channel_values"]
+
+    neutral_motion_section = copy.deepcopy(mutated_snapshot["show_sections"][0])
+    neutral_motion_section["motion_multiplier"] = 1.0
+
+    neutral_motion_state = create_initial_state()
+    neutral_motion_state["timestamp"] = 1.0
+    neutral_motion_state["current_structure"] = MusicStructure.DROP
+    neutral_motion_state["beat_info"]["beat_phase"] = 0.33
+    neutral_motion_state["beat_info"]["bar_position"] = 1
+    neutral_motion_state["audio_features"]["rms_energy"] = 0.8
+    neutral_motion_state["director_state"]["strobe_budget_hz"] = 8.0
+    neutral_motion_state["playback_snapshot"] = {
+        "playhead_seconds": 2.0,
+        "show_sections": [neutral_motion_section],
+    }
+    neutral_motion_command = node(neutral_motion_state)["fixture_commands"][0]["channel_values"]
+
+    assert mutated_command[1 + node.channel_map["dimmer"]] < baseline_command[1 + node.channel_map["dimmer"]]
+    assert mutated_command[1 + node.channel_map["strobe"]] == 0
+    assert baseline_command[1 + node.channel_map["strobe"]] > 0
+    assert (
+        mutated_command[1 + node.channel_map["red"]],
+        mutated_command[1 + node.channel_map["green"]],
+        mutated_command[1 + node.channel_map["blue"]],
+    ) != (
+        neutral_motion_command[1 + node.channel_map["red"]],
+        neutral_motion_command[1 + node.channel_map["green"]],
+        neutral_motion_command[1 + node.channel_map["blue"]],
+    )
 
 
 def test_laser_control_clears_dmx_universe_when_active_section_disables_lasers() -> None:
