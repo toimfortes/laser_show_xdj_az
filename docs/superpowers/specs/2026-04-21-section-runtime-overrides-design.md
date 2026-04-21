@@ -72,6 +72,9 @@ The intended behavior is narrow and explicit:
 - they do not bypass safety, blackout, arming, or global controls
 - they should compose with existing timing/role logic instead of deleting it
 
+The implementation must use explicit mapping tables so every runtime path
+interprets the same authored pattern consistently.
+
 That means:
 
 - `laser_pattern` overrides rendered laser family selection for both DMX
@@ -172,8 +175,26 @@ Validation rules:
 - tests must cover short sections whose duration is smaller than the
   transition time so the resulting behavior is explicit and stable
 
+Short-section rule:
+
+- authored `scene_id` is a target-selection input, not a transition bypass
+- if a section is shorter than the configured transition time, it is
+  acceptable for that section to affect only `pending_scene` and not
+  complete a visible scene transition before the playhead moves on
+- this slice must not change scene transition mechanics to force instant
+  scene application
+
 This preserves the current authority chain while making section-authored
 scene changes live.
+
+Snapshot/UI rule:
+
+- this slice does not redefine the existing `active_scene_id` live
+  overlay contract in `PlaybackContext`
+- if the UI needs to distinguish authored active-section scene intent
+  from the actually transitioned runtime scene, that is a later slice
+- tests in this slice should verify scene-selection behavior inside the
+  runtime node, not reinterpret the existing snapshot overlay semantics
 
 ### Laser family behavior
 
@@ -187,6 +208,16 @@ It should:
 - map authored laser patterns into DMX pattern-selection behavior
 - continue using section/global motion scalars and safety clamps
 - continue clearing mapped channels when lasers are disabled
+
+Required mapping contract:
+
+- add a single runtime mapping helper/table from authored laser pattern
+  names to:
+  - DMX laser pattern slot/value selection
+  - ILDA geometry family selection
+- the same authored `laser_pattern` must resolve to a coherent family on
+  both DMX and ILDA paths, even if the final representation differs
+  (numeric DMX slot vs geometry-family string)
 
 #### ILDA laser path
 
@@ -218,20 +249,62 @@ It should:
   emitted values
 - keep gobo selection coupled to the resolved mover family
 
+Required mapping contract:
+
+- add a single runtime mapping helper/table from authored mover pattern
+  names to mover motion families
+- gobo behavior should remain derived from the resolved mover family
+  rather than from a second independent mapping
+
 ### Panel behavior
 
 `PanelControlNode` currently represents both wash-like and LED-like
 family output. The active section should therefore route patterns
 explicitly:
 
-- wash-side panel behavior follows `wash_pattern`
-- LED-side panel behavior follows `led_pattern`
+- if inferred `panel_family == "wash"`, panel rendering follows
+  `wash_pattern`
+- if inferred `panel_family == "led"`, panel rendering follows
+  `led_pattern`
+- if no panel family can be inferred, prefer `led_pattern` when present,
+  otherwise fall back to `wash_pattern`
 
 `fixture_mode` should then bias the shared envelope on top of that
 family-specific pattern choice.
 
 This is important because otherwise wash and LED pattern fields collapse
 back into one ambiguous implementation.
+
+Required mapping contract:
+
+- add explicit mapping helpers/tables from authored `wash_pattern` and
+  `led_pattern` names to panel render modes
+- this slice does not add a new per-fixture family classification system;
+  it uses the existing active-section `panel_family` inference and the
+  fallback rule above
+
+### `fixture_mode` ownership
+
+`fixture_mode` must not be implemented as ad hoc per-node tweaks with no
+ownership. This slice should keep ownership narrow:
+
+- `SceneSelectNode`: no `fixture_mode` behavior
+- `LaserControlNode`: may bias motion appetite and accent posture, but
+  not safety gates or low-level hardware mode channels
+- `ILDAOutputNode`: may bias motion/amplitude and accent posture, but
+  not bypass phrase-window selection or safety
+- `MovingHeadControlNode`: may bias motion posture, dimmer envelope, and
+  strobe appetite
+- `PanelControlNode`: owns the most visible section-envelope effect for
+  `fixture_mode`, including calmer vs peak-return style emphasis
+
+Concrete semantic baseline:
+
+- `intro`: calmer dimmer envelope, reduced strobe appetite, restrained motion
+- `breakdown`: sparse/held posture, lower strobe appetite, atmospheric emphasis
+- `rebuild`: rising motion posture and lift emphasis before drops
+- `peak_return`: stronger accent envelope and more aggressive drop-return posture
+- `outro`: fade/settle posture with reduced motion and intensity appetite
 
 ## File-Level Impact
 
@@ -279,9 +352,10 @@ No authored section field in this slice may bypass:
 The intended authority chain remains:
 
 1. operator hold/launch overrides for scene choice
-2. active authored section overrides by default
-3. director/structure fallback behavior
-4. global masters and safety layers
+2. MIDI pad override for scene choice
+3. active authored section overrides by default
+4. director/structure fallback behavior
+5. global masters and safety layers
 
 ## Testing Strategy
 
@@ -292,6 +366,7 @@ Add focused tests that prove live effect rather than metadata presence.
 - active section `scene_id` drives scene selection when no manual
   hold/launch is active
 - manual hold/launch still overrides section `scene_id`
+- MIDI pad override still beats section `scene_id`
 - invalid authored `scene_id` falls back safely
 - `laser_pattern` changes both DMX laser output and ILDA geometry
   selection
@@ -308,6 +383,8 @@ Add focused tests that prove live effect rather than metadata presence.
 - blackout / arm/disarm behavior is unchanged
 - scene transition timing logic is unchanged except for the new authored
   source of target scene
+- existing `active_scene_id` overlay semantics remain unchanged in this
+  slice
 
 ## Risks
 
