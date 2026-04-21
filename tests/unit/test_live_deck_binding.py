@@ -19,8 +19,6 @@ def test_live_deck_fact_allows_missing_nonessential_metadata() -> None:
         on_air=True,
         playing=True,
         updated_at=1713660000.0,
-        track_id="track-1",
-        source_type="xdj",
     )
 
     assert fact.player_number == 3
@@ -28,6 +26,8 @@ def test_live_deck_fact_allows_missing_nonessential_metadata() -> None:
     assert fact.track_artist is None
     assert fact.duration_seconds is None
     assert fact.bpm is None
+    assert fact.track_id is None
+    assert fact.source_type is None
     assert fact.master is True
     assert fact.on_air is True
 
@@ -47,6 +47,19 @@ def test_binding_status_exposes_reason_and_confidence() -> None:
     assert status.match_confidence == 1.0
 
 
+def test_non_bound_binding_status_can_be_created_cleanly() -> None:
+    status = BindingStatus(
+        state="conflict",
+        reason="multiple decks matched the same track",
+        authority_player=None,
+    )
+
+    assert status.state == "conflict"
+    assert status.resolved_track_key is None
+    assert status.match_confidence is None
+    assert status.last_update_at is None
+
+
 def test_platform_reexports_live_deck_models() -> None:
     assert PlatformLiveDeckFact is LiveDeckFact
     assert PlatformLiveDeckSnapshot is LiveDeckSnapshot
@@ -62,13 +75,11 @@ def test_live_deck_snapshot_wraps_decks() -> None:
         on_air=True,
         playing=True,
         updated_at=1713660000.0,
-        track_id="track-1",
-        source_type="xdj",
     )
     snapshot = LiveDeckSnapshot(decks=[fact])
 
     assert snapshot.decks[0].player_number == 3
-    assert snapshot.decks[0].track_id == "track-1"
+    assert snapshot.decks[0].track_id is None
 
 
 def test_live_deck_snapshot_can_be_empty() -> None:

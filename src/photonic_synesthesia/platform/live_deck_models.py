@@ -12,12 +12,12 @@ class LiveDeckFact:
     on_air: bool
     playing: bool
     updated_at: float
-    track_id: str
-    source_type: str
     track_title: str | None = None
     track_artist: str | None = None
     duration_seconds: float | None = None
     bpm: float | None = None
+    track_id: str | None = None
+    source_type: str | None = None
 
 
 @dataclass(slots=True)
@@ -30,6 +30,6 @@ class BindingStatus:
     state: str
     reason: str
     authority_player: int | None
-    resolved_track_key: str
-    match_confidence: float
-    last_update_at: float
+    resolved_track_key: str | None = None
+    match_confidence: float | None = None
+    last_update_at: float | None = None
