@@ -157,3 +157,26 @@ def test_start_with_max_duration_none_skips_check(tmp_path: Path) -> None:
         "max_duration_seconds=None should skip the pre-decode probe"
     )
     assert node._running
+
+
+def test_start_refuses_unknown_duration_when_cap_enabled(tmp_path: Path) -> None:
+    """If the cheap duration probe fails, we must fail closed while the
+    duration cap is active instead of silently decoding an arbitrary-size
+    file into RAM."""
+    fake_path = tmp_path / "unknown-duration.wav"
+    fake_path.write_bytes(b"")
+
+    node = AudioFileSenseNode(fake_path, sample_rate=48000, max_duration_seconds=60.0)
+
+    with (
+        mock.patch(
+            "photonic_synesthesia.graph.nodes.audio_file_sense.soundfile.info",
+            side_effect=RuntimeError("probe failed"),
+        ),
+        mock.patch(
+            "photonic_synesthesia.graph.nodes.audio_file_sense.librosa.load",
+            side_effect=AssertionError("librosa.load must not run when duration is unknown"),
+        ),
+    ):
+        with pytest.raises(AudioCaptureError, match="could not determine duration"):
+            node.start()

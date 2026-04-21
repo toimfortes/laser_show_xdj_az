@@ -109,15 +109,25 @@ class ControlPlaneStateService:
         return event
 
     def accept_command(self, command: OperatorCommand) -> CommandReceipt:
-        self._apply_command_effects(command)
         receipt = self.commands.publish(command)
-        self.publish_event(
-            PlatformEventType.COMMAND_ACCEPTED,
-            "Command accepted by control-plane service",
-            command_id=command.command_id,
-            command_type=command.command_type.value,
-            target=command.target,
-        )
+        if receipt.accepted:
+            self._apply_command_effects(command)
+            self.publish_event(
+                PlatformEventType.COMMAND_ACCEPTED,
+                "Command accepted by control-plane service",
+                command_id=command.command_id,
+                command_type=command.command_type.value,
+                target=command.target,
+            )
+        else:
+            self.publish_event(
+                PlatformEventType.COMMAND_REJECTED,
+                receipt.message,
+                command_id=command.command_id,
+                command_type=command.command_type.value,
+                target=command.target,
+                queue_depth=receipt.queue_depth,
+            )
         return receipt
 
     def acquire_control_lease(

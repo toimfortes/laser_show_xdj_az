@@ -63,7 +63,7 @@ def _write_diagnostic(message: str) -> None:
         pass
 
 
-def watchdog_loop(main_pid: int) -> None:
+def watchdog_loop(main_pid: int, shmem_name: str = "photonic_watchdog_state_v1") -> None:
     """Entry point for the watchdog subprocess.
 
     Runs until main exits cleanly OR main is SIGKILL'd by the escalation
@@ -71,19 +71,20 @@ def watchdog_loop(main_pid: int) -> None:
     """
     # Attach to the shared memory segment main created.
     try:
-        state = WatchdogSharedState(create=False)
+        state = WatchdogSharedState(create=False, name=shmem_name)
     except FileNotFoundError:
         _write_diagnostic("shmem not found; main probably crashed before we started")
         return
 
     my_pid = os.getpid()
-    state.write_watchdog(watchdog_pid=my_pid, watchdog_heartbeat=1)
+    state.write_watchdog(watchdog_pid=my_pid, watchdog_heartbeat=1, best_effort=True)
     _write_diagnostic(f"started pid={my_pid} monitoring main_pid={main_pid}")
 
     last_main_hb = -1
     last_change_monotonic = time.monotonic()
     soft_escalated = False
     tick = 0
+    stale_started_monotonic: float | None = None
     # Cycle-6 D2: track consecutive StaleRead occurrences. A one-off
     # is normal (writer happened to be mid-bump); 20 in a row (= 1
     # second at the 50ms tick) is abnormal and signals either a
@@ -111,14 +112,18 @@ def watchdog_loop(main_pid: int) -> None:
 
             # Heartbeat: advance our own counter so main can
             # unilateral-watch us (in case we crash).
-            state.write_watchdog(watchdog_heartbeat=tick)
+            state.write_watchdog(watchdog_heartbeat=tick, best_effort=True)
 
             # Check main's heartbeat.
             try:
                 snapshot = state.read()
             except StaleRead:
                 # Live-lock on seq — main may be stuck mid-write.
-                # Treat as inconclusive this tick; keep watching.
+                # Treat sustained stale reads as a stall. A writer that
+                # crashed mid-update leaves seq odd forever; waiting for a
+                # successful read means we would never escalate.
+                if stale_started_monotonic is None:
+                    stale_started_monotonic = time.monotonic()
                 consecutive_stale += 1
                 if consecutive_stale == STALE_WARN_THRESHOLD:
                     _write_diagnostic(
@@ -127,10 +132,39 @@ def watchdog_loop(main_pid: int) -> None:
                         "or is hammering shmem. Normal-stall detection "
                         "still active."
                     )
+                silence_ms = (time.monotonic() - stale_started_monotonic) * 1000.0
+                if silence_ms >= MAX_SOFT_STALL_MS and not soft_escalated:
+                    _write_diagnostic(
+                        f"main stale-read stall detected ({silence_ms:.0f}ms silence); "
+                        "requesting soft blackout + SIGUSR1"
+                    )
+                    state.write_watchdog(blackout_requested=1, best_effort=True)
+                    try:
+                        os.kill(main_pid, signal.SIGUSR1)
+                    except ProcessLookupError:
+                        _write_diagnostic(f"main_pid={main_pid} gone; exiting")
+                        return
+                    except Exception as exc:
+                        _write_diagnostic(f"SIGUSR1 failed: {exc}")
+                    soft_escalated = True
+                if silence_ms >= MAX_HARD_STALL_MS:
+                    _write_diagnostic(
+                        f"main stale-read stall exceeded hard threshold ({silence_ms:.0f}ms); "
+                        f"SIGKILL main_pid={main_pid} (DAC fails safe on data starvation)"
+                    )
+                    try:
+                        os.kill(main_pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except Exception as exc:
+                        _write_diagnostic(f"SIGKILL failed: {exc}")
+                    _write_diagnostic("actuation complete; watchdog exiting")
+                    return
                 continue
             else:
                 if consecutive_stale > 0:
                     consecutive_stale = 0
+                stale_started_monotonic = None
 
             current_main_hb = snapshot.main_heartbeat
 
@@ -141,7 +175,7 @@ def watchdog_loop(main_pid: int) -> None:
                 soft_escalated = False
                 # Also clear any stale blackout_requested (main recovered).
                 if snapshot.blackout_requested:
-                    state.write_watchdog(blackout_requested=0)
+                    state.write_watchdog(blackout_requested=0, best_effort=True)
                 continue
 
             # Main hasn't advanced. How long?
@@ -153,7 +187,7 @@ def watchdog_loop(main_pid: int) -> None:
                     f"main stall detected ({silence_ms:.0f}ms silence); "
                     "requesting soft blackout + SIGUSR1"
                 )
-                state.write_watchdog(blackout_requested=1)
+                state.write_watchdog(blackout_requested=1, best_effort=True)
                 # Best-effort SIGUSR1. If main is wedged in C ext, this
                 # queues but doesn't fire until C returns. That's why
                 # SIGKILL is the backstop.

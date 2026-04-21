@@ -37,6 +37,9 @@ def _make_graph_with_fake_watchdog(
     alive_sequence = iter([is_alive_after_term, is_alive_after_kill])
     fake_proc.is_alive.side_effect = lambda: next(alive_sequence, False)
     graph._watchdog_proc = fake_proc
+    graph._watchdog_faulted = False
+    graph._watchdog_last_heartbeat = 0
+    graph._watchdog_last_change_monotonic = 0.0
     return graph, fake_proc
 
 
@@ -97,3 +100,23 @@ def test_watchdog_survives_sigkill_logs_error_but_still_clears_handle() -> None:
     # cleared — otherwise a re-start() would try to double-handle a
     # zombie.
     assert graph._watchdog_proc is None
+
+
+def test_watchdog_health_monitor_blackouts_if_subprocess_dies() -> None:
+    """A crashed watchdog must not fail silently while the graph keeps running."""
+    graph, fake_proc = _make_graph_with_fake_watchdog(is_alive_after_term=False)
+    graph.nodes = {
+        "dmx_output": MagicMock(),
+        "ilda_output": MagicMock(),
+        "ilda_transport": MagicMock(),
+    }
+    fake_proc.is_alive.side_effect = lambda: False
+
+    with patch("photonic_synesthesia.graph.builder.logger") as fake_log:
+        graph._monitor_watchdog_health()
+
+    graph.nodes["dmx_output"].request_blackout.assert_called_once()
+    graph.nodes["ilda_output"].request_blackout.assert_called_once()
+    graph.nodes["ilda_transport"].request_blackout.assert_called_once()
+    fake_log.error.assert_called_once()
+    assert graph._watchdog_faulted is True

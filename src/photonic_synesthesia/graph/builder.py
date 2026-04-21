@@ -104,6 +104,9 @@ class PhotonicGraph:
         self._enable_watchdog = enable_out_of_process_watchdog
         self._watchdog_proc: Any = None  # multiprocessing.Process | None
         self._watchdog_shmem: Any = None  # WatchdogSharedState | None
+        self._watchdog_faulted = False
+        self._watchdog_last_heartbeat = 0
+        self._watchdog_last_change_monotonic = 0.0
         self._tick_number = 0
 
     def start(self) -> None:
@@ -151,7 +154,8 @@ class PhotonicGraph:
             return
 
         try:
-            self._watchdog_shmem = WatchdogSharedState(create=True)
+            watchdog_name = WatchdogSharedState.name_for_main_pid(os.getpid())
+            self._watchdog_shmem = WatchdogSharedState(create=True, name=watchdog_name)
         except Exception as exc:
             logger.warning("watchdog_shmem_init_failed", error=str(exc))
             self._enable_watchdog = False
@@ -190,11 +194,7 @@ class PhotonicGraph:
                 node = self.nodes.get(node_name)
                 if node is None:
                     continue
-                handler = (
-                    getattr(node, "request_blackout", None)
-                    or getattr(node, "emergency_blackout", None)
-                    or getattr(node, "blackout", None)
-                )
+                handler = getattr(node, "request_blackout", None)
                 if callable(handler):
                     try:
                         handler()
@@ -246,11 +246,15 @@ class PhotonicGraph:
         ctx = multiprocessing.get_context("spawn")
         self._watchdog_proc = ctx.Process(
             target=watchdog_loop,
-            args=(os.getpid(),),
+            args=(os.getpid(), watchdog_name),
             name="photonic-watchdog",
             daemon=True,
         )
         self._watchdog_proc.start()
+        import time as _time
+        self._watchdog_faulted = False
+        self._watchdog_last_heartbeat = 0
+        self._watchdog_last_change_monotonic = _time.monotonic()
 
         # Cycle-5 panel LS3 (Kilo F4): give the in-process ILDA emergency
         # thread visibility into the watchdog's `blackout_requested` flag
@@ -362,6 +366,65 @@ class PhotonicGraph:
             except Exception:
                 pass
             self._watchdog_shmem = None
+        self._watchdog_faulted = False
+        self._watchdog_last_heartbeat = 0
+        self._watchdog_last_change_monotonic = 0.0
+
+    def _request_watchdog_blackout(self) -> None:
+        for node_name in ("dmx_output", "ilda_output", "ilda_transport"):
+            node = self.nodes.get(node_name)
+            if node is None:
+                continue
+            handler = getattr(node, "request_blackout", None)
+            if callable(handler):
+                try:
+                    handler()
+                except Exception:
+                    logger.exception("watchdog_blackout_request_failed", node=node_name)
+
+    def _monitor_watchdog_health(self) -> None:
+        """Fail closed if the watchdog dies or stops heartbeating."""
+        if self._watchdog_proc is None:
+            return
+
+        import time as _time
+
+        now = _time.monotonic()
+        if not self._watchdog_proc.is_alive():
+            if not self._watchdog_faulted:
+                logger.error(
+                    "watchdog_subprocess_died_requesting_blackout",
+                    pid=self._watchdog_proc.pid,
+                )
+                self._request_watchdog_blackout()
+                self._watchdog_faulted = True
+            return
+
+        if self._watchdog_shmem is None:
+            return
+
+        try:
+            snapshot = self._watchdog_shmem.read()
+        except Exception:
+            return
+
+        heartbeat = int(snapshot.watchdog_heartbeat)
+        if heartbeat != self._watchdog_last_heartbeat:
+            self._watchdog_last_heartbeat = heartbeat
+            self._watchdog_last_change_monotonic = now
+            return
+
+        if snapshot.watchdog_pid <= 0:
+            return
+
+        if now - self._watchdog_last_change_monotonic >= 0.5 and not self._watchdog_faulted:
+            logger.error(
+                "watchdog_heartbeat_stalled_requesting_blackout",
+                pid=snapshot.watchdog_pid,
+                heartbeat=heartbeat,
+            )
+            self._request_watchdog_blackout()
+            self._watchdog_faulted = True
 
     def _publish_playback_snapshot(self) -> None:
         """Publish one playback_snapshot per tick + reset frame-local artifacts.
@@ -434,6 +497,7 @@ class PhotonicGraph:
                     # continue — the watchdog will detect the missing
                     # heartbeat and escalate.
                     pass
+            self._monitor_watchdog_health()
             return self._state
 
     def _sync_control_state(self) -> None:
@@ -450,6 +514,7 @@ class PhotonicGraph:
             not control_state["armed_live"]
             or control_state["blackout_active"]
             or safety_state["emergency_stop"]
+            or self._watchdog_faulted
         )
 
         for output_name in ("dmx_output", "ilda_output", "ilda_transport"):

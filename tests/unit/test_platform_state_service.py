@@ -2,6 +2,7 @@ from photonic_synesthesia.core.state import MusicStructure, create_initial_state
 from photonic_synesthesia.platform import (
     CommandType,
     ControlPlaneStateService,
+    InMemoryCommandBus,
     OperatorCommand,
     OperatorRole,
 )
@@ -108,3 +109,54 @@ def test_initial_state_starts_disarmed() -> None:
     state = create_initial_state()
 
     assert state["control_state"]["armed_live"] is False
+
+
+def test_command_bus_rejects_publish_when_queue_is_full() -> None:
+    bus = InMemoryCommandBus(max_queue=1)
+
+    first = bus.publish(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.ARM,
+        )
+    )
+    second = bus.publish(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.DISARM,
+        )
+    )
+
+    assert first.accepted is True
+    assert second.accepted is False
+    assert bus.backlog() == 1
+
+
+def test_state_service_does_not_apply_rejected_command_effects() -> None:
+    service = ControlPlaneStateService()
+    service.commands = InMemoryCommandBus(max_queue=1)
+
+    first = service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.ARM,
+        )
+    )
+    second = service.accept_command(
+        OperatorCommand(
+            issuer_id="alice",
+            session_id="sess-1",
+            role=OperatorRole.OPERATOR,
+            command_type=CommandType.DISARM,
+        )
+    )
+
+    assert first.accepted is True
+    assert second.accepted is False
+    assert service.snapshot().armed_live is True

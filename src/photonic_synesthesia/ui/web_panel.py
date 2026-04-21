@@ -583,7 +583,7 @@ class MockRigStore:
                 "blackout": self._blackout,
             }
 
-    def _fixture_by_id(self, fixture_id: str) -> dict[str, Any] | None:
+    def _fixture_by_id_locked(self, fixture_id: str) -> dict[str, Any] | None:
         for fixture in self._fixtures:
             if fixture["id"] == fixture_id:
                 return fixture
@@ -597,7 +597,7 @@ class MockRigStore:
 
     def duplicate_fixture(self, fixture_id: str) -> dict[str, Any] | None:
         with self._lock:
-            fixture = self._fixture_by_id(fixture_id)
+            fixture = self._fixture_by_id_locked(fixture_id)
             if fixture is None:
                 return None
             clone = copy.deepcopy(fixture)
@@ -616,7 +616,7 @@ class MockRigStore:
 
     def update_fixture(self, fixture_id: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
-            fixture = self._fixture_by_id(fixture_id)
+            fixture = self._fixture_by_id_locked(fixture_id)
             if fixture is None:
                 return None
 
@@ -1120,6 +1120,10 @@ def create_app(
             "snapshot": services.snapshot().model_dump(mode="json"),
         }
 
+    async def _run_playback_context_call(method: Any, *args: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, method, *args)
+
     @app.get("/", response_class=HTMLResponse)
     async def index() -> str:
         return _render_control_plane_html()
@@ -1234,10 +1238,12 @@ def create_app(
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
-        section = playback_context.update_show_section(section_id, request.changes)
+        section = await _run_playback_context_call(
+            playback_context.update_show_section, section_id, request.changes
+        )
         if section is None:
             raise HTTPException(status_code=404, detail="Show section not found")
-        return playback_context.snapshot()
+        return await _run_playback_context_call(playback_context.snapshot)
 
     @app.patch("/api/mock/playback/selection-mode")
     @log_endpoint("PATCH:/api/mock/playback/selection-mode")
@@ -1256,12 +1262,9 @@ def create_app(
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
-        loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(
-                None,  # default executor — the call is non-blocking; PlaybackContext serializes via _REGEN_INFLIGHT
-                playback_context.set_selection_mode,
-                request.selection_mode,
+            return await _run_playback_context_call(
+                playback_context.set_selection_mode, request.selection_mode
             )
         except RuntimeError as exc:
             # `regeneration already in flight` → 409 Conflict (cycle-3-rev-2 R7)
@@ -1279,12 +1282,9 @@ def create_app(
         playback_context: PlaybackContext | None = get_shared_playback_context()
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
-        loop = asyncio.get_running_loop()
         try:
-            return await loop.run_in_executor(
-                None,
-                playback_context.set_selection_variance,
-                request.selection_variance,
+            return await _run_playback_context_call(
+                playback_context.set_selection_variance, request.selection_variance
             )
         except RuntimeError as exc:
             status = 409 if "already in flight" in str(exc) else 400
@@ -1299,12 +1299,15 @@ def create_app(
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
         try:
-            return playback_context.apply_operator_intent(
-                intent=request.intent,
-                scope=request.scope,
-                target=request.target,
-                amount=request.amount,
-                expires_at=request.expires_at or "",
+            return await _run_playback_context_call(
+                functools.partial(
+                    playback_context.apply_operator_intent,
+                    intent=request.intent,
+                    scope=request.scope,
+                    target=request.target,
+                    amount=request.amount,
+                    expires_at=request.expires_at or "",
+                )
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1344,10 +1347,13 @@ def create_app(
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback session is active")
         try:
-            return playback_context.set_staged_look(
-                section_id=request.section_id,
-                cue_recipe=request.cue_recipe,
-                laser_program=request.laser_program,
+            return await _run_playback_context_call(
+                functools.partial(
+                    playback_context.set_staged_look,
+                    section_id=request.section_id,
+                    cue_recipe=request.cue_recipe,
+                    laser_program=request.laser_program,
+                )
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1366,7 +1372,7 @@ def create_app(
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback session is active")
         try:
-            return playback_context.commit_staged_look()
+            return await _run_playback_context_call(playback_context.commit_staged_look)
         except RuntimeError as exc:
             # "No staged look" → 400; "Playhead advanced past..." → 409.
             status = 409 if "playhead" in str(exc).lower() else 400
@@ -1381,7 +1387,8 @@ def create_app(
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback session is active")
         try:
-            return playback_context.bind_track_metadata(
+            return await _run_playback_context_call(
+                playback_context.bind_track_metadata,
                 {
                     "track_title": request.title,
                     "track_artist": request.artist or "",
@@ -1395,7 +1402,7 @@ def create_app(
                     "selection_mode": request.selection_mode,
                     "selection_variance": request.selection_variance,
                     "metadata_source": "pro_dj_link",
-                }
+                },
             )
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1407,10 +1414,10 @@ def create_app(
         if playback_context is None:
             raise HTTPException(status_code=404, detail="No playback file is active")
         try:
-            playback_context.request_seek(request.seconds)
+            await _run_playback_context_call(playback_context.request_seek, request.seconds)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return playback_context.snapshot()
+        return await _run_playback_context_call(playback_context.snapshot)
 
     @app.post("/api/mock/fixtures")
     @log_endpoint("POST:/api/mock/fixtures")

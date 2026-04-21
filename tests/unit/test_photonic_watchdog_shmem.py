@@ -90,6 +90,58 @@ def test_partial_write_seq_odd_triggers_retry_then_stale(
         fresh_shmem.read()
 
 
+def test_writer_keeps_seq_odd_during_recovery_from_stale_odd_value(
+    fresh_shmem: WatchdogSharedState,
+) -> None:
+    """If a previous writer crashed and left seq odd, the NEXT writer
+    must keep seq odd for the whole recovery write. Flipping odd->even
+    before the payload write reopens torn-read windows."""
+    fresh_shmem._write_seq(1)
+
+    with fresh_shmem._writer() as active:
+        assert active is True
+        assert fresh_shmem._read_seq() % 2 == 1, (
+            "writer must keep seq odd while its critical section is active"
+        )
+
+    assert fresh_shmem._read_seq() % 2 == 0
+
+
+def test_watchdog_writer_uses_nonblocking_flock(
+    fresh_shmem: WatchdogSharedState,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The watchdog must not block on a flock held by main. If the lock
+    is busy, write_watchdog() should skip the write and return."""
+    if fresh_shmem._flock_fd is None:
+        pytest.skip("non-Linux /dev/shm backing file unavailable in this environment")
+
+    import errno
+    import fcntl
+
+    calls: list[int] = []
+
+    def _busy_flock(fd: int, op: int) -> None:
+        calls.append(op)
+        if op & fcntl.LOCK_NB:
+            raise BlockingIOError(errno.EAGAIN, "synthetic busy flock")
+        raise AssertionError("watchdog write must not use blocking flock")
+
+    monkeypatch.setattr("photonic_watchdog.shmem.fcntl.flock", _busy_flock)
+
+    fresh_shmem.write_watchdog(
+        watchdog_heartbeat=123,
+        blackout_requested=1,
+        best_effort=True,
+    )
+
+    assert calls, "write_watchdog should attempt a flock when flock fd is available"
+    assert calls[0] & fcntl.LOCK_NB, "watchdog writes must use LOCK_NB"
+    snap = fresh_shmem.read()
+    assert snap.watchdog_heartbeat == 0
+    assert snap.blackout_requested == 0
+
+
 def test_cleanup_stale_segment_before_create() -> None:
     """A stale segment from a prior crash MUST NOT block a fresh create."""
     leaked = WatchdogSharedState(create=True)

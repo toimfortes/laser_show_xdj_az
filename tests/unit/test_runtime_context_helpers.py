@@ -112,7 +112,9 @@ def test_apply_operator_intent_to_section_reduces_strobe() -> None:
 import copy
 import json
 import os
+from pathlib import Path
 import tempfile
+from unittest import mock
 
 from photonic_synesthesia.platform.runtime_context import PlaybackContext
 
@@ -186,6 +188,23 @@ def test_snapshot_public_api_deep_copies() -> None:
     snap1["show_sections"].append({"rogue": True})
     snap2 = ctx.snapshot()
     assert len(snap2["show_sections"]) == 1, "public snapshot leak — cache poisoned"
+
+
+def test_snapshot_uses_cached_media_availability_not_live_filesystem_probes() -> None:
+    """Playback snapshots run on the 50 Hz graph path. They must not hit
+    `Path.is_file()` on every call under the shared context lock."""
+    ctx = _ctx(
+        file_path="/tmp/audio.wav",
+        ilda_export_path="/tmp/export.ild",
+    )
+    assert ctx._audio_available is False
+    assert ctx._ilda_export_available is False
+
+    with mock.patch.object(Path, "is_file", side_effect=AssertionError("snapshot must not probe disk")):
+        snap = ctx.snapshot()
+
+    assert snap["audio_available"] is False
+    assert snap["ilda_export_available"] is False
 
 
 def test_set_staged_look_via_recompute_does_not_clear_trigger_ledger() -> None:

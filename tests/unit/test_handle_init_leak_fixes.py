@@ -164,3 +164,22 @@ def test_audio_sense_start_closes_stream_when_start_fails() -> None:
     assert node._stream is None, (
         "AudioSenseNode must NOT retain a partially-opened PortAudio stream"
     )
+
+
+def test_audio_sense_stop_closes_stream_and_clears_state_when_stop_raises() -> None:
+    """Stop must fail closed on PortAudio errors instead of leaving the node half-stopped."""
+    from photonic_synesthesia.core.config import AudioConfig
+    from photonic_synesthesia.graph.nodes.audio_sense import AudioSenseNode
+
+    fake_stream = mock.MagicMock()
+    fake_stream.stop.side_effect = OSError("device lost during stop")
+
+    node = AudioSenseNode(AudioConfig(device=""))
+    node._stream = fake_stream
+    node._running = True
+
+    node.stop()
+
+    fake_stream.close.assert_called_once()
+    assert node._stream is None
+    assert node._running is False

@@ -101,15 +101,14 @@ def test_sigusr1_handler_prefers_request_blackout_over_emergency_blackout() -> N
     body_end = source.index("\n        # Cycle-6 B5:", start)
     handler_body = source[start:body_end]
 
-    # The getattr chain must list request_blackout BEFORE emergency_blackout.
     req_idx = handler_body.find("request_blackout")
-    emerg_idx = handler_body.find("emergency_blackout")
     assert req_idx > 0
-    assert emerg_idx > 0
-    assert req_idx < emerg_idx, (
-        f"request_blackout must appear before emergency_blackout in the "
-        f"getattr chain (preference order); got request @ {req_idx}, "
-        f"emergency @ {emerg_idx}"
+    assert "emergency_blackout" not in handler_body, (
+        "SIGUSR1 handler must not call emergency_blackout() from signal context"
+    )
+    assert 'getattr(node, "blackout"' not in handler_body, (
+        "SIGUSR1 handler must not fall back to blackout(); blackout() can "
+        "take regular threading.Lock instances and deadlock in signal context"
     )
 
 

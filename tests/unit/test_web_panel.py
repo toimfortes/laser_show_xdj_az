@@ -1,3 +1,7 @@
+import asyncio
+from types import SimpleNamespace
+from unittest import mock
+
 from fastapi.testclient import TestClient
 
 from photonic_synesthesia.core.state import create_initial_state
@@ -689,6 +693,75 @@ def test_playback_selection_variance_endpoint_regenerates_sections_and_persists(
     assert saved_payloads[-1]["selection_variance"] == 0.65
 
     clear_shared_playback_context()
+
+
+def test_show_section_route_offloads_blocking_playback_mutation(tmp_path) -> None:
+    """Blocking PlaybackContext mutations must leave the event loop via
+    run_in_executor, not run inline on the uvicorn loop thread."""
+    from photonic_synesthesia.ui import web_panel
+
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=12.5,
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Drop E:8",
+                    "kind": "drop",
+                    "start_seconds": 4.0,
+                    "end_seconds": 8.0,
+                    "scene_id": "drop_intense",
+                    "fixture_mode": "peak_return",
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 1.0,
+                    "strobe_level": 0.2,
+                    "laser_enabled": True,
+                    "movers_enabled": True,
+                    "washes_enabled": True,
+                    "leds_enabled": True,
+                }
+            ],
+        )
+    )
+
+    class _FakeLoop:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object, tuple[object, ...]]] = []
+
+        async def run_in_executor(self, executor, func, *args):
+            self.calls.append((executor, func, args))
+            return func(*args)
+
+    app = web_panel.create_app()
+    route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/api/mock/playback/show-sections/{section_id}"
+    )
+    fake_loop = _FakeLoop()
+    request = SimpleNamespace(changes={"scene_id": "break_sweep"})
+
+    try:
+        with mock.patch(
+            "photonic_synesthesia.ui.web_panel.asyncio.get_running_loop",
+            return_value=fake_loop,
+        ):
+            result = asyncio.run(route.endpoint("section_001", request))
+    finally:
+        clear_shared_playback_context()
+
+    assert playback is not None
+    assert fake_loop.calls, "route must use run_in_executor for playback mutation"
+    _, called_fn, called_args = fake_loop.calls[0]
+    assert called_fn == playback.update_show_section
+    assert called_args == ("section_001", {"scene_id": "break_sweep"})
+    assert result["show_sections"][0]["scene_id"] == "break_sweep"
 
 
 def test_playback_operator_intent_endpoint_applies_track_override_and_persists(tmp_path) -> None:

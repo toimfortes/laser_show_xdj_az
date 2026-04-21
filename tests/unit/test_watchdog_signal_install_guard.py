@@ -8,6 +8,7 @@ Pins:
 
 from __future__ import annotations
 
+import os
 import signal
 import threading
 from unittest import mock
@@ -36,12 +37,15 @@ def test_sigusr1_install_in_main_thread_succeeds_and_does_not_log_error() -> Non
             mock.patch(
                 "photonic_watchdog.shmem.WatchdogSharedState",
                 return_value=mock.MagicMock(),
-            ),
+            ) as shmem_cls,
             mock.patch("multiprocessing.get_context") as fake_get_context,
             mock.patch("photonic_synesthesia.graph.builder.logger") as fake_log,
         ):
             fake_ctx = fake_get_context.return_value
-            fake_ctx.Process.return_value = mock.MagicMock()
+            fake_proc = mock.MagicMock()
+            fake_ctx.Process.return_value = fake_proc
+            expected_name = f"photonic_watchdog_state_v1_{os.getpid()}"
+            shmem_cls.name_for_main_pid.return_value = expected_name
 
             graph._start_out_of_process_watchdog()
 
@@ -49,6 +53,8 @@ def test_sigusr1_install_in_main_thread_succeeds_and_does_not_log_error() -> Non
         assert signal.getsignal(signal.SIGUSR1) != previous
         # No ERROR log — main-thread path is silent on this dimension.
         fake_log.error.assert_not_called()
+        shmem_cls.assert_called_once_with(create=True, name=expected_name)
+        assert fake_ctx.Process.call_args.kwargs["args"] == (os.getpid(), expected_name)
     finally:
         signal.signal(signal.SIGUSR1, previous)
 

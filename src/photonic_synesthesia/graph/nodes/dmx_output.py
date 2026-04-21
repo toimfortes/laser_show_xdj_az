@@ -152,6 +152,7 @@ class DMXOutputNode:
 
         serial = self._serial
         artnet = self._artnet
+        join_error: RuntimeError | None = None
 
         if serial is not None:
             # Close first so a wedged write wakes with EIO, then join.
@@ -162,6 +163,8 @@ class DMXOutputNode:
                 pass
             try:
                 join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
+            except RuntimeError as exc:
+                join_error = exc
             finally:
                 self._thread = None
         else:
@@ -170,6 +173,8 @@ class DMXOutputNode:
             # frame period).
             try:
                 join_or_raise(self._thread, timeout=2.0, name="DMX-Transmit")
+            except RuntimeError as exc:
+                join_error = exc
             finally:
                 self._thread = None
 
@@ -191,6 +196,9 @@ class DMXOutputNode:
                     artnet.close()
                 except Exception:
                     pass
+
+        if join_error is not None:
+            raise join_error
 
         logger.info(
             "DMX output stopped",

@@ -77,6 +77,30 @@ def test_ilda_dac_stop_is_loud_when_emergency_thread_wedges() -> None:
         worker.join(timeout=1.0)
 
 
+def test_ilda_dac_stop_still_closes_client_when_join_raises() -> None:
+    """A wedged emergency thread must not strand the Ether Dream client."""
+    node = _build_node()
+    wedge = threading.Event()
+    worker = threading.Thread(
+        target=lambda: wedge.wait(5.0), name="ILDA-Emergency-Output", daemon=True
+    )
+    worker.start()
+    node._thread = worker
+    fake_client = MagicMock()
+    node._ether_dream = fake_client
+
+    try:
+        with pytest.raises(RuntimeError, match="ILDA-Emergency-Output.*failed to exit"):
+            node.stop()
+    finally:
+        wedge.set()
+        worker.join(timeout=1.0)
+
+    fake_client.stop.assert_called_once()
+    fake_client.close.assert_called_once()
+    assert node._ether_dream is None
+
+
 def test_ilda_dac_stop_returns_fast_under_clean_shutdown() -> None:
     node = _build_node()
     with patch(

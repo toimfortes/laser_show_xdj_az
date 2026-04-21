@@ -113,26 +113,26 @@ class WatchdogSharedState:
     segment out from under the creator.
     """
 
-    _NAME = _SHM_NAME
     _SIZE = _LAYOUT.size
     _MAX_READ_RETRIES = 100
 
-    def __init__(self, create: bool = False) -> None:
+    def __init__(self, create: bool = False, name: str = _SHM_NAME) -> None:
         self._create = create
+        self._name = str(name)
         self._local_lock = threading.Lock()  # serializes writers within THIS process
         if create:
             # Cycle-5 panel (Gemini HIGH + Claude HIGH): clean up any
             # stale segment from a prior crash BEFORE create=True, so
             # the next startup doesn't fail with FileExistsError.
-            self._cleanup_stale_segment()
+            self._cleanup_stale_segment(self._name)
             self._shm = shared_memory.SharedMemory(
-                name=self._NAME, create=True, size=self._SIZE,
+                name=self._name, create=True, size=self._SIZE,
             )
             # Zero-initialize so seq starts at 0 (even = stable).
             self._shm.buf[:self._SIZE] = b"\x00" * self._SIZE
             atexit.register(self._unlink_on_exit)
         else:
-            self._shm = shared_memory.SharedMemory(name=self._NAME)
+            self._shm = shared_memory.SharedMemory(name=self._name)
         self._closed = False
 
         # Cycle-6 E6/H4: cross-process writer serialization. The
@@ -147,7 +147,7 @@ class WatchdogSharedState:
         # in-process lock. Not opened on platforms that lack the
         # backing path (Windows) — flock degrades to in-process only.
         self._flock_fd: int | None = None
-        backing_path = f"/dev/shm/{self._NAME}"
+        backing_path = f"/dev/shm/{self._name}"
         try:
             self._flock_fd = os.open(backing_path, os.O_RDWR)
         except OSError:
@@ -157,12 +157,16 @@ class WatchdogSharedState:
             # accept the residual race. Production runs on Linux.
             self._flock_fd = None
 
+    @staticmethod
+    def name_for_main_pid(main_pid: int) -> str:
+        return f"{_SHM_NAME}_{int(main_pid)}"
+
     @classmethod
-    def _cleanup_stale_segment(cls) -> None:
+    def _cleanup_stale_segment(cls, name: str) -> None:
         """Best-effort removal of a stale `/dev/shm` segment before
         creating a new one. Safe to call on every startup."""
         try:
-            stale = shared_memory.SharedMemory(name=cls._NAME)
+            stale = shared_memory.SharedMemory(name=name)
         except FileNotFoundError:
             return  # nothing to clean up
         except Exception:
@@ -233,7 +237,7 @@ class WatchdogSharedState:
         struct.pack_into("=I", self._shm.buf, 0, value & 0xFFFFFFFF)
 
     @contextmanager
-    def _writer(self) -> Iterator[bool]:
+    def _writer(self, *, nonblocking_flock: bool = False) -> Iterator[bool]:
         """Yield `True` inside a critical section where fields can be
         written. Yields `False` (and skips seq bump) if the shmem is
         already closed — callers branch on the value rather than
@@ -270,16 +274,25 @@ class WatchdogSharedState:
             flock_acquired = False
             if self._flock_fd is not None:
                 try:
-                    fcntl.flock(self._flock_fd, fcntl.LOCK_EX)
+                    flock_op = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking_flock else 0)
+                    fcntl.flock(self._flock_fd, flock_op)
                     flock_acquired = True
+                except BlockingIOError:
+                    if nonblocking_flock:
+                        yield False
+                        return
                 except OSError:
-                    pass
+                    if nonblocking_flock:
+                        yield False
+                        return
             try:
                 current = self._read_seq()
                 # If current is odd, another writer is in progress;
                 # this should be impossible now under flock+local_lock,
-                # but the bump is defensive.
-                self._write_seq(current | 1 if (current & 1) == 0 else current + 1)
+                # but the bump is defensive. Keep the counter ODD for the
+                # whole recovery write even if we inherited a stale odd seq
+                # from a crashed writer.
+                self._write_seq(current + 1 if (current & 1) == 0 else current + 2)
                 try:
                     yield True
                 finally:
@@ -380,13 +393,14 @@ class WatchdogSharedState:
         watchdog_heartbeat: int | None = None,
         watchdog_pid: int | None = None,
         blackout_requested: int | None = None,
+        best_effort: bool = False,
     ) -> None:
         """Watchdog process writer. Updates fields owned by the
         watchdog; leaves main's fields untouched.
 
         Cycle-6 B6: same post-close no-op contract as `write_main`.
         """
-        with self._writer() as active:
+        with self._writer(nonblocking_flock=best_effort) as active:
             if not active:
                 return
             current = _LAYOUT.unpack_from(self._shm.buf, 0)

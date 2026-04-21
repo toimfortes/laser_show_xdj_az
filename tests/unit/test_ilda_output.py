@@ -252,12 +252,9 @@ def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
     assert result["ilda_frames"][0]["geometry_family"] == "sheet"
 
 
-def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
-    """Cycle-5 HIGH (LS1 variant): ILDA export is now a SEPARATE node
-    (`ILDAExportNode`) that runs AFTER `laser_vector_interlock` in the
-    real pipeline. This test runs `ILDAOutputNode → ILDAExportNode` in
-    sequence, mirroring the production ordering, so exports reflect
-    post-interlock frames."""
+def test_ilda_output_json_export_flushes_latest_snapshot_on_stop(tmp_path: Path) -> None:
+    """JSON export should not rewrite the file every 20ms tick. Keep the
+    latest payload in memory and flush once on stop()."""
     from photonic_synesthesia.graph.nodes.ilda_output import ILDAExportNode
 
     fixture = FixtureConfig(
@@ -283,6 +280,8 @@ def test_ilda_output_json_export_writes_frame_snapshot(tmp_path: Path) -> None:
     result = exporter(result)
 
     assert result["ilda_frames"]
+    assert not export_path.exists()
+    exporter.stop()
     assert export_path.exists()
     text = export_path.read_text(encoding="utf-8")
     assert "\"frames\"" in text

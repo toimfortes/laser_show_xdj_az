@@ -337,7 +337,7 @@ def test_consecutive_stale_reads_emit_diagnostic(
         monkeypatch.setattr(watchdog_loop_module, "MAX_HARD_STALL_MS", 200)
         monkeypatch.setattr(watchdog_loop_module, "WATCHDOG_TICK_SECONDS", 0.005)
         monkeypatch.setattr(
-            watchdog_loop_module, "WatchdogSharedState", lambda create: shmem
+            watchdog_loop_module, "WatchdogSharedState", lambda *args, **kwargs: shmem
         )
 
         thread = _run_loop_in_thread(99999)
@@ -352,6 +352,55 @@ def test_consecutive_stale_reads_emit_diagnostic(
         # joined thread.
         assert _wait_until(lambda: not thread.is_alive(), timeout_s=2.0), (
             "watchdog loop never exited — leak canary will fail"
+        )
+    finally:
+        try:
+            shmem.close()
+            shmem.unlink()
+        except Exception:
+            pass
+
+
+def test_persistent_stale_reads_escalate_to_sigkill(
+    kill_recorder: list[tuple[int, int]],
+    noop_signal: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck odd seq must not spin forever. If reads stay stale past
+    the hard-stall threshold, the watchdog should escalate and exit."""
+    import signal as _signal
+
+    from photonic_watchdog.shmem import StaleRead
+
+    shmem = WatchdogSharedState(create=True)
+    diagnostics: list[str] = []
+    thread = None
+    try:
+        monkeypatch.setattr(
+            watchdog_loop_module,
+            "_write_diagnostic",
+            lambda msg: diagnostics.append(msg),
+        )
+        monkeypatch.setattr(
+            shmem,
+            "read",
+            lambda: (_ for _ in ()).throw(StaleRead("persistent synthetic stale")),
+        )
+        monkeypatch.setattr(watchdog_loop_module, "MAX_SOFT_STALL_MS", 20)
+        monkeypatch.setattr(watchdog_loop_module, "MAX_HARD_STALL_MS", 40)
+        monkeypatch.setattr(watchdog_loop_module, "WATCHDOG_TICK_SECONDS", 0.005)
+        monkeypatch.setattr(
+            watchdog_loop_module, "WatchdogSharedState", lambda *args, **kwargs: shmem
+        )
+
+        thread = _run_loop_in_thread(99999)
+
+        assert _wait_until(
+            lambda: any(sig == _signal.SIGKILL for _, sig in kill_recorder),
+            timeout_s=2.0,
+        ), f"persistent stale reads never escalated; kill_recorder={kill_recorder}, diagnostics={diagnostics}"
+        assert _wait_until(lambda: not thread.is_alive(), timeout_s=2.0), (
+            "watchdog loop did not exit after persistent stale-read escalation"
         )
     finally:
         try:

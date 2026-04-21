@@ -100,10 +100,20 @@ class AudioFileSenseNode:
         if self.max_duration_seconds is not None and soundfile is not None:
             try:
                 info = soundfile.info(str(self.file_path))
-                source_duration_s = float(info.frames) / float(info.samplerate or 1)
-            except Exception as exc:  # pragma: no cover — defensive
+                samplerate = float(info.samplerate or 0)
+                if samplerate <= 0:
+                    raise ValueError(f"invalid samplerate from probe: {samplerate!r}")
+                source_duration_s = float(info.frames) / samplerate
+            except Exception as exc:
                 logger.warning("audio_file_duration_probe_failed", error=str(exc))
-                source_duration_s = 0.0
+                raise AudioCaptureError(
+                    str(self.file_path),
+                    (
+                        "could not determine duration before decode; refusing to load "
+                        "while max_duration_seconds is enforced. Pass "
+                        "max_duration_seconds=None to override."
+                    ),
+                ) from exc
             if source_duration_s > self.max_duration_seconds:
                 raise AudioCaptureError(
                     str(self.file_path),
@@ -115,6 +125,15 @@ class AudioFileSenseNode:
                         f"Pass max_duration_seconds=None to override."
                     ),
                 )
+        elif self.max_duration_seconds is not None and soundfile is None:
+            raise AudioCaptureError(
+                str(self.file_path),
+                (
+                    "could not determine duration before decode because soundfile is "
+                    "unavailable; refusing to load while max_duration_seconds is "
+                    "enforced. Pass max_duration_seconds=None to override."
+                ),
+            )
 
         logger.info(
             "Loading audio file",

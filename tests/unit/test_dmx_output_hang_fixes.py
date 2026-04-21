@@ -109,6 +109,31 @@ def test_dmx_stop_is_loud_when_transmit_thread_wedges() -> None:
         worker.join(timeout=1.0)
 
 
+def test_dmx_artnet_stop_still_blackouts_and_closes_when_join_raises() -> None:
+    """Art-Net receivers need the final zero frame even if the worker wedged."""
+    from photonic_synesthesia.core.config import DMXConfig
+    from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
+
+    node = DMXOutputNode(DMXConfig(interface_type="artnet"))
+    wedge = threading.Event()
+    worker = threading.Thread(target=lambda: wedge.wait(5.0), name="DMX-Transmit", daemon=True)
+    worker.start()
+    node._thread = worker
+    artnet = mock.MagicMock()
+    node._artnet = artnet
+
+    try:
+        with pytest.raises(RuntimeError, match="DMX-Transmit.*failed to exit"):
+            node.stop()
+    finally:
+        wedge.set()
+        worker.join(timeout=1.0)
+
+    artnet.send_dmx.assert_called_once()
+    artnet.close.assert_called_once()
+    assert node._artnet is None
+
+
 def test_dmx_start_refuses_to_double_start() -> None:
     node = _make_node()
 

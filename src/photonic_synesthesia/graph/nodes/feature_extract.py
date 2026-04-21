@@ -49,6 +49,7 @@ uses the async route.
 
 from __future__ import annotations
 
+import atexit
 import concurrent.futures
 import multiprocessing
 import threading
@@ -56,6 +57,7 @@ import time
 import warnings
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any
+import weakref
 
 import numpy as np
 from numpy.typing import NDArray
@@ -65,6 +67,18 @@ from photonic_synesthesia.core.state import AudioFeatures, PhotonicState
 from photonic_synesthesia.core.threadhygiene import shutdown_executor
 
 logger = get_logger(__name__)
+_HARMONIC_ANALYZERS: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+def _shutdown_harmonic_analyzers_at_exit() -> None:
+    for analyzer in list(_HARMONIC_ANALYZERS):
+        try:
+            analyzer.close()
+        except Exception:
+            pass
+
+
+atexit.register(_shutdown_harmonic_analyzers_at_exit)
 
 # Import librosa conditionally
 _librosa: Any = None
@@ -248,6 +262,7 @@ class _HarmonicAnalyzer:
         # heavy DSP job in flight). Created lazily on first submit so
         # node construction stays cheap.
         self._executor: concurrent.futures.ProcessPoolExecutor | None = None
+        _HARMONIC_ANALYZERS.add(self)
 
     def _ensure_executor(self) -> concurrent.futures.ProcessPoolExecutor | None:
         if self._executor is None and not self._stopped:

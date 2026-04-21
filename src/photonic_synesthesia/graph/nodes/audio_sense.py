@@ -155,9 +155,18 @@ class AudioSenseNode:
 
     def stop(self) -> None:
         """Stop audio capture stream."""
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
+        stream = self._stream
+        try:
+            if stream:
+                try:
+                    stream.stop()
+                except Exception:
+                    logger.warning("Audio capture stop failed; closing stream anyway", exc_info=True)
+                try:
+                    stream.close()
+                except Exception:
+                    logger.warning("Audio capture close failed", exc_info=True)
+        finally:
             self._stream = None
         self._running = False
         logger.info(

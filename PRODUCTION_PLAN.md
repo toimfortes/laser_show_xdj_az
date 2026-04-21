@@ -273,7 +273,41 @@ In `safety_interlock.py::__call__`, implement the stubbed beat-confidence block:
 
 ---
 
-## 4. Validation Commands
+## 4. Competitive Gap Backlog
+
+Ranked by expected product value versus the paid commercial tools reviewed, not by implementation ease.
+
+### High value
+
+| Item | Why it matters |
+|------|----------------|
+| Multi-universe runtime patching | Commercial controllers treat per-fixture universe routing as baseline capability. This unlocks larger rigs and removes a hard scaling limit in the current runtime model. |
+| Full fixture-profile system for non-laser fixtures | The repo already has serious laser/runtime depth, but movers, washes, bars, and panels still lack the same profile-driven runtime treatment. This is the biggest breadth gap. |
+| Reusable preset / cue library | Paid tools give operators reusable looks and quick recall. Persisted presets for cue recipes, laser programs, and operator overrides would materially improve live usability. |
+| Projection mapping / geometric correction / projector zones | A major QuickShow-class gap. Safety zones are not a substitute for alignment, mapping, and multi-projector calibration workflows. |
+| Broader laser DAC / output support | The current serious live laser path is narrow. Supporting more DAC ecosystems would make the platform viable in more real-world rigs. |
+| Standalone deployment path | Paid products win partly because they feel appliance-like. Packaging this into a hardened, low-friction operator workflow would increase adoption more than another niche algorithm tweak. |
+
+### Medium value
+
+| Item | Why it matters |
+|------|----------------|
+| Broader sync ecosystem integrations | Ableton Link, MIDI clock, and additional DJ software/control inputs would make the engine fit more booths and performance setups. |
+| Advanced manual laser authoring tools | Hand-built frames, text/logo content, and direct cue editing would close part of the gap with QuickShow and Modulaser, but it is secondary to the platform-level gaps above. |
+| Alternate visual outputs | Video/projection-friendly outputs and export paths would help installation and hybrid-show use cases, but they are not core to the current live-control bottlenecks. |
+| Environment-adaptive sensing | Ambient-light or audience-response automation could help mobile-DJ style use cases, but it is only valuable after patching, profiles, and deployment are stronger. |
+
+### Low value / not worth chasing now
+
+| Item | Why it is lower priority |
+|------|--------------------------|
+| Embedded hardware / touchscreen productization | High operational cost and a distraction while the software platform still has larger gaps. |
+| SD-card / autonomous hardware playback workflows | Useful only after authoring, patching, and output breadth are mature; premature right now. |
+| Full parity chase with every QuickShow/Modulaser authoring affordance | Too broad. The repo's differentiator is structure-aware autonomous show generation with safety-first runtime control, not clone-level parity. |
+
+---
+
+## 5. Validation Commands
 
 Run these in order to validate each phase.
 
@@ -395,7 +429,7 @@ photonic analyze --duration 10              # Should show non-zero BPM and beat_
 
 ---
 
-## 5. Blockers & Unknowns
+## 6. Blockers & Unknowns
 
 ### Hard Blockers (cannot deploy without resolving)
 

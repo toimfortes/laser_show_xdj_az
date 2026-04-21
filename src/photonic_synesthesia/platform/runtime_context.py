@@ -16,7 +16,10 @@ from typing import Any
 from uuid import uuid4
 
 from photonic_synesthesia.core.logging import get_logger
-from photonic_synesthesia.core.threadhygiene import shutdown_executor
+from photonic_synesthesia.core.threadhygiene import (
+    DaemonThreadPoolExecutor,
+    shutdown_executor,
+)
 from photonic_synesthesia.platform.operator_workspace import build_operator_workspace_banks
 from photonic_synesthesia.platform.staging_lane import (
     commit_staged_look as _commit_staged_look_helper,
@@ -93,7 +96,7 @@ _SHARED_PLAYBACK_CONTEXT: PlaybackContext | None = None
 # current regen to finish before triggering another. If the original
 # regen wedges, all retries 409 — but no new threads spawn, so CPU
 # stays bounded.
-_REGEN_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+_REGEN_EXECUTOR = DaemonThreadPoolExecutor(
     max_workers=1, thread_name_prefix="playback-regen",
 )
 _REGEN_INFLIGHT = Lock()
@@ -290,12 +293,22 @@ class PlaybackContext:
     # Hint for persisted timeline_flags ordering across rebind (cycle-2
     # panel NC-1: declared as a slots field). Cleared after each use.
     _persisted_timeline_flags_hint: list[dict[str, Any]] | None = field(default=None, repr=False)
+    _audio_available: bool = field(default=False, repr=False)
+    _ilda_export_available: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self.selection_mode = _normalize_selection_mode(self.selection_mode)
         self.selection_variance = _normalize_selection_variance(self.selection_variance)
         self.venue_mode = _normalize_venue_mode(self.venue_mode)
         self.metadata_source = _normalize_metadata_source(self.metadata_source)
+        # Cache media availability once at construction. The graph tick
+        # publishes snapshots at 50 Hz; repeated `Path.is_file()` probes in
+        # `_snapshot_internal_locked()` turn a pure memory snapshot into disk
+        # I/O on the hot path.
+        self._audio_available = bool(self.file_path and Path(self.file_path).is_file())
+        self._ilda_export_available = bool(
+            self.ilda_export_path and Path(self.ilda_export_path).is_file()
+        )
         self._base_show_sections = copy.deepcopy(self.show_sections)
         with self._lock:
             self._refresh_operator_intents_locked()
@@ -490,8 +503,8 @@ class PlaybackContext:
         live overlay. Web-panel consumers continue to receive every field
         they already expected.
         """
-        export_available = bool(self.ilda_export_path and Path(self.ilda_export_path).is_file())
-        audio_available = bool(self.file_path and Path(self.file_path).is_file())
+        export_available = self._ilda_export_available
+        audio_available = self._audio_available
         seekable = self._seek_callback is not None
         base = {
             "available": True,

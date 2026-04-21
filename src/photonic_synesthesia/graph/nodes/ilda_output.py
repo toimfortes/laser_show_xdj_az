@@ -615,6 +615,7 @@ class ILDAExportNode:
             export_path_factory() if export_path_factory else config.export_path
         )
         self._ild_timeline: list[ILDAFrame] = []
+        self._json_payload: dict[str, Any] | None = None
         self._overflowed = False
 
     def __call__(self, state: PhotonicState) -> PhotonicState:
@@ -627,11 +628,10 @@ class ILDAExportNode:
             pass  # nothing to write; exporter still participates for timing
         elif self.config.transport_type == "json":
             if self._export_path is not None and frames:
-                payload = {"generated_at": time.time(), "frames": frames}
-                try:
-                    self._export_path.write_text(json.dumps(payload), encoding="utf-8")
-                except OSError as exc:
-                    logger.warning("ilda_json_write_failed", error=str(exc))
+                # Keep the latest JSON snapshot in memory and flush once on
+                # stop(). Rewriting the full file at 50Hz turns a preview
+                # transport into unbounded disk churn on slow filesystems.
+                self._json_payload = {"generated_at": time.time(), "frames": frames}
         elif self.config.transport_type == "ild":
             # Accumulate in memory; flush on stop(). The file represents
             # the whole show — rewriting per tick was O(N²).
@@ -661,10 +661,18 @@ class ILDAExportNode:
         during the tick.
         """
         if (
-            self.config.transport_type != "ild"
-            or self._export_path is None
-            or not self._ild_timeline
+            self._export_path is None
         ):
+            return
+        if self.config.transport_type == "json":
+            if not self._json_payload:
+                return
+            try:
+                self._export_path.write_text(json.dumps(self._json_payload), encoding="utf-8")
+            except OSError as exc:
+                logger.warning("ilda_json_write_failed", error=str(exc))
+            return
+        if self.config.transport_type != "ild" or not self._ild_timeline:
             return
         try:
             self._export_path.write_bytes(encode_ild(self._ild_timeline))
@@ -760,8 +768,11 @@ class ILDADACOutputNode:
         """Stop the emergency thread + close DAC. Raises if the thread wedges."""
         self._running = False
         self._thread_stop.set()
+        join_error: RuntimeError | None = None
         try:
             join_or_raise(self._thread, timeout=1.0, name="ILDA-Emergency-Output")
+        except RuntimeError as exc:
+            join_error = exc
         finally:
             self._thread = None
         self._clear_emergency()
@@ -770,6 +781,9 @@ class ILDADACOutputNode:
         if client is not None:
             try:
                 client.stop()
+            except OSError:
+                logger.warning("Failed to stop Ether Dream connection cleanly")
+            try:
                 client.close()
             except OSError:
                 logger.warning("Failed to close Ether Dream connection cleanly")
@@ -778,6 +792,8 @@ class ILDADACOutputNode:
 
         self._blackout_requested = False
         self._emergency_until = 0.0
+        if join_error is not None:
+            raise join_error
 
     def request_blackout(self) -> None:
         self._blackout_requested = True
