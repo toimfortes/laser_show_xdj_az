@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
 class LiveDeckFact:
     player_number: int
-    playhead_seconds: float
-    speed: float
     master: bool
     on_air: bool
-    playing: bool
     updated_at: float
+    playhead_seconds: float | None = None
+    speed: float | None = None
+    playing: bool | None = None
     track_title: str | None = None
     track_artist: str | None = None
     duration_seconds: float | None = None
@@ -22,7 +22,7 @@ class LiveDeckFact:
 
 @dataclass(slots=True)
 class LiveDeckSnapshot:
-    decks: list[LiveDeckFact]
+    decks: list[LiveDeckFact] = field(default_factory=list)
 
 
 @dataclass(slots=True)

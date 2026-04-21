@@ -13,15 +13,15 @@ from photonic_synesthesia.platform.live_deck_models import (
 def test_live_deck_fact_allows_missing_nonessential_metadata() -> None:
     fact = LiveDeckFact(
         player_number=3,
-        playhead_seconds=183.2,
-        speed=1.0,
         master=True,
         on_air=True,
-        playing=True,
         updated_at=1713660000.0,
     )
 
     assert fact.player_number == 3
+    assert fact.playhead_seconds is None
+    assert fact.speed is None
+    assert fact.playing is None
     assert fact.track_title is None
     assert fact.track_artist is None
     assert fact.duration_seconds is None
@@ -69,11 +69,8 @@ def test_platform_reexports_live_deck_models() -> None:
 def test_live_deck_snapshot_wraps_decks() -> None:
     fact = LiveDeckFact(
         player_number=3,
-        playhead_seconds=183.2,
-        speed=1.0,
         master=True,
         on_air=True,
-        playing=True,
         updated_at=1713660000.0,
     )
     snapshot = LiveDeckSnapshot(decks=[fact])
@@ -82,7 +79,7 @@ def test_live_deck_snapshot_wraps_decks() -> None:
     assert snapshot.decks[0].track_id is None
 
 
-def test_live_deck_snapshot_can_be_empty() -> None:
-    snapshot = LiveDeckSnapshot(decks=[])
+def test_live_deck_snapshot_defaults_to_empty() -> None:
+    snapshot = LiveDeckSnapshot()
 
     assert snapshot.decks == []
