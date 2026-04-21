@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from photonic_synesthesia.platform.live_deck_models import BindingStatus, LiveDeckFact
@@ -14,6 +15,8 @@ def resolve_track_identity(
 ) -> dict[str, object]:
     exact: list[dict[str, object]] = []
     for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
         if str(candidate.get("track_title") or "") != title:
             continue
         if str(candidate.get("track_artist") or "") != artist:

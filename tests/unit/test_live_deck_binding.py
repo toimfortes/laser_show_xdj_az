@@ -341,6 +341,18 @@ def test_resolve_track_identity_ignores_malformed_duration_rows() -> None:
     assert payload["resolved_track_key"] == ""
 
 
+def test_resolve_track_identity_ignores_non_mapping_candidates() -> None:
+    payload = resolve_track_identity(
+        title="Age of Love",
+        artist="ARTBAT / Pete Tong",
+        duration_seconds=445.4,
+        candidates=["bad"],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
 def test_playback_context_apply_live_binding_non_bound_payload_is_no_op() -> None:
     ctx = PlaybackContext(
         file_path="",
