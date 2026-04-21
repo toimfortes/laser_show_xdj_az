@@ -253,6 +253,56 @@ def test_resolve_track_identity_prefers_exact_title_artist_duration() -> None:
     assert payload["resolved_track_key"] == "ARTBAT / Pete Tong|Age of Love"
 
 
+def test_resolve_track_identity_reports_ambiguous_for_multiple_exact_candidates() -> None:
+    payload = resolve_track_identity(
+        title="Age of Love",
+        artist="ARTBAT / Pete Tong",
+        duration_seconds=445.4,
+        candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#1",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#2",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+        ],
+    )
+
+    assert payload["state"] == "ambiguous"
+    assert payload["resolved_track_key"] == ""
+
+
+def test_resolve_track_identity_reports_unbound_when_no_exact_candidate_matches() -> None:
+    payload = resolve_track_identity(
+        title="Age of Love",
+        artist="ARTBAT / Pete Tong",
+        duration_seconds=445.4,
+        candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.5,
+            },
+            {
+                "track_key": "Another Artist|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "Another Artist",
+                "duration_seconds": 445.4,
+            },
+        ],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
 def test_playback_context_apply_live_binding_updates_transport_and_track() -> None:
     ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0, track_title="Live Track")
     snapshot = ctx.apply_live_binding(

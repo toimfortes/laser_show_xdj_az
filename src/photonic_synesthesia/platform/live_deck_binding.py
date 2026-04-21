@@ -17,7 +17,7 @@ def resolve_track_identity(
         for candidate in candidates
         if str(candidate.get("track_title") or "") == title
         and str(candidate.get("track_artist") or "") == artist
-        and abs(float(candidate.get("duration_seconds") or 0.0) - duration_seconds) <= 0.5
+        and float(candidate.get("duration_seconds") or 0.0) == duration_seconds
     ]
     if len(exact) == 1:
         winner = exact[0]
