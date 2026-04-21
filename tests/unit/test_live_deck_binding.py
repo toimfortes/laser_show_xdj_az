@@ -363,6 +363,8 @@ def test_playback_context_apply_live_binding_non_bound_payload_is_no_op() -> Non
         track_key="original-key",
         metadata_source="file_playback",
     )
+    before_revision = ctx.transport_revision
+    before_metadata_bound_at = ctx.metadata_bound_at
     before = ctx.snapshot()
     snapshot = ctx.apply_live_binding(
         {
@@ -377,10 +379,13 @@ def test_playback_context_apply_live_binding_non_bound_payload_is_no_op() -> Non
     )
 
     assert snapshot == before
+    assert ctx.transport_revision == before_revision
+    assert ctx.metadata_bound_at == before_metadata_bound_at
 
 
-def test_playback_context_apply_live_binding_updates_transport_and_track() -> None:
+def test_playback_context_apply_live_binding_updates_track_key_and_bumps_transport_revision() -> None:
     ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0, track_title="Live Track")
+    before_revision = ctx.transport_revision
     snapshot = ctx.apply_live_binding(
         {
             "state": "bound",
@@ -393,6 +398,8 @@ def test_playback_context_apply_live_binding_updates_transport_and_track() -> No
         }
     )
 
+    assert snapshot["track_key"] == "ARTBAT / Pete Tong|Age of Love"
     assert snapshot["track_title"] == "Age of Love"
     assert snapshot["playhead_seconds"] == 183.2
     assert snapshot["metadata_source"] == "pro_dj_link"
+    assert snapshot["transport_revision"] == before_revision + 1

@@ -504,10 +504,13 @@ class PlaybackContext:
                     )
             except (TypeError, ValueError):
                 pass
+            self.playhead_seconds = max(0.0, min(self.playhead_seconds, self.duration_seconds))
             if payload.get("playing") is not None:
                 self.playing = bool(payload["playing"])
             if payload.get("finished") is not None:
                 self.finished = bool(payload["finished"])
+            else:
+                self.finished = self.playhead_seconds >= self.duration_seconds
             if payload.get("realtime") is not None:
                 self.realtime = bool(payload["realtime"])
             if payload.get("speed") is not None:

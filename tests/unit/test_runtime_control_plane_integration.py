@@ -118,22 +118,31 @@ def test_shared_playback_context_is_process_local() -> None:
     clear_shared_playback_context()
 
 
-def test_playback_context_apply_live_binding_updates_transport_and_track() -> None:
-    ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0, track_title="Live Track")
+def test_playback_context_apply_live_binding_reclamps_playhead_when_duration_shortens() -> None:
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Live Track",
+        duration_seconds=445.4,
+        track_title="Live Track",
+    )
+    ctx.update_transport(
+        playhead_seconds=400.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
     snapshot = ctx.apply_live_binding(
         {
             "state": "bound",
-            "resolved_track_key": "ARTBAT / Pete Tong|Age of Love",
-            "track_title": "Age of Love",
-            "track_artist": "ARTBAT / Pete Tong",
-            "duration_seconds": 445.4,
-            "playhead_seconds": 183.2,
+            "duration_seconds": 183.2,
             "metadata_source": "pro_dj_link",
         }
     )
 
-    assert snapshot["track_title"] == "Age of Love"
+    assert snapshot["duration_seconds"] == 183.2
     assert snapshot["playhead_seconds"] == 183.2
+    assert snapshot["finished"] is True
     assert snapshot["metadata_source"] == "pro_dj_link"
 
 
