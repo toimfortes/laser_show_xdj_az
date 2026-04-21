@@ -50,7 +50,29 @@ def _capture_session_baseline_threads():
     ThreadPoolExecutor workers, plugin helpers) from test-scoped
     leaks. Any thread not in this baseline that's alive at test
     teardown is a real leak.
+
+    Cycle-6 E8: pre-warm known process-singleton executors BEFORE
+    snapshotting the baseline. The `_REGEN_EXECUTOR` ThreadPool in
+    `runtime_context.py` spawns its worker thread lazily on first
+    submit — without pre-warming, a single-file pytest run that
+    triggers a regen would correctly flag the worker as a leak (it
+    IS new vs baseline) but it's actually a long-lived process
+    singleton. The full suite happens to pre-warm via earlier tests;
+    explicit pre-warm closes the single-file false-positive gap.
     """
+    # Importing the module triggers `_REGEN_EXECUTOR = ThreadPoolExecutor(...)`
+    # construction, but the worker thread spawns only on first submit.
+    # We submit a no-op and wait for it to complete so the worker is
+    # alive at baseline-snapshot time.
+    try:
+        from photonic_synesthesia.platform.runtime_context import _REGEN_EXECUTOR
+        _REGEN_EXECUTOR.submit(lambda: None).result(timeout=2.0)
+    except Exception:
+        # If the import fails (minimal env), skip pre-warm — tests
+        # that don't touch regen won't see the leak; tests that do
+        # will trigger the canary correctly.
+        pass
+
     _SESSION_BASELINE_IDENTS.update(t.ident for t in threading.enumerate() if t.ident is not None)
     yield
 

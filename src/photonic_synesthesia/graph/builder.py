@@ -176,6 +176,10 @@ class PhotonicGraph:
         #     the backstop if this handler can't run for any reason.
         _SIGUSR1_MSG = b"[signal] SIGUSR1 received: watchdog soft-stall escalation\n"
         _SIGUSR1_ERR = b"[signal] SIGUSR1 handler failed\n"
+        _SIGUSR1_NO_METHOD = (
+            b"[signal] SIGUSR1: node present but no blackout method "
+            b"(rename / refactor regression?)\n"
+        )
 
         def _on_sigusr1(signum: int, frame: Any) -> None:
             try:
@@ -199,6 +203,17 @@ class PhotonicGraph:
                             os.write(2, _SIGUSR1_ERR)
                         except OSError:
                             pass
+                else:
+                    # Cycle-6 E8/M3: a node was wired into the graph but
+                    # exposes none of the blackout methods. Pre-E8 this
+                    # silently no-op'd, masking renames/refactors of the
+                    # blackout API across nodes. Surface it so the
+                    # missing method is visible in an audit log even
+                    # though we can't structlog from signal context.
+                    try:
+                        os.write(2, _SIGUSR1_NO_METHOD)
+                    except OSError:
+                        pass
 
         # Cycle-6 B5: signal.signal() only works in the main thread of
         # the main interpreter. Non-main-thread installation raises

@@ -1886,6 +1886,15 @@ def create_app(
                 await asyncio.sleep(1.0)
         except WebSocketDisconnect:
             return
+        finally:
+            # Cycle-6 E8/M1: explicit close so a timeout-broken session
+            # doesn't rely on starlette's implicit teardown — the
+            # implicit path raised ResourceWarning intermittently in
+            # tests and could leak the connection's FD until GC.
+            try:
+                await websocket.close()
+            except Exception:
+                pass
 
     return app
 
