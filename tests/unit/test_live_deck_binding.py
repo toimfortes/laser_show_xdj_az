@@ -303,6 +303,70 @@ def test_resolve_track_identity_reports_unbound_when_no_exact_candidate_matches(
     assert payload["resolved_track_key"] == ""
 
 
+def test_resolve_track_identity_does_not_bind_without_usable_track_key() -> None:
+    payload = resolve_track_identity(
+        title="Age of Love",
+        artist="ARTBAT / Pete Tong",
+        duration_seconds=445.4,
+        candidates=[
+            {
+                "track_key": "",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            }
+        ],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
+def test_resolve_track_identity_ignores_malformed_duration_rows() -> None:
+    payload = resolve_track_identity(
+        title="Age of Love",
+        artist="ARTBAT / Pete Tong",
+        duration_seconds=445.4,
+        candidates=[
+            {
+                "track_key": "bad-duration",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": "not-a-number",
+            }
+        ],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
+def test_playback_context_apply_live_binding_non_bound_payload_is_no_op() -> None:
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Live Track",
+        duration_seconds=0.0,
+        track_title="Live Track",
+        track_artist="Original Artist",
+        track_key="original-key",
+        metadata_source="file_playback",
+    )
+    before = ctx.snapshot()
+    snapshot = ctx.apply_live_binding(
+        {
+            "state": "unbound",
+            "resolved_track_key": "ARTBAT / Pete Tong|Age of Love",
+            "track_title": "Age of Love",
+            "track_artist": "ARTBAT / Pete Tong",
+            "duration_seconds": 445.4,
+            "playhead_seconds": 183.2,
+            "metadata_source": "pro_dj_link",
+        }
+    )
+
+    assert snapshot == before
+
+
 def test_playback_context_apply_live_binding_updates_transport_and_track() -> None:
     ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0, track_title="Live Track")
     snapshot = ctx.apply_live_binding(

@@ -12,13 +12,21 @@ def resolve_track_identity(
     duration_seconds: float,
     candidates: list[dict[str, object]],
 ) -> dict[str, object]:
-    exact = [
-        candidate
-        for candidate in candidates
-        if str(candidate.get("track_title") or "") == title
-        and str(candidate.get("track_artist") or "") == artist
-        and float(candidate.get("duration_seconds") or 0.0) == duration_seconds
-    ]
+    exact: list[dict[str, object]] = []
+    for candidate in candidates:
+        if str(candidate.get("track_title") or "") != title:
+            continue
+        if str(candidate.get("track_artist") or "") != artist:
+            continue
+        try:
+            candidate_duration = float(candidate.get("duration_seconds") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if candidate_duration != duration_seconds:
+            continue
+        if not str(candidate.get("track_key") or "").strip():
+            continue
+        exact.append(candidate)
     if len(exact) == 1:
         winner = exact[0]
         return {
