@@ -19,6 +19,11 @@ from photonic_synesthesia.platform.contracts import (
     SemanticFrame,
 )
 from photonic_synesthesia.platform.events import InMemoryEventBus
+from photonic_synesthesia.platform.live_deck_models import (
+    BindingStatus,
+    LiveDeckFact,
+    LiveDeckSnapshot,
+)
 from photonic_synesthesia.platform.rig_storage import (
     Conflict,
     RIG_SCHEMA_VERSION,
@@ -53,6 +58,7 @@ __all__ = [
     "ControlAuthorityService",
     "ControlPlaneStateService",
     "ControlLease",
+    "BindingStatus",
     "DirectorSummary",
     "ExecutionSnapshot",
     "InMemoryCommandBus",
@@ -60,6 +66,8 @@ __all__ = [
     "LeaseAcquireRequest",
     "LeaseAcquireResponse",
     "LiveHealth",
+    "LiveDeckFact",
+    "LiveDeckSnapshot",
     "OperatorCommand",
     "OperatorRole",
     "PlatformClock",
