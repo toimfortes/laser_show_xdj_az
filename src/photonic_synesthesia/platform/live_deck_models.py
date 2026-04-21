@@ -6,11 +6,7 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class LiveDeckFact:
     player_number: int
-    track_title: str
-    track_artist: str
-    duration_seconds: float
     playhead_seconds: float
-    bpm: float
     speed: float
     master: bool
     on_air: bool
@@ -18,6 +14,10 @@ class LiveDeckFact:
     updated_at: float
     track_id: str
     source_type: str
+    track_title: str | None = None
+    track_artist: str | None = None
+    duration_seconds: float | None = None
+    bpm: float | None = None
 
 
 @dataclass(slots=True)
