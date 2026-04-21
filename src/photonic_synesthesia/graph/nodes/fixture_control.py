@@ -20,6 +20,7 @@ from photonic_synesthesia.core.config import (
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
 from photonic_synesthesia.director.palettes import Palette, render_rgb, resolve_palette
+from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 
@@ -59,6 +60,15 @@ class LaserControlNode:
         if not self.fixtures:
             return state
 
+        dynamics = resolve_active_section_dynamics(state)
+        if not dynamics["laser_enabled"]:
+            for fixture in self.fixtures:
+                if not fixture.enabled:
+                    continue
+                state["fixture_commands"].append(self._generate_disabled_laser_commands(fixture))
+            state["processing_times"]["laser_control"] = time.time() - start_time
+            return state
+
         # Get current state
         scene = state["scene_state"]["current_scene"]
         structure = state["current_structure"]
@@ -80,6 +90,7 @@ class LaserControlNode:
                 energy,
                 low_energy,
                 state["timestamp"],
+                motion_multiplier=dynamics["motion_multiplier"],
             )
 
             state["fixture_commands"].append(commands)
@@ -97,12 +108,15 @@ class LaserControlNode:
         energy: float,
         low_energy: float,
         current_time: float,
+        *,
+        motion_multiplier: float,
     ) -> FixtureCommand:
         """Generate DMX values for a single laser fixture."""
         base = fixture.start_address
         values: dict[int, int] = {}
         profile = self.fixture_profiles.get(fixture.id)
         channel_map = profile.channel_map if profile is not None else {}
+        motion_gain = max(0.25, min(2.0, motion_multiplier))
 
         # Mode: force manual DMX range (commonly 200-255 for this fixture class)
         mode_channel = channel_map.get("mode")
@@ -129,8 +143,8 @@ class LaserControlNode:
         # X/Y position movement
         # =================================================================
         position_scale = 1.25 if profile and profile.control_surface == "ilda" else 1.0
-        x_pos = int(128 + 100 * position_scale * math.sin(current_time * bpm / 60))
-        y_pos = int(64 + 30 * position_scale * math.sin(current_time * bpm / 120))
+        x_pos = int(128 + 100 * position_scale * math.sin(current_time * bpm / 60 * motion_gain))
+        y_pos = int(64 + 30 * position_scale * math.sin(current_time * bpm / 120 * motion_gain))
         y_pos = min(y_pos, self.safety.y_axis_max)  # SAFETY: audience-height clamp
 
         x_channel = channel_map.get("x_pos")
@@ -156,11 +170,12 @@ class LaserControlNode:
         # SAFETY: enforce configured lower bound until a fixture-specific polarity
         # check is completed during commissioning.
         scan_speed = max(scan_speed, self.safety.min_scan_speed)
+        pattern_speed = max(0, min(255, int(pattern_speed * (0.6 + motion_gain * 0.4))))
 
         scan_channel = channel_map.get("scan_speed")
         pattern_speed_channel = channel_map.get("pattern_speed")
         if scan_channel is not None:
-            values[base + scan_channel] = scan_speed
+            values[base + scan_channel] = max(0, min(255, scan_speed))
         if pattern_speed_channel is not None:
             values[base + pattern_speed_channel] = pattern_speed
 
@@ -182,11 +197,11 @@ class LaserControlNode:
         # Optional roll axes for hybrid/adapter fixtures
         # =================================================================
         if structure == MusicStructure.DROP:
-            roll_speed = bpm / 60 * 3.0
+            roll_speed = bpm / 60 * 3.0 * motion_gain
         elif structure == MusicStructure.BUILDUP:
-            roll_speed = bpm / 60 * 1.5
+            roll_speed = bpm / 60 * 1.5 * motion_gain
         else:
-            roll_speed = bpm / 60 * 0.75
+            roll_speed = bpm / 60 * 0.75 * motion_gain
 
         for axis_name, phase_offset in (("x_roll", 0.0), ("y_roll", 1.7), ("z_roll", 3.1)):
             axis_channel = channel_map.get(axis_name)
@@ -195,6 +210,21 @@ class LaserControlNode:
             roll_value = int(128 + 110 * math.sin(current_time * roll_speed + phase_offset))
             values[base + axis_channel] = max(0, min(255, roll_value))
 
+        return FixtureCommand(
+            fixture_id=fixture.id,
+            fixture_type="laser",
+            channel_values=values,
+        )
+
+    def _generate_disabled_laser_commands(self, fixture: FixtureConfig) -> FixtureCommand:
+        """Force mapped DMX laser channels into a neutral/off state."""
+        base = fixture.start_address
+        profile = self.fixture_profiles.get(fixture.id)
+        channel_map = profile.channel_map if profile is not None else {}
+        values = {
+            base + channel_offset: 0
+            for channel_offset in set(channel_map.values())
+        }
         return FixtureCommand(
             fixture_id=fixture.id,
             fixture_type="laser",

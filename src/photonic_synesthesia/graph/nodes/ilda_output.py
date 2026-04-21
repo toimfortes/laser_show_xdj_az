@@ -19,6 +19,7 @@ from photonic_synesthesia.director.palettes import (
     render_rgb,
     resolve_palette,
 )
+from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.laser.ether_dream import EtherDreamClient
 from photonic_synesthesia.laser.ilda_file import encode_ild
@@ -32,6 +33,22 @@ _ILDA_MAX = 32767
 
 def _clamp_coord(value: float) -> int:
     return max(_ILDA_MIN, min(_ILDA_MAX, int(value)))
+
+
+def _playhead_seconds_for_state(state: PhotonicState) -> float:
+    snapshot = dict(state.get("playback_snapshot") or {})
+    if snapshot:
+        try:
+            return float(snapshot.get("playhead_seconds", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    playback = get_shared_playback_context()
+    if playback is None:
+        return 0.0
+    try:
+        return float(playback.snapshot().get("playhead_seconds", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _rgb_from_mode(
@@ -150,10 +167,13 @@ class ILDAOutputNode:
             state["processing_times"]["ilda_output"] = time.time() - start_time
             return state
 
+        dynamics = resolve_active_section_dynamics(state)
         if self._should_blackout(state):
             frames = [self._blank_frame_for_fixture(fixture) for fixture in self.fixtures]
+        elif not dynamics["laser_enabled"]:
+            frames = [self._blank_frame_for_fixture(fixture) for fixture in self.fixtures]
         else:
-            frames = [self._frame_for_fixture(fixture, state) for fixture in self.fixtures]
+            frames = [self._frame_for_fixture(fixture, state, dynamics=dynamics) for fixture in self.fixtures]
         state["ilda_frames"] = frames
         # Cycle-5 HIGH (LS1 variant): exports are NOT written here.
         # Previously `_export_frames(frames)` ran at this point, before
@@ -201,7 +221,13 @@ class ILDAOutputNode:
             ],
         )
 
-    def _frame_for_fixture(self, fixture: FixtureConfig, state: PhotonicState) -> ILDAFrame:
+    def _frame_for_fixture(
+        self,
+        fixture: FixtureConfig,
+        state: PhotonicState,
+        *,
+        dynamics: dict[str, Any],
+    ) -> ILDAFrame:
         profile = self.fixture_profiles[fixture.id]
         structure = state["current_structure"]
         beat_phase = state["beat_info"]["beat_phase"]
@@ -209,7 +235,8 @@ class ILDAOutputNode:
         timestamp = state["timestamp"]
         audio = state["audio_features"]
         director = state["director_state"]
-        program_look = self._current_program_look(state)
+        current_section = dynamics.get("current_section")
+        program_look = self._current_program_look(current_section, state)
 
         geometry_family = (
             str(program_look.get("geometry_family"))
@@ -231,6 +258,7 @@ class ILDAOutputNode:
             )
         )
         palette = resolve_palette(str(director.get("color_theme") or "neutral"))
+        strobe_level = dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0
         points = self._build_points(
             point_count=max(24, self.config.points_per_frame),
             geometry_family=geometry_family,
@@ -251,6 +279,9 @@ class ILDAOutputNode:
             melodic_smoothness=director["melodic_smoothness"],
             motion_energy=director["laser_motion_energy"],
             color_energy=director["laser_color_energy"],
+            intensity_multiplier=dynamics["intensity_multiplier"],
+            motion_multiplier=dynamics["motion_multiplier"],
+            strobe_level=strobe_level,
             program_look=program_look,
             palette=palette,
         )
@@ -265,37 +296,18 @@ class ILDAOutputNode:
             points=points,
         )
 
-    def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
-        # Cycle-1 panel UF-17 fix: read from the per-tick published snapshot
-        # (deep-copied by `_publish_playback_snapshot` so direct mutation is
-        # safe) instead of calling `get_shared_playback_context().snapshot()`
-        # mid-tick. The retrofit makes ILDAOutputNode and the new Task 3
-        # nodes read the SAME authored state within one tick. Fallback to
-        # the global context for callers that bypass the graph publisher
-        # (unit tests + the safety-only minimal pipeline).
-        snapshot = dict(state.get("playback_snapshot") or {})
-        if not snapshot:
-            playback = get_shared_playback_context()
-            if playback is None:
-                return None
-            snapshot = playback.snapshot()
-        sections = snapshot.get("show_sections") or []
-        if not sections:
+    def _current_program_look(
+        self,
+        current_section: dict[str, Any] | None,
+        state: PhotonicState,
+    ) -> dict[str, Any] | None:
+        if not isinstance(current_section, dict):
             return None
-        playhead = float(snapshot.get("playhead_seconds", 0.0))
-        current_section = None
-        for section in sections:
-            start = float(section.get("start_seconds", 0.0))
-            end = float(section.get("end_seconds", start))
-            if start <= playhead < max(end, start + 1e-6):
-                current_section = section
-                break
-        if current_section is None:
-            current_section = sections[-1]
         laser_program = current_section.get("laser_program")
         if not isinstance(laser_program, dict):
             return None
 
+        playhead = _playhead_seconds_for_state(state)
         start = float(current_section.get("start_seconds", 0.0))
         end = float(current_section.get("end_seconds", start + 1.0))
         progress = max(0.0, min(1.0, (playhead - start) / max(end - start, 1e-6)))
@@ -460,18 +472,27 @@ class ILDAOutputNode:
         melodic_smoothness: float,
         motion_energy: float,
         color_energy: float,
+        intensity_multiplier: float,
+        motion_multiplier: float,
+        strobe_level: float,
         program_look: dict[str, Any] | None,
         palette: Palette = DEFAULT_PALETTE,
     ) -> list[ILDAPoint]:
-        sweep_phase = timestamp * max(0.25, bpm / 60.0) * (0.5 + aggression * 1.8)
+        motion_gain = max(0.25, min(2.0, motion_multiplier))
+        intensity_gain = max(0.0, min(1.5, intensity_multiplier))
+        strobe_gain = max(0.0, min(1.0, strobe_level))
         density_scale = float(program_look.get("density", 1.0)) if program_look else 1.0
-        motion_scale = float(program_look.get("motion", 1.0)) if program_look else 1.0
-        amplitude_x = (0.35 + aggression * 0.45) * (0.78 + motion_scale * 0.34) * (0.86 + motion_energy * 0.28)
+        look_motion_scale = float(program_look.get("motion", 1.0)) if program_look else 1.0
+        effective_motion = max(0.25, min(2.5, look_motion_scale * motion_gain))
+        sweep_phase = timestamp * max(0.25, bpm / 60.0) * (0.5 + aggression * 1.8) * effective_motion
+        amplitude_x = (0.35 + aggression * 0.45) * (0.78 + look_motion_scale * 0.34) * (0.86 + motion_energy * 0.28)
         amplitude_y = min(
             self.safety.y_axis_max / 255.0,
             (0.12 + melodic_smoothness * 0.28 + pitch_height * 0.18 + (melodic_contour - 0.5) * 0.08)
-            * (0.82 + motion_scale * 0.22),
+            * (0.82 + look_motion_scale * 0.22),
         )
+        amplitude_x *= 0.75 + motion_gain * 0.25
+        amplitude_y *= 0.8 + motion_gain * 0.2
         if geometry_family == "burst":
             amplitude_x += 0.08
             amplitude_y += 0.04
@@ -548,15 +569,21 @@ class ILDAOutputNode:
                 harshness,
                 palette=palette,
             )
+            r = max(0, min(255, int(round(r * intensity_gain))))
+            g = max(0, min(255, int(round(g * intensity_gain))))
+            b = max(0, min(255, int(round(b * intensity_gain))))
             blanked = False
             blanking_density = max(1, int(round(8 - min(6, density_scale * 3.2))))
-            if geometry_family == "burst" and aggression > 0.72:
-                blanked = (index % 5) in {0, 1} and beat_phase < 0.22
+            if geometry_family == "burst" and aggression > 0.72 and strobe_gain > 0.01:
+                burst_density = max(3, 7 - int(round(strobe_gain * 3)))
+                blanked = (index % burst_density) in {0, 1} and beat_phase < 0.22
             elif geometry_family == "sequence":
-                blanked = (index % blanking_density) != int((beat_phase * blanking_density) % blanking_density)
+                blanked = strobe_gain > 0.01 and (index % blanking_density) != int(
+                    (beat_phase * blanking_density) % blanking_density
+                )
             elif geometry_family == "sheet":
                 blanked = density_scale < 0.9 and (index % max(2, blanking_density - 2)) == 0
-            elif harshness > 0.78:
+            elif harshness > 0.78 and strobe_gain > 0.01:
                 blanked = (index % 7) == 0 and math.sin(shape_phase * 2.0) > 0.0
 
             points.append(

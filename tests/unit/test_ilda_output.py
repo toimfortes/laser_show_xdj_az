@@ -252,6 +252,211 @@ def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
     assert result["ilda_frames"][0]["geometry_family"] == "sheet"
 
 
+def test_ilda_output_uses_section_intensity_motion_and_strobe() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    base_section = {
+        "id": "section_000",
+        "start_seconds": 0.0,
+        "end_seconds": 32.0,
+        "laser_enabled": True,
+        "laser_program": {
+            "phrase_role": "drop_variation",
+            "zone_policy": "overhead_only",
+            "fill_trigger_every_bars": 4,
+            "launch": {"pattern": "sheet", "geometry_family": "sheet", "bars": 2},
+            "sustain": [
+                {
+                    "pattern": "burst",
+                    "geometry_family": "burst",
+                    "color_mode": "white_hits",
+                    "bars": 8,
+                }
+            ],
+            "fills": [],
+            "release": {"pattern": "trace", "geometry_family": "trace", "bars": 2},
+        },
+    }
+
+    def render_frame(
+        *,
+        intensity_multiplier: float,
+        motion_multiplier: float,
+        strobe_level: float,
+        timestamp: float,
+    ) -> ILDAFrame:
+        playback = set_shared_playback_context(
+            PlaybackContext(
+                file_path="/tmp/track.mp3",
+                file_name="track.mp3",
+                duration_seconds=32.0,
+                show_sections=[
+                    {
+                        **base_section,
+                        "intensity_multiplier": intensity_multiplier,
+                        "motion_multiplier": motion_multiplier,
+                        "strobe_level": strobe_level,
+                    }
+                ],
+            )
+        )
+        playback.update_transport(
+            playhead_seconds=10.0,
+            playing=True,
+            finished=False,
+            realtime=True,
+            speed=1.0,
+        )
+
+        state = _armed_state()
+        state["timestamp"] = timestamp
+        state["current_structure"] = MusicStructure.DROP
+        state["fused_bpm"] = 128.0
+        state["beat_info"]["beat_phase"] = 0.05
+        state["audio_features"]["timbral_harshness"] = 0.85
+        state["director_state"]["laser_aggression"] = 0.9
+        state["director_state"]["laser_motion_energy"] = 0.8
+        state["director_state"]["color_drive"] = 0.7
+
+        try:
+            return copy.deepcopy(node(state)["ilda_frames"][0])
+        finally:
+            clear_shared_playback_context()
+
+    baseline = render_frame(
+        intensity_multiplier=1.0,
+        motion_multiplier=1.0,
+        strobe_level=1.0,
+        timestamp=10.0,
+    )
+    baseline_next = render_frame(
+        intensity_multiplier=1.0,
+        motion_multiplier=1.0,
+        strobe_level=1.0,
+        timestamp=10.05,
+    )
+    frame = render_frame(
+        intensity_multiplier=0.35,
+        motion_multiplier=1.6,
+        strobe_level=0.0,
+        timestamp=10.0,
+    )
+    frame_next = render_frame(
+        intensity_multiplier=0.35,
+        motion_multiplier=1.6,
+        strobe_level=0.0,
+        timestamp=10.05,
+    )
+
+    lit_points = [point for point in frame["points"] if not point["blanked"]]
+    baseline_lit_points = [point for point in baseline["points"] if not point["blanked"]]
+    blanked_points = [point for point in frame["points"] if point["blanked"]]
+    baseline_blanked_points = [point for point in baseline["points"] if point["blanked"]]
+    frame_motion = sum(
+        abs(current["x"] - previous["x"]) + abs(current["y"] - previous["y"])
+        for previous, current in zip(frame["points"], frame_next["points"], strict=True)
+    )
+    baseline_motion = sum(
+        abs(current["x"] - previous["x"]) + abs(current["y"] - previous["y"])
+        for previous, current in zip(baseline["points"], baseline_next["points"], strict=True)
+    )
+    assert lit_points, "section should still emit non-blank ILDA points"
+    assert max(point["r"] + point["g"] + point["b"] for point in lit_points) < max(
+        point["r"] + point["g"] + point["b"] for point in baseline_lit_points
+    )
+    assert frame_motion > baseline_motion
+    assert blanked_points == []
+    assert baseline_blanked_points != []
+
+
+def test_ilda_output_gap_uses_default_geometry_and_neutral_strobe_bias() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=20.0,
+            show_sections=[
+                {
+                    "id": "section_000",
+                    "start_seconds": 0.0,
+                    "end_seconds": 4.0,
+                    "laser_enabled": True,
+                    "laser_program": {
+                        "phrase_role": "drop_variation",
+                        "zone_policy": "overhead_only",
+                        "launch": {"pattern": "sheet", "geometry_family": "sheet", "bars": 1},
+                        "sustain": [{"pattern": "burst", "geometry_family": "burst", "bars": 2}],
+                        "fills": [],
+                        "release": {"pattern": "trace", "geometry_family": "trace", "bars": 1},
+                    },
+                },
+                {
+                    "id": "section_001",
+                    "start_seconds": 10.0,
+                    "end_seconds": 14.0,
+                    "laser_enabled": True,
+                    "laser_program": {
+                        "phrase_role": "breakdown_release",
+                        "zone_policy": "overhead_only",
+                        "launch": {"pattern": "fan", "geometry_family": "fan", "bars": 1},
+                        "sustain": [{"pattern": "helix", "geometry_family": "helix", "bars": 2}],
+                        "fills": [],
+                        "release": {"pattern": "trace", "geometry_family": "trace", "bars": 1},
+                    },
+                },
+            ],
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=7.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    state = _armed_state()
+    state["current_structure"] = MusicStructure.BREAKDOWN
+    state["fused_bpm"] = 124.0
+    state["beat_info"]["beat_phase"] = 0.05
+    state["audio_features"]["timbral_harshness"] = 0.85
+    state["director_state"]["laser_aggression"] = 0.35
+
+    try:
+        frame = node(state)["ilda_frames"][0]
+    finally:
+        clear_shared_playback_context()
+
+    assert frame["geometry_family"] == "sky"
+    assert any(point["blanked"] for point in frame["points"])
+
+
 def test_ilda_output_json_export_flushes_latest_snapshot_on_stop(tmp_path: Path) -> None:
     """JSON export should not rewrite the file every 20ms tick. Keep the
     latest payload in memory and flush once on stop()."""
