@@ -124,3 +124,36 @@ def test_engine_reports_stale_when_last_authority_expires() -> None:
 
     assert status.state == "stale"
     assert status.authority_player == 3
+
+
+def test_engine_reports_stale_for_current_authority_that_is_already_stale() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    status = engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.0)],
+        now=100.6,
+    )
+
+    assert status.state == "stale"
+    assert status.authority_player == 3
+
+
+def test_engine_reports_unbound_when_authority_never_seen() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+
+    status = engine.evaluate([], now=100.0)
+
+    assert status.state == "unbound"
+    assert status.authority_player is None
+
+
+def test_engine_reports_unbound_when_authority_disappears_before_timeout() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.0)],
+        now=100.1,
+    )
+
+    status = engine.evaluate([], now=100.4)
+
+    assert status.state == "unbound"
+    assert status.authority_player is None
