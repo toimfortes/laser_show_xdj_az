@@ -15,6 +15,8 @@ class LiveDeckAutoBindEngine:
         authoritative = [deck for deck in decks if deck.on_air and deck.master]
 
         if len(authoritative) > 1:
+            self._last_authority_player = None
+            self._last_authority_at = 0.0
             return BindingStatus(
                 state="conflict",
                 reason="multiple on-air master decks",

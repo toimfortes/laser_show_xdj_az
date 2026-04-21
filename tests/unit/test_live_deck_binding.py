@@ -157,3 +157,25 @@ def test_engine_reports_unbound_when_authority_disappears_before_timeout() -> No
 
     assert status.state == "unbound"
     assert status.authority_player is None
+
+
+def test_engine_conflict_clears_cached_authority_and_fails_closed() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+
+    first = engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.0)],
+        now=100.1,
+    )
+    second = engine.evaluate(
+        [
+            LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.2),
+            LiveDeckFact(player_number=4, on_air=True, master=True, updated_at=100.2),
+        ],
+        now=100.2,
+    )
+    third = engine.evaluate([], now=100.8)
+
+    assert first.state == "bound"
+    assert second.state == "conflict"
+    assert third.state == "unbound"
+    assert third.authority_player is None
