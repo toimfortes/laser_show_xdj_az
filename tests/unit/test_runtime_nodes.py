@@ -14,7 +14,12 @@ Pins the cycle-N invariants in the new nodes:
 
 from __future__ import annotations
 
+from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.core.config import FixtureConfig
+from photonic_synesthesia.graph.nodes.section_dynamics import (
+    _bool_or_default,
+    resolve_active_section_dynamics,
+)
 from photonic_synesthesia.graph.nodes.laser_zone_runtime import (
     LaserZoneRuntimeNode,
     _channel_clamp,
@@ -22,12 +27,208 @@ from photonic_synesthesia.graph.nodes.laser_zone_runtime import (
 from photonic_synesthesia.graph.nodes.preposition import PrepositionNode
 from photonic_synesthesia.graph.nodes.surface_compositor import SurfaceCompositorNode
 from photonic_synesthesia.graph.nodes.trigger_router import TriggerRouterNode
+from photonic_synesthesia.platform.runtime_context import (
+    PlaybackContext,
+    clear_shared_playback_context,
+    set_shared_playback_context,
+)
 
 
 # --- TriggerRouterNode -----------------------------------------------------
 
 def _flag(id_: str, at: float, kind: str = "phrase_head") -> dict:
     return {"id": id_, "kind": kind, "at_seconds": at, "payload": {"section_id": id_.split(":")[0]}}
+
+
+# --- SectionDynamics -------------------------------------------------------
+
+
+def test_resolve_active_section_dynamics_defaults_without_snapshot() -> None:
+    clear_shared_playback_context()
+    dynamics = resolve_active_section_dynamics(create_initial_state())
+
+    assert dynamics["section_id"] is None
+    assert dynamics["current_section"] is None
+    assert dynamics["intensity_multiplier"] == 1.0
+    assert dynamics["motion_multiplier"] == 1.0
+    assert dynamics["strobe_level"] == 0.0
+    assert dynamics["laser_enabled"] is True
+    assert dynamics["movers_enabled"] is True
+    assert dynamics["washes_enabled"] is True
+    assert dynamics["leds_enabled"] is True
+    assert dynamics["panel_family"] is None
+
+
+def test_resolve_active_section_dynamics_selects_current_section_and_infers_panel_family() -> None:
+    state = create_initial_state()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=120.0,
+            show_sections=[
+                {
+                    "id": "sec-1",
+                    "start_seconds": 0.0,
+                    "end_seconds": 8.0,
+                    "intensity_multiplier": 0.6,
+                    "washes_enabled": True,
+                    "leds_enabled": True,
+                },
+                {
+                    "id": "sec-2",
+                    "start_seconds": 8.0,
+                    "end_seconds": 20.0,
+                    "lead_family": "wash",
+                    "intensity_multiplier": 0.75,
+                    "motion_multiplier": 1.3,
+                    "strobe_level": 0.4,
+                    "laser_enabled": False,
+                    "movers_enabled": True,
+                    "washes_enabled": False,
+                    "leds_enabled": True,
+                    "fixture_role_map": {"wash": {"role": "hero"}, "led": {"role": "support"}},
+                },
+            ],
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=14.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    try:
+        dynamics = resolve_active_section_dynamics(state)
+    finally:
+        clear_shared_playback_context()
+
+    assert dynamics["section_id"] == "sec-2"
+    assert dynamics["current_section"] == playback.snapshot()["show_sections"][1]
+    assert dynamics["intensity_multiplier"] == 0.75
+    assert dynamics["motion_multiplier"] == 1.3
+    assert dynamics["strobe_level"] == 0.4
+    assert dynamics["laser_enabled"] is False
+    assert dynamics["movers_enabled"] is True
+    assert dynamics["washes_enabled"] is False
+    assert dynamics["leds_enabled"] is True
+    assert dynamics["panel_family"] == "wash"
+
+
+def test_resolve_active_section_dynamics_returns_defaults_when_playhead_is_before_first_section_or_in_gap() -> None:
+    for playhead_seconds in (-1.0, 9.0):
+        state = create_initial_state()
+        state["playback_snapshot"] = {
+            "playhead_seconds": playhead_seconds,
+            "show_sections": [
+                {
+                    "id": "sec-1",
+                    "start_seconds": 0.0,
+                    "end_seconds": 8.0,
+                    "intensity_multiplier": 0.6,
+                    "motion_multiplier": 0.8,
+                    "strobe_level": 0.2,
+                    "laser_enabled": False,
+                },
+                {
+                    "id": "sec-2",
+                    "start_seconds": 10.0,
+                    "end_seconds": 20.0,
+                    "intensity_multiplier": 0.75,
+                    "motion_multiplier": 1.3,
+                    "strobe_level": 0.4,
+                    "laser_enabled": False,
+                    "movers_enabled": False,
+                    "washes_enabled": False,
+                    "leds_enabled": False,
+                },
+            ],
+        }
+
+        dynamics = resolve_active_section_dynamics(state)
+
+        assert dynamics["section_id"] is None
+        assert dynamics["current_section"] is None
+        assert dynamics["intensity_multiplier"] == 1.0
+        assert dynamics["motion_multiplier"] == 1.0
+        assert dynamics["strobe_level"] == 0.0
+        assert dynamics["laser_enabled"] is True
+        assert dynamics["movers_enabled"] is True
+        assert dynamics["washes_enabled"] is True
+        assert dynamics["leds_enabled"] is True
+        assert dynamics["panel_family"] is None
+
+
+def test_section_dynamics_bool_or_default_falls_back_to_default_for_unrecognized_strings() -> None:
+    assert _bool_or_default("off", True) is False
+    assert _bool_or_default("on", False) is True
+    assert _bool_or_default("disabled", False) is False
+    assert _bool_or_default("maybe", True) is True
+
+
+def test_resolve_active_section_dynamics_uses_last_section_and_coerces_invalid_values() -> None:
+    state = create_initial_state()
+    state["playback_snapshot"] = {
+        "playhead_seconds": 99.0,
+        "show_sections": [
+            {
+                "id": "sec-last",
+                "start_seconds": 2.0,
+                "end_seconds": 10.0,
+                "intensity_multiplier": "bad",
+                "motion_multiplier": None,
+                "strobe_level": "nan-ish",
+                "laser_enabled": 0,
+                "movers_enabled": "yes",
+                "washes_enabled": None,
+                "leds_enabled": 1,
+                "fixture_role_map": {"led": {"role": "hero"}},
+            }
+        ],
+    }
+
+    dynamics = resolve_active_section_dynamics(state)
+
+    assert dynamics["section_id"] == "sec-last"
+    assert dynamics["current_section"] == state["playback_snapshot"]["show_sections"][0]
+    assert dynamics["intensity_multiplier"] == 1.0
+    assert dynamics["motion_multiplier"] == 1.0
+    assert dynamics["strobe_level"] == 0.0
+    assert dynamics["laser_enabled"] is False
+    assert dynamics["movers_enabled"] is True
+    assert dynamics["washes_enabled"] is True
+    assert dynamics["leds_enabled"] is True
+    assert dynamics["panel_family"] == "led"
+
+
+def test_resolve_active_section_dynamics_requires_dict_fixture_role_entries_for_panel_family() -> None:
+    state = create_initial_state()
+    state["playback_snapshot"] = {
+        "playhead_seconds": 4.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "laser_enabled": "disabled",
+                "movers_enabled": "maybe",
+                "washes_enabled": "off",
+                "leds_enabled": "on",
+                "fixture_role_map": {"led": ["support"]},
+            }
+        ],
+    }
+
+    dynamics = resolve_active_section_dynamics(state)
+
+    assert dynamics["section_id"] == "sec-1"
+    assert dynamics["laser_enabled"] is True
+    assert dynamics["movers_enabled"] is True
+    assert dynamics["washes_enabled"] is False
+    assert dynamics["leds_enabled"] is True
+    assert dynamics["panel_family"] is None
 
 
 def test_trigger_router_fires_zero_at_seconds_flag_on_first_tick() -> None:
