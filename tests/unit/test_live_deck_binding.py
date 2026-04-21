@@ -3,6 +3,7 @@ from photonic_synesthesia.platform import (
     LiveDeckFact as PlatformLiveDeckFact,
     LiveDeckSnapshot as PlatformLiveDeckSnapshot,
 )
+from photonic_synesthesia.platform.live_deck_binding import LiveDeckAutoBindEngine
 from photonic_synesthesia.platform.live_deck_models import (
     BindingStatus,
     LiveDeckFact,
@@ -83,3 +84,43 @@ def test_live_deck_snapshot_defaults_to_empty() -> None:
     snapshot = LiveDeckSnapshot()
 
     assert snapshot.decks == []
+
+
+def test_engine_selects_single_on_air_master_deck() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    status = engine.evaluate(
+        [
+            LiveDeckFact(player_number=1, playing=True, on_air=False, master=False, updated_at=100.0),
+            LiveDeckFact(player_number=3, playing=True, on_air=True, master=True, updated_at=100.0),
+        ],
+        now=100.1,
+    )
+
+    assert status.state == "bound"
+    assert status.authority_player == 3
+
+
+def test_engine_reports_conflict_for_multiple_on_air_master_decks() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    status = engine.evaluate(
+        [
+            LiveDeckFact(player_number=1, on_air=True, master=True, updated_at=100.0),
+            LiveDeckFact(player_number=2, on_air=True, master=True, updated_at=100.0),
+        ],
+        now=100.1,
+    )
+
+    assert status.state == "conflict"
+    assert status.authority_player is None
+
+
+def test_engine_reports_stale_when_last_authority_expires() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    engine.evaluate(
+        [LiveDeckFact(player_number=3, on_air=True, master=True, updated_at=100.0)],
+        now=100.1,
+    )
+    status = engine.evaluate([], now=100.8)
+
+    assert status.state == "stale"
+    assert status.authority_player == 3
