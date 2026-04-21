@@ -278,13 +278,23 @@ class MovingHeadControlNode:
         if not self.fixtures:
             return state
 
+        dynamics = resolve_active_section_dynamics(state)
+        if not dynamics["movers_enabled"]:
+            for fixture in self.fixtures:
+                if not fixture.enabled:
+                    continue
+                state["fixture_commands"].append(self._generate_disabled_moving_head_commands(fixture))
+            state["processing_times"]["moving_head_control"] = time.time() - start_time
+            return state
+
         scene = state["scene_state"]["current_scene"]
         structure = state["current_structure"]
         beat_phase = state["beat_info"]["beat_phase"]
         bar_position = state["beat_info"]["bar_position"]
         bpm = state["fused_bpm"]
         energy = state["audio_features"]["rms_energy"]
-        program_look = self._current_program_look(state)
+        current_section = dynamics.get("current_section")
+        program_look = self._current_program_look(current_section, state)
         director_state = state["director_state"]
         palette = resolve_palette(str(director_state.get("color_theme") or "neutral"))
         color_drive = float(director_state.get("color_drive") or 0.5)
@@ -309,6 +319,9 @@ class MovingHeadControlNode:
                 program_look=program_look,
                 palette=palette,
                 color_drive=color_drive,
+                intensity_multiplier=dynamics["intensity_multiplier"],
+                motion_multiplier=dynamics["motion_multiplier"],
+                strobe_level=dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0,
             )
 
             state["fixture_commands"].append(commands)
@@ -331,6 +344,9 @@ class MovingHeadControlNode:
         program_look: dict[str, Any] | None = None,
         palette: Palette,
         color_drive: float,
+        intensity_multiplier: float,
+        motion_multiplier: float,
+        strobe_level: float,
     ) -> FixtureCommand:
         """Generate DMX values for a single moving head."""
         base = fixture.start_address
@@ -340,6 +356,10 @@ class MovingHeadControlNode:
         color_mode = str(program_look.get("color_mode", "")) if isinstance(program_look, dict) else ""
         target_bias = str(program_look.get("target_bias", "")) if isinstance(program_look, dict) else ""
         motion_scale = max(0.35, min(2.0, float(program_look.get("motion", 1.0)))) if isinstance(program_look, dict) else 1.0
+        motion_gain = max(0.25, min(2.0, motion_multiplier))
+        effective_motion = max(0.25, min(2.5, motion_scale * motion_gain))
+        intensity_gain = max(0.0, min(1.5, intensity_multiplier))
+        strobe_gain = max(0.0, min(1.0, strobe_level))
         emphasis = max(0.0, min(1.0, float(program_look.get("emphasis", 0.5)))) if isinstance(program_look, dict) else 0.5
         mover_family = self._mover_family_for_program(structure, program_look)
 
@@ -348,10 +368,10 @@ class MovingHeadControlNode:
         # =================================================================
         freq_x = bpm / 60 / 2  # Half-beat
         freq_y = bpm / 60 / 4  # Quarter-beat
-        motion_phase = current_time * bpm / 60 * (0.7 + motion_scale * 0.9) + phase_offset
+        motion_phase = current_time * bpm / 60 * (0.7 + effective_motion * 0.9) + phase_offset
         beat_hit = 1.0 if beat_phase < 0.14 else 0.0
-        pan_amp = 58 + motion_scale * 34 + emphasis * 18
-        tilt_amp = 34 + motion_scale * 18 + emphasis * 10
+        pan_amp = 58 + effective_motion * 34 + emphasis * 18
+        tilt_amp = 34 + effective_motion * 18 + emphasis * 10
 
         if mover_family == "hits":
             hit_gate = beat_hit * (0.75 + emphasis * 0.25)
@@ -371,8 +391,8 @@ class MovingHeadControlNode:
             pan_norm = math.sin(motion_phase * 0.92) * math.cos(motion_phase * 0.48)
             tilt_norm = math.cos(motion_phase * 0.7)
         else:
-            pan_norm = math.sin(current_time * freq_x + phase_offset) * 0.82
-            tilt_norm = math.cos(current_time * freq_y) * 0.72
+            pan_norm = math.sin(current_time * freq_x * effective_motion + phase_offset) * 0.82
+            tilt_norm = math.cos(current_time * freq_y * effective_motion) * 0.72
 
         if target_bias == "crowd":
             tilt_norm -= 0.24
@@ -396,6 +416,7 @@ class MovingHeadControlNode:
             speed = 96
         else:
             speed = 200 if structure == MusicStructure.DROP else 128
+        speed = max(0, min(255, int(round(speed * (0.65 + motion_gain * 0.35)))))
         values[base + self.channel_map["pan_tilt_speed"]] = speed
 
         # =================================================================
@@ -413,7 +434,7 @@ class MovingHeadControlNode:
         else:
             dimmer = int(142 + 78 * energy + emphasis * 12 + role_boost)
 
-        values[base + self.channel_map["dimmer"]] = min(255, dimmer)
+        values[base + self.channel_map["dimmer"]] = max(0, min(255, int(round(dimmer * intensity_gain))))
 
         # =================================================================
         # Strobe - synced to fills / impacts
@@ -425,7 +446,11 @@ class MovingHeadControlNode:
         else:
             strobe = 0
 
-        values[base + self.channel_map["strobe"]] = strobe
+        values[base + self.channel_map["strobe"]] = (
+            max(0, min(255, int(round(strobe * strobe_gain))))
+            if strobe_gain > 0.0
+            else 0
+        )
 
         # =================================================================
         # Color wheel / RGB
@@ -515,30 +540,37 @@ class MovingHeadControlNode:
             channel_values=values,
         )
 
-    def _current_program_look(self, state: PhotonicState) -> dict[str, Any] | None:
-        # Cycle-1 panel UF-17 fix: read from the per-tick published snapshot;
-        # fall back to the global context for callers bypassing the graph
-        # publisher (unit tests + the safety-only minimal pipeline). See
-        # ilda_output._current_program_look comment.
+    def _generate_disabled_moving_head_commands(self, fixture: FixtureConfig) -> FixtureCommand:
+        """Force moving-head channels to an explicit neutral/off state."""
+        base = fixture.start_address
+        values = {
+            base + channel_offset: 0
+            for channel_offset in set(self.channel_map.values())
+        }
+        return FixtureCommand(
+            fixture_id=fixture.id,
+            fixture_type="moving_head",
+            channel_values=values,
+        )
+
+    def _current_program_look(
+        self,
+        current_section: dict[str, Any] | None,
+        state: PhotonicState,
+    ) -> dict[str, Any] | None:
+        if not isinstance(current_section, dict):
+            return None
+
+        # Read only the playhead from the per-tick snapshot/global context.
+        # Section selection itself comes from resolve_active_section_dynamics
+        # so the mover path has a single source of truth for "active section".
         snapshot = dict(state.get("playback_snapshot") or {})
         if not snapshot:
             playback = get_shared_playback_context()
             if playback is None:
                 return None
             snapshot = playback.snapshot()
-        sections = snapshot.get("show_sections") or []
-        if not sections:
-            return None
         playhead = float(snapshot.get("playhead_seconds", 0.0))
-        current_section = None
-        for section in sections:
-            start = float(section.get("start_seconds", 0.0))
-            end = float(section.get("end_seconds", start))
-            if start <= playhead < max(end, start + 1e-6):
-                current_section = section
-                break
-        if current_section is None:
-            current_section = sections[-1]
         laser_program = current_section.get("laser_program")
         if not isinstance(laser_program, dict):
             return None

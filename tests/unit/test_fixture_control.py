@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from photonic_synesthesia.core.config import DMXConfig, FixtureConfig, LaserSafetyConfig, MovingHeadSafetyConfig
-from photonic_synesthesia.core.state import MusicStructure, create_initial_state
+from photonic_synesthesia.core.state import MusicStructure, PhotonicState, create_initial_state
 from photonic_synesthesia.graph.nodes.dmx_output import DMXOutputNode
 from photonic_synesthesia.graph.nodes.fixture_control import LaserControlNode, MovingHeadControlNode
 from photonic_synesthesia.platform.runtime_context import (
@@ -35,6 +35,60 @@ def _moving_head_fixture() -> FixtureConfig:
     )
 
 
+def _moving_head_state_with_section(
+    *,
+    section_overrides: dict[str, object],
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.05,
+    bar_position: int = 2,
+    bpm: float = 128.0,
+    energy: float = 0.72,
+    timestamp: float = 1.37,
+) -> PhotonicState:
+    return _moving_head_state_with_snapshot(
+        show_sections=[
+            {
+                "id": "section_000",
+                "start_seconds": 0.0,
+                "end_seconds": 8.0,
+                **section_overrides,
+            }
+        ],
+        playhead_seconds=1.0,
+        structure=structure,
+        beat_phase=beat_phase,
+        bar_position=bar_position,
+        bpm=bpm,
+        energy=energy,
+        timestamp=timestamp,
+    )
+
+
+def _moving_head_state_with_snapshot(
+    *,
+    show_sections: list[dict[str, object]],
+    playhead_seconds: float,
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.05,
+    bar_position: int = 2,
+    bpm: float = 128.0,
+    energy: float = 0.72,
+    timestamp: float = 1.37,
+) -> PhotonicState:
+    state = create_initial_state()
+    state["timestamp"] = timestamp
+    state["current_structure"] = structure
+    state["beat_info"]["beat_phase"] = beat_phase
+    state["beat_info"]["bar_position"] = bar_position
+    state["fused_bpm"] = bpm
+    state["audio_features"]["rms_energy"] = energy
+    state["playback_snapshot"] = {
+        "playhead_seconds": playhead_seconds,
+        "show_sections": show_sections,
+    }
+    return state
+
+
 def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
     node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
     playback = set_shared_playback_context(
@@ -49,6 +103,10 @@ def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
                     "kind": "drop",
                     "start_seconds": 0.0,
                     "end_seconds": 32.0,
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 1.0,
+                    "strobe_level": 1.0,
+                    "movers_enabled": True,
                     "laser_program": {
                         "phrase_role": "drop_variation",
                         "zone_policy": "crowd_punctuate",
@@ -76,7 +134,7 @@ def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
                         ],
                         "release": {"pattern": "circle_trace", "geometry_family": "trace", "bars": 2},
                     },
-                }
+                },
             ],
         )
     )
@@ -124,6 +182,10 @@ def test_moving_head_control_uses_release_look_to_relax_motion() -> None:
                     "kind": "breakdown",
                     "start_seconds": 0.0,
                     "end_seconds": 32.0,
+                    "intensity_multiplier": 1.0,
+                    "motion_multiplier": 1.0,
+                    "strobe_level": 1.0,
+                    "movers_enabled": True,
                     "laser_program": {
                         "phrase_role": "breakdown_release",
                         "zone_policy": "overhead_only",
@@ -147,7 +209,7 @@ def test_moving_head_control_uses_release_look_to_relax_motion() -> None:
                             "bars": 2,
                         },
                     },
-                }
+                },
             ],
         )
     )
@@ -186,6 +248,111 @@ def test_moving_head_control_uses_release_look_to_relax_motion() -> None:
     assert 0 <= red <= 255 and 0 <= green <= 255 and 0 <= blue <= 255
     # Neutral palette biases R~=G~=B; blue is slightly higher than red.
     assert blue >= red and blue >= green - 10
+
+
+def test_movers_enabled_flag_clears_moving_head_dmx_output() -> None:
+    mover_node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
+    dmx_output = DMXOutputNode(DMXConfig(interface_type="artnet"))
+
+    active_state = _moving_head_state_with_section(
+        section_overrides={"movers_enabled": True},
+        beat_phase=0.05,
+        timestamp=1.37,
+    )
+    active_state["control_state"]["armed_live"] = True
+
+    disabled_state = _moving_head_state_with_section(
+        section_overrides={"movers_enabled": False},
+        beat_phase=0.05,
+        timestamp=1.37,
+    )
+    disabled_state["control_state"]["armed_live"] = True
+
+    active_result = dmx_output(mover_node(active_state))
+    disabled_result = dmx_output(mover_node(disabled_state))
+
+    active_universe = active_result["dmx_universe"]
+    disabled_universe = disabled_result["dmx_universe"]
+
+    assert any(active_universe[channel] > 0 for channel in range(1, 17))
+    assert all(disabled_universe[channel] == 0 for channel in range(1, 17))
+
+
+def test_gap_playhead_does_not_borrow_last_section_mover_program_look() -> None:
+    node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
+
+    result = node(
+        _moving_head_state_with_snapshot(
+            show_sections=[
+                {
+                    "id": "section_intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 1.0,
+                    "movers_enabled": True,
+                },
+                {
+                    "id": "section_future",
+                    "start_seconds": 3.0,
+                    "end_seconds": 5.0,
+                    "movers_enabled": True,
+                    "laser_program": {
+                        "phrase_role": "breakdown_release",
+                        "release": {
+                            "pattern": "square_trace",
+                            "geometry_family": "trace",
+                            "color_mode": "static",
+                            "target_bias": "crowd",
+                            "bars": 2,
+                        },
+                    },
+                },
+            ],
+            playhead_seconds=2.0,
+            structure=MusicStructure.DROP,
+            beat_phase=0.05,
+            timestamp=1.37,
+        )
+    )
+
+    command = result["fixture_commands"][0]["channel_values"]
+    assert command[1 + node.channel_map["pan_tilt_speed"]] == 218
+    assert command[1 + node.channel_map["strobe"]] == 208
+    assert command[1 + node.channel_map["gobo"]] == 0
+
+
+def test_motion_intensity_and_strobe_from_section_dynamics() -> None:
+    node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
+
+    reduced = node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "intensity_multiplier": 0.45,
+                "motion_multiplier": 0.55,
+                "strobe_level": 0.0,
+            },
+            beat_phase=0.05,
+            timestamp=1.37,
+        )
+    )["fixture_commands"][0]["channel_values"]
+    boosted = node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "intensity_multiplier": 1.25,
+                "motion_multiplier": 1.6,
+                "strobe_level": 0.85,
+            },
+            beat_phase=0.05,
+            timestamp=1.37,
+        )
+    )["fixture_commands"][0]["channel_values"]
+
+    assert boosted[1 + node.channel_map["pan_tilt_speed"]] > reduced[1 + node.channel_map["pan_tilt_speed"]]
+    assert boosted[1 + node.channel_map["pan"]] != reduced[1 + node.channel_map["pan"]]
+    assert boosted[1 + node.channel_map["dimmer"]] > reduced[1 + node.channel_map["dimmer"]]
+    assert reduced[1 + node.channel_map["strobe"]] == 0
+    assert boosted[1 + node.channel_map["strobe"]] > 0
 
 
 def test_laser_control_clears_dmx_universe_when_active_section_disables_lasers() -> None:
