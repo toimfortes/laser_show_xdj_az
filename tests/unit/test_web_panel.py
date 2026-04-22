@@ -927,6 +927,78 @@ def test_playback_show_section_update_round_trips_through_backend(tmp_path) -> N
     clear_shared_playback_context()
 
 
+def test_show_section_patch_keeps_fixture_mode_and_pattern_field_names(tmp_path) -> None:
+    audio_path = tmp_path / "track.mp3"
+    audio_path.write_bytes(b"fake mp3 bytes")
+
+    clear_shared_playback_context()
+    saved_payloads: list[dict[str, object]] = []
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path=str(audio_path),
+            file_name=audio_path.name,
+            duration_seconds=12.5,
+            track_key="artist|track",
+            show_sections=[
+                {
+                    "id": "section_001",
+                    "label": "Intro",
+                    "kind": "intro",
+                    "start_seconds": 0.0,
+                    "end_seconds": 8.0,
+                    "scene_id": "intro_ambient",
+                    "fixture_mode": "intro",
+                    "laser_pattern": "fan",
+                    "mover_pattern": "drift",
+                    "wash_pattern": "ambient",
+                    "led_pattern": "pulse",
+                }
+            ],
+            _save_callback=lambda payload: saved_payloads.append(payload) or str(tmp_path / "saved.json"),
+        )
+    )
+
+    app = create_app()
+    client = TestClient(app)
+    response = client.patch(
+        "/api/mock/playback/show-sections/section_001",
+        json={
+            "changes": {
+                "scene_id": "drop_intense",
+                "fixture_mode": "peak_return",
+                "laser_pattern": "wave",
+                "mover_pattern": "pan_sweep",
+                "wash_pattern": "bloom",
+                "led_pattern": "chase",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    updated = response.json()["show_sections"][0]
+    assert updated["scene_id"] == "drop_intense"
+    assert updated["fixture_mode"] == "peak_return"
+    assert updated["laser_pattern"] == "wave"
+    assert updated["mover_pattern"] == "pan_sweep"
+    assert updated["wash_pattern"] == "bloom"
+    assert updated["led_pattern"] == "chase"
+    assert playback.snapshot()["show_sections"][0]["scene_id"] == "drop_intense"
+    assert playback.snapshot()["show_sections"][0]["fixture_mode"] == "peak_return"
+    assert playback.snapshot()["show_sections"][0]["laser_pattern"] == "wave"
+    assert playback.snapshot()["show_sections"][0]["mover_pattern"] == "pan_sweep"
+    assert playback.snapshot()["show_sections"][0]["wash_pattern"] == "bloom"
+    assert playback.snapshot()["show_sections"][0]["led_pattern"] == "chase"
+    assert saved_payloads
+    assert saved_payloads[-1]["show_sections"][0]["scene_id"] == "drop_intense"
+    assert saved_payloads[-1]["show_sections"][0]["fixture_mode"] == "peak_return"
+    assert saved_payloads[-1]["show_sections"][0]["laser_pattern"] == "wave"
+    assert saved_payloads[-1]["show_sections"][0]["mover_pattern"] == "pan_sweep"
+    assert saved_payloads[-1]["show_sections"][0]["wash_pattern"] == "bloom"
+    assert saved_payloads[-1]["show_sections"][0]["led_pattern"] == "chase"
+
+    clear_shared_playback_context()
+
+
 def test_playback_seek_endpoint_updates_shared_playhead(tmp_path) -> None:
     audio_path = tmp_path / "track.mp3"
     audio_path.write_bytes(b"fake mp3 bytes")
