@@ -82,6 +82,7 @@ class LaserControlNode:
         bpm = state["fused_bpm"]
         energy = state["audio_features"]["rms_energy"]
         low_energy = state["audio_features"]["low_energy"]
+        mode_bias = resolve_fixture_mode_bias(dynamics["fixture_mode"])
 
         for fixture in self.fixtures:
             if not fixture.enabled:
@@ -97,7 +98,7 @@ class LaserControlNode:
                 low_energy,
                 state["timestamp"],
                 laser_pattern=dynamics["laser_pattern"],
-                motion_multiplier=dynamics["motion_multiplier"],
+                motion_multiplier=dynamics["motion_multiplier"] * mode_bias["motion"],
             )
 
             state["fixture_commands"].append(commands)

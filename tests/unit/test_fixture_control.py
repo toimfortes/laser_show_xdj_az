@@ -461,6 +461,44 @@ def test_laser_pattern_override_sets_dmx_pattern_channel() -> None:
     assert command[pattern_channel] == 96
 
 
+def test_laser_fixture_mode_peak_return_biases_motion_linked_pattern_speed() -> None:
+    node = LaserControlNode(
+        [_laser_fixture()],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+
+    intro_result = node(
+        _laser_state_with_section(
+            section_overrides={
+                "laser_enabled": True,
+                "fixture_mode": "intro",
+            },
+            structure=MusicStructure.DROP,
+            energy=0.2,
+            timestamp=2.0,
+        )
+    )
+    peak_result = node(
+        _laser_state_with_section(
+            section_overrides={
+                "laser_enabled": True,
+                "fixture_mode": "peak_return",
+            },
+            structure=MusicStructure.DROP,
+            energy=0.2,
+            timestamp=2.0,
+        )
+    )
+
+    profile = node.fixture_profiles["laser-main"]
+    pattern_speed_channel = 1 + profile.channel_map["pattern_speed"]
+    intro_command = intro_result["fixture_commands"][0]["channel_values"]
+    peak_command = peak_result["fixture_commands"][0]["channel_values"]
+
+    assert peak_command[pattern_speed_channel] > intro_command[pattern_speed_channel]
+
+
 def test_mover_pattern_override_forces_motion_family_and_gobo() -> None:
     node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
 
