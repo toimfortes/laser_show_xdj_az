@@ -172,8 +172,10 @@ def _bool_or_default(value: Any, default: bool) -> bool:
         if normalized in {"false", "0", "no", "off"}:
             return False
         return default
-    if isinstance(value, (int, float)):
-        if not math.isfinite(float(value)):
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
             return default
         return bool(value)
     return default

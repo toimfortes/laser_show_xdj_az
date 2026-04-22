@@ -220,9 +220,10 @@ def test_section_dynamics_bool_or_default_falls_back_to_default_for_malformed_no
     assert _bool_or_default([], False) is False
     assert _bool_or_default(("unexpected",), True) is True
     assert _bool_or_default(object(), False) is False
+    assert _bool_or_default(10**1000, False) is True
     assert _bool_or_default(float("nan"), False) is False
     assert _bool_or_default(float("inf"), False) is False
-    assert _bool_or_default(float("-inf"), True) is True
+    assert _bool_or_default(float("-inf"), False) is False
 
 
 def test_resolve_active_section_dynamics_uses_last_section_and_coerces_invalid_values() -> None:
