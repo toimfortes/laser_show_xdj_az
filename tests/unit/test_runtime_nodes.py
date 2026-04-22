@@ -62,8 +62,52 @@ def test_resolve_active_section_dynamics_defaults_without_snapshot() -> None:
     assert dynamics["panel_family"] is None
 
 
+def test_resolve_active_section_dynamics_treats_empty_state_snapshot_as_explicit_local_state() -> None:
+    state = create_initial_state()
+    state["playback_snapshot"] = {}
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="/tmp/track.mp3",
+            file_name="track.mp3",
+            duration_seconds=120.0,
+            show_sections=[
+                {
+                    "id": "shared-sec-1",
+                    "start_seconds": 0.0,
+                    "end_seconds": 8.0,
+                    "intensity_multiplier": 0.6,
+                }
+            ],
+        )
+    )
+    playback.update_transport(
+        playhead_seconds=4.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    try:
+        dynamics = resolve_active_section_dynamics(state)
+    finally:
+        clear_shared_playback_context()
+
+    assert dynamics["section_id"] is None
+    assert dynamics["current_section"] is None
+    assert dynamics["intensity_multiplier"] == 1.0
+    assert dynamics["motion_multiplier"] == 1.0
+    assert dynamics["strobe_level"] == 0.0
+    assert dynamics["laser_enabled"] is True
+    assert dynamics["movers_enabled"] is True
+    assert dynamics["washes_enabled"] is True
+    assert dynamics["leds_enabled"] is True
+    assert dynamics["panel_family"] is None
+
+
 def test_resolve_active_section_dynamics_selects_current_section_and_infers_panel_family() -> None:
     state = create_initial_state()
+    state.pop("playback_snapshot", None)
     playback = set_shared_playback_context(
         PlaybackContext(
             file_path="/tmp/track.mp3",
@@ -169,6 +213,13 @@ def test_section_dynamics_bool_or_default_falls_back_to_default_for_unrecognized
     assert _bool_or_default("on", False) is True
     assert _bool_or_default("disabled", False) is False
     assert _bool_or_default("maybe", True) is True
+
+
+def test_section_dynamics_bool_or_default_falls_back_to_default_for_malformed_non_string_values() -> None:
+    assert _bool_or_default({}, True) is True
+    assert _bool_or_default([], False) is False
+    assert _bool_or_default(("unexpected",), True) is True
+    assert _bool_or_default(object(), False) is False
 
 
 def test_resolve_active_section_dynamics_uses_last_section_and_coerces_invalid_values() -> None:
@@ -295,14 +346,20 @@ def test_resolve_active_section_dynamics_coerces_non_string_overrides_to_default
 def test_pattern_mapping_helpers_resolve_authored_names_consistently() -> None:
     dmx_pattern, geometry_family = resolve_laser_pattern_override("fan_burst")
     mover_family = resolve_mover_pattern_family("hold")
+    pan_sweep_family = resolve_mover_pattern_family("pan_sweep")
     wash_render = resolve_panel_render_mode("bloom", "wash")
     led_render = resolve_panel_render_mode("chase", "led")
+    wash_fallback = resolve_panel_render_mode("bloom", None)
+    shared_fallback = resolve_panel_render_mode("fade", None)
 
     assert dmx_pattern is not None
     assert geometry_family == "burst"
     assert mover_family == "hold"
+    assert pan_sweep_family == "cross"
     assert wash_render == "bloom"
     assert led_render == "chase"
+    assert wash_fallback == "bloom"
+    assert shared_fallback == "fade"
 
 
 def test_trigger_router_fires_zero_at_seconds_flag_on_first_tick() -> None:

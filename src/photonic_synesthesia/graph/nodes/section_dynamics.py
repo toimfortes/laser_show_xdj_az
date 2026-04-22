@@ -163,6 +163,8 @@ def _float_or_default(value: Any, default: float) -> float:
 def _bool_or_default(value: Any, default: bool) -> bool:
     if value is None:
         return default
+    if isinstance(value, bool):
+        return value
     if isinstance(value, str):
         normalized = value.strip().lower()
         if normalized in {"true", "1", "yes", "on"}:
@@ -170,7 +172,9 @@ def _bool_or_default(value: Any, default: bool) -> bool:
         if normalized in {"false", "0", "no", "off"}:
             return False
         return default
-    return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _string_or_default(value: Any, default: str = "", *, allow_numeric: bool = False) -> str:
@@ -184,9 +188,11 @@ def _string_or_default(value: Any, default: str = "", *, allow_numeric: bool = F
 
 
 def _snapshot_for_state(state: PhotonicState) -> dict[str, Any]:
-    snapshot = dict(state.get("playback_snapshot") or {})
-    if snapshot:
-        return snapshot
+    if "playback_snapshot" in state:
+        raw_snapshot = state.get("playback_snapshot")
+        if isinstance(raw_snapshot, dict):
+            return dict(raw_snapshot)
+        return {}
     playback = get_shared_playback_context()
     if playback is None:
         return {}
