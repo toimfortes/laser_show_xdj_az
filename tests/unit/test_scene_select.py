@@ -4,11 +4,6 @@ from pathlib import Path
 from photonic_synesthesia.core.config import SceneConfig
 from photonic_synesthesia.core.state import MusicStructure, create_initial_state
 from photonic_synesthesia.graph.nodes.scene_select import SceneSelectNode
-from photonic_synesthesia.platform.runtime_context import (
-    PlaybackContext,
-    clear_shared_playback_context,
-    set_shared_playback_context,
-)
 
 
 def _write_scene(path: Path, scene_id: str) -> None:
@@ -191,10 +186,12 @@ def test_scene_select_falls_back_safely_when_active_section_scene_id_is_invalid(
 
 def test_scene_select_active_section_scene_id_respects_transition_gate(tmp_path: Path) -> None:
     _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "idle_calm")
     _write_scene(tmp_path, "drop_intense")
 
     state = create_initial_state()
     state["scene_state"]["current_scene"] = "idle"
+    state["audio_features"]["rms_energy"] = 0.0
     state["playback_snapshot"] = {
         "playhead_seconds": 5.0,
         "show_sections": [
@@ -214,50 +211,6 @@ def test_scene_select_active_section_scene_id_respects_transition_gate(tmp_path:
 
     assert result["scene_state"]["current_scene"] == "idle"
     assert result["scene_state"]["pending_scene"] is None
-
-
-def test_scene_select_ignores_ambient_shared_playback_for_section_scene_id(tmp_path: Path) -> None:
-    _write_scene(tmp_path, "idle")
-    _write_scene(tmp_path, "drop_intense")
-    _write_scene(tmp_path, "intro_ambient")
-
-    state = create_initial_state()
-    state.pop("playback_snapshot", None)
-    state["scene_state"]["current_scene"] = "idle"
-    state["director_state"]["target_scene"] = "intro_ambient"
-    state["director_state"]["allow_scene_transition"] = True
-
-    playback = set_shared_playback_context(
-        PlaybackContext(
-            file_path="/tmp/track.mp3",
-            file_name="track.mp3",
-            duration_seconds=120.0,
-            show_sections=[
-                {
-                    "id": "shared-sec-1",
-                    "start_seconds": 0.0,
-                    "end_seconds": 10.0,
-                    "scene_id": "drop_intense",
-                }
-            ],
-        )
-    )
-    playback.update_transport(
-        playhead_seconds=5.0,
-        playing=True,
-        finished=False,
-        realtime=True,
-        speed=1.0,
-    )
-
-    try:
-        node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
-        result = node(state)
-    finally:
-        clear_shared_playback_context()
-
-    assert result["scene_state"]["pending_scene"] == "intro_ambient"
-    assert result["scene_state"]["current_scene"] == "idle"
 
 
 def test_scene_select_short_section_scene_id_only_retargets_pending_scene(tmp_path: Path) -> None:

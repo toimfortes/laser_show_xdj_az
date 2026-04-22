@@ -101,7 +101,7 @@ class SceneSelectNode:
         # =================================================================
         # Priority 2: Authored active-section scene override
         # =================================================================
-        if pending_scene is None and "playback_snapshot" in state:
+        if pending_scene is None:
             dynamics = resolve_active_section_dynamics(state)
             section_scene_id = dynamics.get("scene_id")
             allow_transition = bool(
@@ -168,7 +168,7 @@ class SceneSelectNode:
         # Priority 5: Energy-based adjustment
         # =================================================================
         energy = state["audio_features"]["rms_energy"]
-        if pending_scene and pending_scene in self.scenes:
+        if pending_scene and pending_scene != current_scene and pending_scene in self.scenes:
             scene_data = self.scenes[pending_scene]
             # Check energy thresholds
             min_energy = scene_data.get("triggers", {}).get("energy_threshold", 0)
