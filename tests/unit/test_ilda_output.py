@@ -33,6 +33,27 @@ def _ilda_state_with_frames(frames: list[ILDAFrame]):
     return state
 
 
+def _ilda_state_with_section(
+    *,
+    show_sections: list[dict[str, object]],
+    playhead_seconds: float,
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.05,
+    bar_position: int = 2,
+    bpm: float = 128.0,
+) -> dict[str, object]:
+    state = _armed_state()
+    state["current_structure"] = structure
+    state["fused_bpm"] = bpm
+    state["beat_info"]["beat_phase"] = beat_phase
+    state["beat_info"]["bar_position"] = bar_position
+    state["playback_snapshot"] = {
+        "playhead_seconds": playhead_seconds,
+        "show_sections": show_sections,
+    }
+    return state
+
+
 def _synthetic_ilda_frame(
     fixture_id: str = "laser-main",
     point_count: int = 24,
@@ -184,6 +205,80 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
 
     frame = result["ilda_frames"][0]
     assert frame["geometry_family"] == "helix"
+    assert frame["color_mode"] == "dual_cycle"
+    assert frame["target_bias"] == "ceiling"
+
+
+def test_ilda_output_uses_section_laser_pattern_geometry_override() -> None:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    node = ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+    state = _ilda_state_with_section(
+        show_sections=[
+            {
+                "id": "section_000",
+                "start_seconds": 0.0,
+                "end_seconds": 64.0,
+                "laser_enabled": True,
+                "laser_pattern": "wave",
+                "laser_program": {
+                    "phrase_role": "drop_variation",
+                    "zone_policy": "overhead_only",
+                    "fill_trigger_every_bars": 4,
+                    "launch": {
+                        "pattern": "sheet",
+                        "geometry_family": "sheet",
+                        "color_mode": "dual_cycle",
+                        "target_bias": "crowd",
+                        "bars": 4,
+                    },
+                    "sustain": [
+                        {
+                            "pattern": "sequence",
+                            "geometry_family": "sequence",
+                            "color_mode": "morph",
+                            "target_bias": "crowd",
+                            "bars": 2,
+                        },
+                        {
+                            "pattern": "helix",
+                            "geometry_family": "helix",
+                            "color_mode": "dual_cycle",
+                            "target_bias": "mid_air",
+                            "bars": 6,
+                        },
+                    ],
+                    "fills": [],
+                    "release": {
+                        "pattern": "circle_trace",
+                        "geometry_family": "trace",
+                        "color_mode": "morph",
+                        "target_bias": "mid_air",
+                        "bars": 2,
+                    },
+                },
+            }
+        ],
+        playhead_seconds=40.0,
+        structure=MusicStructure.DROP,
+        beat_phase=0.05,
+        bar_position=2,
+    )
+
+    frame = node(state)["ilda_frames"][0]
+
+    assert frame["geometry_family"] == "scan"
     assert frame["color_mode"] == "dual_cycle"
     assert frame["target_bias"] == "ceiling"
 

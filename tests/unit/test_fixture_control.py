@@ -101,6 +101,35 @@ def _moving_head_state_with_snapshot(
     return state
 
 
+def _laser_state_with_section(
+    *,
+    section_overrides: dict[str, object],
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.125,
+    bpm: float = 128.0,
+    energy: float = 0.75,
+    timestamp: float = 1.0,
+) -> PhotonicState:
+    state = create_initial_state()
+    state["timestamp"] = timestamp
+    state["current_structure"] = structure
+    state["beat_info"]["beat_phase"] = beat_phase
+    state["fused_bpm"] = bpm
+    state["audio_features"]["rms_energy"] = energy
+    state["playback_snapshot"] = {
+        "playhead_seconds": 1.0,
+        "show_sections": [
+            {
+                "id": "section_000",
+                "start_seconds": 0.0,
+                "end_seconds": 8.0,
+                **section_overrides,
+            }
+        ],
+    }
+    return state
+
+
 def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
     node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
     playback = set_shared_playback_context(
@@ -365,6 +394,66 @@ def test_motion_intensity_and_strobe_from_section_dynamics() -> None:
     assert boosted[1 + node.channel_map["dimmer"]] > reduced[1 + node.channel_map["dimmer"]]
     assert reduced[1 + node.channel_map["strobe"]] == 0
     assert boosted[1 + node.channel_map["strobe"]] > 0
+
+
+def test_laser_pattern_override_sets_dmx_pattern_channel() -> None:
+    node = LaserControlNode(
+        [_laser_fixture()],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+
+    result = node(
+        _laser_state_with_section(
+            section_overrides={
+                "laser_enabled": True,
+                "laser_pattern": "fan_burst",
+            },
+            structure=MusicStructure.BREAKDOWN,
+            timestamp=2.0,
+        )
+    )
+
+    profile = node.fixture_profiles["laser-main"]
+    pattern_channel = 1 + profile.channel_map["pattern"]
+    command = result["fixture_commands"][0]["channel_values"]
+
+    assert command[pattern_channel] == 96
+
+
+def test_mover_pattern_override_forces_motion_family_and_gobo() -> None:
+    node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
+
+    baseline_command = node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "strobe_level": 1.0,
+            },
+            structure=MusicStructure.DROP,
+            beat_phase=0.05,
+            timestamp=1.37,
+        )
+    )["fixture_commands"][0]["channel_values"]
+    override_command = node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "mover_pattern": "hold",
+                "strobe_level": 1.0,
+            },
+            structure=MusicStructure.DROP,
+            beat_phase=0.05,
+            timestamp=1.37,
+        )
+    )["fixture_commands"][0]["channel_values"]
+
+    assert baseline_command[1 + node.channel_map["pan_tilt_speed"]] == 218
+    assert baseline_command[1 + node.channel_map["strobe"]] == 208
+    assert baseline_command[1 + node.channel_map["gobo"]] == 0
+    assert override_command[1 + node.channel_map["pan_tilt_speed"]] == 96
+    assert override_command[1 + node.channel_map["strobe"]] == 0
+    assert override_command[1 + node.channel_map["gobo"]] == 64
 
 
 def test_panel_family_for_enable_gate_clears_panel_dmx_output() -> None:

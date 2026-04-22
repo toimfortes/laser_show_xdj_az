@@ -20,7 +20,11 @@ from photonic_synesthesia.core.config import (
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, PhotonicState
 from photonic_synesthesia.director.palettes import Palette, render_rgb, resolve_palette
-from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
+from photonic_synesthesia.graph.nodes.section_dynamics import (
+    resolve_active_section_dynamics,
+    resolve_laser_pattern_override,
+    resolve_mover_pattern_family,
+)
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 
@@ -90,6 +94,7 @@ class LaserControlNode:
                 energy,
                 low_energy,
                 state["timestamp"],
+                laser_pattern=dynamics["laser_pattern"],
                 motion_multiplier=dynamics["motion_multiplier"],
             )
 
@@ -109,6 +114,7 @@ class LaserControlNode:
         low_energy: float,
         current_time: float,
         *,
+        laser_pattern: str,
         motion_multiplier: float,
     ) -> FixtureCommand:
         """Generate DMX values for a single laser fixture."""
@@ -126,7 +132,10 @@ class LaserControlNode:
         # =================================================================
         # Pattern selection based on structure
         # =================================================================
-        if structure == MusicStructure.DROP:
+        override_slot, _ = resolve_laser_pattern_override(laser_pattern)
+        if override_slot is not None:
+            pattern = override_slot
+        elif structure == MusicStructure.DROP:
             pattern = int((current_time * 2) % 32)  # Fast pattern switching
         elif structure == MusicStructure.BUILDUP:
             pattern = 10  # Tunnel/cone pattern
@@ -319,6 +328,7 @@ class MovingHeadControlNode:
                 program_look=program_look,
                 palette=palette,
                 color_drive=color_drive,
+                mover_pattern=dynamics["mover_pattern"],
                 intensity_multiplier=dynamics["intensity_multiplier"],
                 motion_multiplier=dynamics["motion_multiplier"],
                 strobe_level=dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0,
@@ -344,6 +354,7 @@ class MovingHeadControlNode:
         program_look: dict[str, Any] | None = None,
         palette: Palette,
         color_drive: float,
+        mover_pattern: str,
         intensity_multiplier: float,
         motion_multiplier: float,
         strobe_level: float,
@@ -361,7 +372,8 @@ class MovingHeadControlNode:
         intensity_gain = max(0.0, min(1.5, intensity_multiplier))
         strobe_gain = max(0.0, min(1.0, strobe_level))
         emphasis = max(0.0, min(1.0, float(program_look.get("emphasis", 0.5)))) if isinstance(program_look, dict) else 0.5
-        mover_family = self._mover_family_for_program(structure, program_look)
+        pattern_family = resolve_mover_pattern_family(mover_pattern)
+        mover_family = pattern_family or self._mover_family_for_program(structure, program_look)
 
         # =================================================================
         # Pan/Tilt - laser-synchronized motion families

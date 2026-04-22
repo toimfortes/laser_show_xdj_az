@@ -19,7 +19,10 @@ from photonic_synesthesia.director.palettes import (
     render_rgb,
     resolve_palette,
 )
-from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
+from photonic_synesthesia.graph.nodes.section_dynamics import (
+    resolve_active_section_dynamics,
+    resolve_laser_pattern_override,
+)
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.laser.ether_dream import EtherDreamClient
 from photonic_synesthesia.laser.ilda_file import encode_ild
@@ -237,8 +240,9 @@ class ILDAOutputNode:
         director = state["director_state"]
         current_section = dynamics.get("current_section")
         program_look = self._current_program_look(current_section, state)
+        _, geometry_override = resolve_laser_pattern_override(dynamics.get("laser_pattern", ""))
 
-        geometry_family = (
+        geometry_family = geometry_override or (
             str(program_look.get("geometry_family"))
             if program_look is not None and program_look.get("geometry_family")
             else self._geometry_family(structure, director["laser_aggression"])
