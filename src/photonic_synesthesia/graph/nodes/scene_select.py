@@ -101,11 +101,22 @@ class SceneSelectNode:
         # =================================================================
         # Priority 2: Authored active-section scene override
         # =================================================================
-        if pending_scene is None:
+        if pending_scene is None and "playback_snapshot" in state:
             dynamics = resolve_active_section_dynamics(state)
             section_scene_id = dynamics.get("scene_id")
+            allow_transition = bool(
+                state.get("director_state", {}).get("allow_scene_transition", True)
+            )
             if section_scene_id and self._is_valid_scene_name(section_scene_id):
-                pending_scene = section_scene_id
+                if allow_transition or section_scene_id == current_scene:
+                    pending_scene = section_scene_id
+                else:
+                    logger.debug(
+                        "Active section scene transition gated off",
+                        scene_id=section_scene_id,
+                        current_scene=current_scene,
+                        section_id=dynamics.get("section_id"),
+                    )
             elif section_scene_id:
                 logger.debug(
                     "Active section scene not found in catalog",
