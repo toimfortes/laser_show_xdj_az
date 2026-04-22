@@ -2,7 +2,9 @@
 
 import asyncio
 import copy
+from dataclasses import asdict, is_dataclass
 import functools
+import json
 import math
 import os
 import random
@@ -21,20 +23,32 @@ from pydantic import BaseModel
 
 from photonic_synesthesia import __version__
 from photonic_synesthesia.core.logging import get_logger
+from photonic_synesthesia.integrations.show_catalog import list_show_catalog_paths
 from photonic_synesthesia.platform import (
+    BindingStatus,
     CommandType,
     ControlPlaneStateService,
     LeaseAcquireRequest,
+    LiveDeckIngestService,
     OperatorCommand,
     OperatorRole,
     PlatformEventType,
+    LiveDeckFact,
     PlaybackContext,
     get_shared_control_plane_service,
     get_shared_playback_context,
 )
+from photonic_synesthesia.platform.live_deck_binding import (
+    LiveDeckAutoBindEngine,
+    evaluate_and_apply_live_binding,
+)
 from photonic_synesthesia.platform import rig_storage
 
 logger = get_logger(__name__)
+
+_LIVE_BINDING_CATALOG_CACHE_LOCK = threading.Lock()
+_LIVE_BINDING_CATALOG_CACHE_KEY: tuple[object, ...] | None = None
+_LIVE_BINDING_CATALOG_CACHE_ROWS: list[dict[str, object]] = []
 
 # Cycle-3-rev-2 R6 (Codex + Gemini): fields that MUST NOT be logged
 # verbatim. `session_id` is the credential `require_control()` checks
@@ -154,6 +168,228 @@ def log_endpoint(op: str):
             return result
         return wrapper
     return decorator
+
+
+def _dump_model(value: Any) -> Any:
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    return value
+
+
+def _binding_status_payload(app: Any) -> dict[str, Any]:
+    binding_status = _dump_model(getattr(app.state, "live_binding_status", None))
+    return binding_status if isinstance(binding_status, dict) else {}
+
+
+def _live_deck_test_mode_enabled(app: Any) -> bool:
+    ingest = getattr(app.state, "live_deck_ingest", None)
+    if ingest is not None:
+        if hasattr(ingest, "_test_mode_enabled"):
+            return bool(getattr(ingest, "_test_mode_enabled"))
+        service = getattr(ingest, "service", None)
+        if service is not None and hasattr(service, "_test_mode_enabled"):
+            return bool(getattr(service, "_test_mode_enabled"))
+    return bool(getattr(app.state, "live_deck_test_mode_enabled", False))
+
+
+def _coerce_live_decks(raw_decks: list[Any]) -> list[LiveDeckFact]:
+    decks: list[LiveDeckFact] = []
+
+    def invalid(message: str) -> ValueError:
+        return ValueError(f"Invalid deck payload: {message}")
+
+    def require_int(raw_deck: dict[str, Any], name: str) -> int:
+        value = raw_deck.get(name)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise invalid(f"{name} must be an integer")
+        return value
+
+    def require_bool(raw_deck: dict[str, Any], name: str) -> bool:
+        value = raw_deck.get(name)
+        if not isinstance(value, bool):
+            raise invalid(f"{name} must be a boolean")
+        return value
+
+    def require_finite_number(raw_deck: dict[str, Any], name: str) -> float:
+        value = raw_deck.get(name)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            raise invalid(f"{name} must be a number")
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise invalid(f"{name} must be finite")
+        return parsed
+
+    def optional_finite_number(raw_deck: dict[str, Any], name: str) -> float | None:
+        if name not in raw_deck or raw_deck[name] is None:
+            return None
+        return require_finite_number(raw_deck, name)
+
+    def optional_bool(raw_deck: dict[str, Any], name: str) -> bool | None:
+        if name not in raw_deck or raw_deck[name] is None:
+            return None
+        return require_bool(raw_deck, name)
+
+    def optional_str(raw_deck: dict[str, Any], name: str) -> str | None:
+        if name not in raw_deck or raw_deck[name] is None:
+            return None
+        value = raw_deck[name]
+        if not isinstance(value, str):
+            raise invalid(f"{name} must be a string")
+        return value
+
+    for raw_deck in raw_decks:
+        if not isinstance(raw_deck, dict):
+            raise invalid("each deck must be an object")
+        decks.append(
+            LiveDeckFact(
+                player_number=require_int(raw_deck, "player_number"),
+                master=require_bool(raw_deck, "master"),
+                on_air=require_bool(raw_deck, "on_air"),
+                updated_at=require_finite_number(raw_deck, "updated_at"),
+                playhead_seconds=optional_finite_number(raw_deck, "playhead_seconds"),
+                speed=optional_finite_number(raw_deck, "speed"),
+                playing=optional_bool(raw_deck, "playing"),
+                track_title=optional_str(raw_deck, "track_title"),
+                track_artist=optional_str(raw_deck, "track_artist"),
+                duration_seconds=optional_finite_number(raw_deck, "duration_seconds"),
+                bpm=optional_finite_number(raw_deck, "bpm"),
+                track_id=optional_str(raw_deck, "track_id"),
+                source_type=optional_str(raw_deck, "source_type"),
+            )
+        )
+    return decks
+
+
+def _apply_live_deck_test_mode(app: Any, enabled: bool, decks: list[Any] | None = None) -> None:
+    deck_list = _coerce_live_decks(decks) if decks is not None else None
+    ingest = getattr(app.state, "live_deck_ingest", None)
+    if ingest is not None:
+        if deck_list is not None and hasattr(ingest, "publish_test_snapshot"):
+            ingest.publish_test_snapshot(deck_list)
+        if hasattr(ingest, "set_test_mode_enabled"):
+            ingest.set_test_mode_enabled(enabled)
+        elif hasattr(ingest, "set_enabled"):
+            ingest.set_enabled(enabled)
+    app.state.live_deck_test_mode_enabled = bool(enabled)
+
+
+def _coerce_live_binding_candidate(raw_candidate: object) -> dict[str, object] | None:
+    if not isinstance(raw_candidate, dict):
+        return None
+    track_key = str(raw_candidate.get("track_key") or "").strip()
+    track_title = str(raw_candidate.get("track_title") or raw_candidate.get("title") or "").strip()
+    track_artist = str(raw_candidate.get("track_artist") or raw_candidate.get("artist") or "").strip()
+    raw_duration = raw_candidate.get("duration_seconds")
+    try:
+        duration_seconds = float(raw_duration)
+    except (TypeError, ValueError):
+        return None
+    if not track_key or not track_title or not track_artist or not math.isfinite(duration_seconds):
+        return None
+    return {
+        "track_key": track_key,
+        "track_title": track_title,
+        "track_artist": track_artist,
+        "duration_seconds": duration_seconds,
+    }
+
+
+def _catalog_live_binding_candidates() -> list[dict[str, object]]:
+    global _LIVE_BINDING_CATALOG_CACHE_KEY, _LIVE_BINDING_CATALOG_CACHE_ROWS
+    paths = list_show_catalog_paths()
+    cache_key_parts: list[object] = [os.environ.get("XDG_DATA_HOME", "")]
+    for path in paths:
+        try:
+            stat_result = path.stat()
+        except OSError:
+            cache_key_parts.append((str(path), None, None))
+            continue
+        cache_key_parts.append((str(path), stat_result.st_mtime_ns, stat_result.st_size))
+    cache_key = tuple(cache_key_parts)
+
+    with _LIVE_BINDING_CATALOG_CACHE_LOCK:
+        if cache_key == _LIVE_BINDING_CATALOG_CACHE_KEY:
+            return copy.deepcopy(_LIVE_BINDING_CATALOG_CACHE_ROWS)
+
+    candidates: list[dict[str, object]] = []
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        candidate = _coerce_live_binding_candidate(payload)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    with _LIVE_BINDING_CATALOG_CACHE_LOCK:
+        _LIVE_BINDING_CATALOG_CACHE_KEY = cache_key
+        _LIVE_BINDING_CATALOG_CACHE_ROWS = copy.deepcopy(candidates)
+        return copy.deepcopy(_LIVE_BINDING_CATALOG_CACHE_ROWS)
+
+
+def _default_live_binding_candidates() -> list[dict[str, object]]:
+    deduped: dict[str, dict[str, object]] = {
+        str(candidate["track_key"]): candidate for candidate in _catalog_live_binding_candidates()
+    }
+    playback_context = get_shared_playback_context()
+    if playback_context is None:
+        return list(deduped.values())
+    snapshot = playback_context.snapshot()
+    snapshot_candidate = _coerce_live_binding_candidate(snapshot)
+    if snapshot_candidate is not None:
+        deduped[str(snapshot_candidate["track_key"])] = snapshot_candidate
+    return list(deduped.values())
+
+
+def _evaluate_live_binding_request(
+    app: Any,
+    playback_context: PlaybackContext | None,
+    now: float,
+) -> BindingStatus:
+    live_binding_lock = getattr(app.state, "live_binding_lock", None)
+    if live_binding_lock is None:
+        live_binding_lock = threading.Lock()
+        app.state.live_binding_lock = live_binding_lock
+    with live_binding_lock:
+        if playback_context is None:
+            app.state.live_binding_status = BindingStatus(
+                state="unbound",
+                reason="no playback session is active",
+                authority_player=None,
+            )
+            return app.state.live_binding_status
+
+        ingest = getattr(app.state, "live_deck_ingest", None)
+        engine = getattr(app.state, "live_binding_engine", None)
+        previous_status = getattr(app.state, "live_binding_status", None)
+        if ingest is None or engine is None:
+            app.state.live_binding_status = BindingStatus(
+                state="unbound",
+                reason="live deck ingest source unavailable",
+                authority_player=None,
+            )
+            return app.state.live_binding_status
+
+        track_candidates = getattr(app.state, "live_binding_candidates", [])
+        if callable(track_candidates):
+            track_candidates = track_candidates()
+        if not isinstance(track_candidates, list):
+            track_candidates = []
+        app.state.live_binding_status = evaluate_and_apply_live_binding(
+            playback_context=playback_context,
+            ingest_service=ingest,
+            now=now,
+            candidates=track_candidates,
+            engine=engine,
+            previous_status=previous_status if isinstance(previous_status, BindingStatus) else None,
+        )
+        return app.state.live_binding_status
 
 MOCK_FIXTURE_TEMPLATES: list[dict[str, Any]] = [
     {
@@ -1075,6 +1311,10 @@ def create_app(
         cue_recipe: dict[str, Any]
         laser_program: dict[str, Any]
 
+    class LiveDeckBindingTestModeRequest(BaseModel):
+        enabled: bool
+        decks: list[dict[str, Any]] | None = None
+
     app = FastAPI(
         title="Photonic Synesthesia Control Plane",
         version=__version__,
@@ -1086,6 +1326,16 @@ def create_app(
 
     services = services or get_shared_control_plane_service(create=True) or ControlPlaneStateService()
     app.state.services = services
+    app.state.live_deck_ingest = LiveDeckIngestService()
+    app.state.live_binding_status = BindingStatus(
+        state="unbound",
+        reason="live deck binding inactive",
+        authority_player=None,
+    )
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    app.state.live_binding_candidates = _default_live_binding_candidates
+    app.state.live_deck_test_mode_enabled = False
+    app.state.live_binding_lock = threading.Lock()
     # Cycle-1 panel C1 + Phase A startup wiring: hydrate MockRigStore from
     # the active rig if one exists. `get_active_rig_name()` auto-clears a
     # stale pointer so we never crash on a missing target. Any load
@@ -1159,6 +1409,35 @@ def create_app(
             "Live snapshot requested",
         )
         return services.snapshot().model_dump(mode="json")
+
+    @app.get("/api/live/binding")
+    @log_endpoint("GET:/api/live/binding")
+    async def live_binding() -> dict[str, Any]:
+        playback_context = get_shared_playback_context()
+        app.state.live_binding_status = await _run_playback_context_call(
+            _evaluate_live_binding_request,
+            app,
+            playback_context,
+            time.time(),
+        )
+        return {
+            "binding_status": _binding_status_payload(app),
+            "test_mode_enabled": _live_deck_test_mode_enabled(app),
+        }
+
+    @app.post("/api/live/binding/test-mode")
+    @log_endpoint("POST:/api/live/binding/test-mode")
+    async def live_binding_test_mode(
+        request: LiveDeckBindingTestModeRequest,
+    ) -> dict[str, Any]:
+        try:
+            _apply_live_deck_test_mode(app, request.enabled, request.decks)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "binding_status": _binding_status_payload(app),
+            "test_mode_enabled": _live_deck_test_mode_enabled(app),
+        }
 
     @app.get("/api/live/safety")
     @log_endpoint("GET:/api/live/safety")

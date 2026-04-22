@@ -78,13 +78,14 @@ class DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
     must not pin interpreter exit forever once the caller has already
     accepted that the work cannot be recovered in-process.
 
-    Implementation note: CPython's `_worker` function signature
-    changed in 3.13 (added a `ctx` parameter). We dispatch on
-    `sys.version_info` so the same source works on 3.12 and 3.13+
-    without depending on private internals that may not exist on the
-    running interpreter. Caught by the regen-executor exit-hang test:
-    on 3.12 the 3.13-only `_create_worker_context()` call raised
-    AttributeError when the pool tried to spawn its first worker.
+    Implementation note: CPython keeps changing the private worker
+    bootstrap shape across minor versions. 3.12 uses
+    `_worker(executor_ref, work_queue, initializer, initargs)`;
+    early 3.13 builds added a separate `ctx` parameter; 3.14 folds the
+    initializer into the context and no longer stores `_initializer` /
+    `_initargs` on the executor instance. Branch on the runtime's
+    actual private attributes instead of a fixed version tuple so the
+    daemonized override matches the stdlib executor layout in use.
     """
 
     def _adjust_thread_count(self) -> None:
@@ -100,15 +101,23 @@ class DaemonThreadPoolExecutor(concurrent.futures.ThreadPoolExecutor):
 
         thread_name = "%s_%d" % (self._thread_name_prefix or self, num_threads)
 
-        if sys.version_info >= (3, 13):
-            # 3.13+ adds an opaque worker-context object as the second
-            # positional arg to `_worker`.
+        if hasattr(self, "_create_worker_context") and hasattr(self, "_initializer"):
+            # 3.13 transitional layout: context object plus explicit
+            # initializer/initargs still live on the executor instance.
             worker_args = (
                 weakref.ref(self, weakref_cb),
                 self._create_worker_context(),
                 self._work_queue,
                 self._initializer,
                 self._initargs,
+            )
+        elif hasattr(self, "_create_worker_context"):
+            # 3.14+: initializer/initargs are folded into the worker
+            # context returned by `_create_worker_context()`.
+            worker_args = (
+                weakref.ref(self, weakref_cb),
+                self._create_worker_context(),
+                self._work_queue,
             )
         else:
             # 3.12 signature: (executor_ref, work_queue, initializer, initargs).

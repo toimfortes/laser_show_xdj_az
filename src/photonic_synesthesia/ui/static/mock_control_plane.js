@@ -10,6 +10,7 @@ const appState = {
   runtimeSnapshot: null,
   universeSnapshot: null,
   playback: null,
+  liveBinding: null,
   wsStatus: "connecting",
   dragFixtureId: null,
   // Cycle-1 panel rig-storage Phase A — UI state for saved rigs.
@@ -541,6 +542,20 @@ async function loadRuntimeSnapshot() {
   }
 }
 
+async function loadLiveBindingState() {
+  try {
+    appState.liveBinding = await api("/api/live/binding");
+  } catch {
+    appState.liveBinding = {
+      binding_status: {
+        state: "unavailable",
+        reason: "binding endpoint unavailable",
+      },
+      test_mode_enabled: false,
+    };
+  }
+}
+
 function playbackRenderKey(playback) {
   if (!playback || !playback.available) {
     return "none";
@@ -554,6 +569,20 @@ function playbackRenderKey(playback) {
     Number(playback.selection_variance || 0).toFixed(3),
     Number(playback.metadata_bound_at || 0).toFixed(3),
     String((playback.show_sections || []).length),
+  ].join("|");
+}
+
+function liveBindingRenderKey(binding) {
+  if (!binding) {
+    return "none";
+  }
+  const bindingStatus = binding.binding_status || {};
+  return [
+    bindingStatus.state || "unbound",
+    bindingStatus.reason || "",
+    bindingStatus.authority_player ?? "",
+    bindingStatus.resolved_track_key || "",
+    binding.test_mode_enabled ? "test" : "live",
   ].join("|");
 }
 
@@ -600,13 +629,18 @@ async function loadPlaybackState() {
 
 async function refreshPlaybackState() {
   const previousKey = playbackRenderKey(appState.playback);
+  const previousBindingKey = liveBindingRenderKey(appState.liveBinding);
   const playback = await api("/api/mock/playback");
-  if (!applyPlaybackState(playback)) {
-    return;
-  }
+  await loadLiveBindingState();
+  const bindingKey = liveBindingRenderKey(appState.liveBinding);
+  const playbackApplied = applyPlaybackState(playback);
   const nextKey = playbackRenderKey(playback);
 
-  if (previousKey !== nextKey) {
+  if (!playbackApplied && previousBindingKey === bindingKey) {
+    return;
+  }
+
+  if (previousKey !== nextKey || previousBindingKey !== bindingKey) {
     renderPlayback();
     return;
   }
@@ -714,9 +748,36 @@ function renderPlayback() {
   }
 
   const playback = appState.playback;
+  const liveBinding = appState.liveBinding || {};
+  const bindingStatus = liveBinding.binding_status || {};
+  const testModeEnabled = Boolean(liveBinding.test_mode_enabled);
+  const bindingState = safeText(bindingStatus.state, "unbound").toUpperCase();
+  const modeLabel = bindingState === "UNAVAILABLE"
+    ? "STATUS UNAVAILABLE"
+    : (testModeEnabled ? "TEST MODE" : "LIVE MODE");
+  const bindingReason = safeText(bindingStatus.reason, "");
+  const bindingPlayer = bindingStatus.authority_player === null || bindingStatus.authority_player === undefined
+    ? ""
+    : ` · player ${escapeHtml(bindingStatus.authority_player)}`;
+  const bindingTrack = bindingStatus.resolved_track_key ? ` · ${escapeHtml(bindingStatus.resolved_track_key)}` : "";
+  const bindingDetail = bindingReason ? ` · ${escapeHtml(bindingReason)}` : "";
+  const bindingBanner = `
+    <div
+      class="playback-binding-banner"
+      data-mode="${modeLabel}"
+      data-state="${escapeHtml(bindingState)}"
+      style="margin-bottom:12px;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:${testModeEnabled ? "rgba(255, 184, 77, 0.16)" : "rgba(72, 196, 112, 0.16)"};"
+    >
+      <strong>${modeLabel}</strong>
+      <span> · ${escapeHtml(bindingState)}${bindingPlayer}${bindingDetail}${bindingTrack}</span>
+    </div>
+  `;
   if (!playback || !playback.available) {
     elements.playbackPanel.className = "playback-panel empty";
-    elements.playbackPanel.textContent = "Start a file-backed session with web mode to expose the current track here.";
+    elements.playbackPanel.innerHTML = `
+      ${bindingBanner}
+      <div>Start a file-backed session with web mode to expose the current track here.</div>
+    `;
     return;
   }
 
@@ -761,6 +822,7 @@ function renderPlayback() {
     }
   }
   elements.playbackPanel.innerHTML = `
+    ${bindingBanner}
     <div class="playback-meta">
       <div>
         <strong>${playback.track_title || playback.file_name}</strong>
@@ -4158,6 +4220,7 @@ async function boot() {
   await loadMockState();
   await loadRuntimeSnapshot();
   await refreshUniverseSnapshot();
+  await loadLiveBindingState();
   await loadPlaybackState();
   await loadFixtureProfiles();
   await refreshRigs();

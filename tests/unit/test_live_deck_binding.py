@@ -288,7 +288,7 @@ def test_resolve_track_identity_reports_unbound_when_no_exact_candidate_matches(
                 "track_key": "ARTBAT / Pete Tong|Age of Love",
                 "track_title": "Age of Love",
                 "track_artist": "ARTBAT / Pete Tong",
-                "duration_seconds": 445.5,
+                "duration_seconds": 447.0,
             },
             {
                 "track_key": "Another Artist|Age of Love",
@@ -301,6 +301,25 @@ def test_resolve_track_identity_reports_unbound_when_no_exact_candidate_matches(
 
     assert payload["state"] == "unbound"
     assert payload["resolved_track_key"] == ""
+
+
+def test_resolve_track_identity_accepts_small_duration_rounding_delta() -> None:
+    payload = resolve_track_identity(
+        title="Another Track",
+        artist="Yotto",
+        duration_seconds=390.499,
+        candidates=[
+            {
+                "track_key": "Yotto|Another Track",
+                "track_title": "Another Track",
+                "track_artist": "Yotto",
+                "duration_seconds": 390.5,
+            }
+        ],
+    )
+
+    assert payload["state"] == "bound"
+    assert payload["resolved_track_key"] == "Yotto|Another Track"
 
 
 def test_resolve_track_identity_does_not_bind_without_usable_track_key() -> None:
@@ -333,6 +352,44 @@ def test_resolve_track_identity_ignores_malformed_duration_rows() -> None:
                 "track_title": "Age of Love",
                 "track_artist": "ARTBAT / Pete Tong",
                 "duration_seconds": "not-a-number",
+            }
+        ],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
+def test_resolve_track_identity_ignores_blank_duration_rows() -> None:
+    payload = resolve_track_identity(
+        title="Unknown Intro",
+        artist="Test Artist",
+        duration_seconds=0.0,
+        candidates=[
+            {
+                "track_key": "Test Artist|Unknown Intro",
+                "track_title": "Unknown Intro",
+                "track_artist": "Test Artist",
+                "duration_seconds": "",
+            }
+        ],
+    )
+
+    assert payload["state"] == "unbound"
+    assert payload["resolved_track_key"] == ""
+
+
+def test_resolve_track_identity_ignores_non_finite_duration_rows() -> None:
+    payload = resolve_track_identity(
+        title="Unknown Intro",
+        artist="Test Artist",
+        duration_seconds=float("inf"),
+        candidates=[
+            {
+                "track_key": "Test Artist|Unknown Intro",
+                "track_title": "Unknown Intro",
+                "track_artist": "Test Artist",
+                "duration_seconds": "inf",
             }
         ],
     )
@@ -381,6 +438,44 @@ def test_playback_context_apply_live_binding_non_bound_payload_is_no_op() -> Non
     assert snapshot == before
     assert ctx.transport_revision == before_revision
     assert ctx.metadata_bound_at == before_metadata_bound_at
+
+
+def test_playback_context_apply_live_binding_can_explicitly_clear_live_bound_state() -> None:
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Live Track",
+        duration_seconds=445.4,
+        track_title="Age of Love",
+        track_artist="ARTBAT / Pete Tong",
+        track_key="ARTBAT / Pete Tong|Age of Love",
+        metadata_source="pro_dj_link",
+    )
+    ctx.update_transport(
+        playhead_seconds=183.2,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    snapshot = ctx.apply_live_binding(
+        {
+            "state": "unbound",
+            "clear_live_binding": True,
+            "track_title": "Another Track",
+            "track_artist": "Yotto",
+            "duration_seconds": 390.5,
+            "metadata_source": "pro_dj_link",
+        }
+    )
+
+    assert snapshot["track_key"] == ""
+    assert snapshot["track_title"] == "Another Track"
+    assert snapshot["track_artist"] == "Yotto"
+    assert snapshot["playing"] is False
+    assert snapshot["realtime"] is False
+    assert snapshot["finished"] is False
+    assert snapshot["playhead_seconds"] == 0.0
 
 
 def test_playback_context_apply_live_binding_updates_track_key_and_bumps_transport_revision() -> None:

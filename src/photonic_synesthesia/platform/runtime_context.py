@@ -7,6 +7,7 @@ import concurrent.futures
 import copy
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -483,8 +484,36 @@ class PlaybackContext:
 
     def apply_live_binding(self, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            if str(payload.get("state") or "") != "bound":
-                return copy.deepcopy(self._snapshot_internal_locked())
+            binding_state = str(payload.get("state") or "")
+            if binding_state != "bound":
+                if not bool(payload.get("clear_live_binding")):
+                    return copy.deepcopy(self._snapshot_internal_locked())
+                self.track_key = ""
+                if isinstance(payload.get("track_title"), str) and str(payload["track_title"]).strip():
+                    self.track_title = str(payload["track_title"]).strip()
+                if isinstance(payload.get("track_artist"), str) and str(payload["track_artist"]).strip():
+                    self.track_artist = str(payload["track_artist"]).strip()
+                self.metadata_source = _normalize_metadata_source(
+                    payload.get("metadata_source", self.metadata_source)
+                )
+                try:
+                    raw_duration = payload.get("duration_seconds")
+                    if raw_duration is not None:
+                        parsed_duration = float(raw_duration)
+                        if math.isfinite(parsed_duration):
+                            self.duration_seconds = max(0.0, parsed_duration)
+                except (TypeError, ValueError):
+                    pass
+                self.playhead_seconds = 0.0
+                self.playing = False
+                self.finished = False
+                self.realtime = False
+                self.speed = 1.0
+                self.metadata_bound_at = time.time()
+                self.server_time = self.metadata_bound_at
+                self.transport_revision += 1
+                aliased = self._snapshot_internal_locked()
+                return copy.deepcopy(aliased)
             self.track_key = str(payload.get("resolved_track_key") or self.track_key)
             self.track_title = str(payload.get("track_title") or self.track_title)
             self.track_artist = str(payload.get("track_artist") or self.track_artist)
@@ -492,16 +521,22 @@ class PlaybackContext:
                 payload.get("metadata_source", self.metadata_source)
             )
             try:
-                if payload.get("duration_seconds") is not None:
-                    self.duration_seconds = max(0.0, float(payload.get("duration_seconds") or 0.0))
+                raw_duration = payload.get("duration_seconds")
+                if raw_duration is not None:
+                    parsed_duration = float(raw_duration)
+                    if math.isfinite(parsed_duration):
+                        self.duration_seconds = max(0.0, parsed_duration)
             except (TypeError, ValueError):
                 pass
             try:
-                if payload.get("playhead_seconds") is not None:
-                    self.playhead_seconds = max(
-                        0.0,
-                        min(float(payload.get("playhead_seconds") or 0.0), self.duration_seconds),
-                    )
+                raw_playhead = payload.get("playhead_seconds")
+                if raw_playhead is not None:
+                    parsed_playhead = float(raw_playhead)
+                    if math.isfinite(parsed_playhead):
+                        self.playhead_seconds = max(
+                            0.0,
+                            min(parsed_playhead, self.duration_seconds),
+                        )
             except (TypeError, ValueError):
                 pass
             self.playhead_seconds = max(0.0, min(self.playhead_seconds, self.duration_seconds))
@@ -515,7 +550,9 @@ class PlaybackContext:
                 self.realtime = bool(payload["realtime"])
             if payload.get("speed") is not None:
                 try:
-                    self.speed = max(0.01, float(payload["speed"]))
+                    parsed_speed = float(payload["speed"])
+                    if math.isfinite(parsed_speed):
+                        self.speed = max(0.01, parsed_speed)
                 except (TypeError, ValueError):
                     pass
             self.metadata_bound_at = time.time()

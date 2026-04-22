@@ -19,6 +19,10 @@ from photonic_synesthesia.platform.contracts import (
     SemanticFrame,
 )
 from photonic_synesthesia.platform.events import InMemoryEventBus
+from photonic_synesthesia.platform.live_deck_ingest import (
+    LiveDeckIngestService,
+    ManualTestIngestAdapter,
+)
 from photonic_synesthesia.platform.live_deck_models import (
     BindingStatus,
     LiveDeckFact,
@@ -66,6 +70,7 @@ __all__ = [
     "LeaseAcquireRequest",
     "LeaseAcquireResponse",
     "LiveHealth",
+    "LiveDeckIngestService",
     "LiveDeckFact",
     "LiveDeckSnapshot",
     "OperatorCommand",
@@ -74,6 +79,7 @@ __all__ = [
     "PlatformEvent",
     "PlatformEventType",
     "PlaybackContext",
+    "ManualTestIngestAdapter",
     "RIG_SCHEMA_VERSION",
     "RigBridgeError",
     "SafetySummary",

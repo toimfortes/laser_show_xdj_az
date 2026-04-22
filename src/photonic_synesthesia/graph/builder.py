@@ -8,6 +8,7 @@ sensor acquisition, analysis, and fixture control nodes.
 from __future__ import annotations
 
 import copy
+import importlib
 import threading
 from threading import Lock
 from typing import Any, Callable
@@ -15,36 +16,58 @@ from typing import Any, Callable
 from photonic_synesthesia.core.config import Settings
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import PhotonicState, create_initial_state
-from photonic_synesthesia.graph.nodes import (
-    AudioSenseNode,
-    BeatTrackNode,
-    CVSenseNode,
-    DirectorIntentNode,
-    DMXOutputNode,
-    FeatureExtractNode,
-    FusionNode,
-    ILDADACOutputNode,
-    ILDAExportNode,
-    ILDAOutputNode,
-    InterpreterNode,
-    LaserControlNode,
-    LaserVectorInterlockNode,
-    MidiSenseNode,
-    MovingHeadControlNode,
-    PanelControlNode,
-    SafetyInterlockNode,
-    SafetyMonitor,
-    SceneSelectNode,
-    StructureDetectNode,
-)
-from photonic_synesthesia.graph.nodes.laser_zone_runtime import LaserZoneRuntimeNode
-from photonic_synesthesia.graph.nodes.preposition import PrepositionNode
-from photonic_synesthesia.graph.nodes.surface_compositor import SurfaceCompositorNode
-from photonic_synesthesia.graph.nodes.trigger_router import TriggerRouterNode
 from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
 from photonic_synesthesia.platform.state_service import ControlPlaneStateService
 
 logger = get_logger(__name__)
+
+
+def _resolve_symbol(module_name: str, symbol: str) -> Any:
+    module = importlib.import_module(module_name)
+    return getattr(module, symbol)
+
+
+def _lazy_ctor(module_name: str, symbol: str) -> Callable[..., Any]:
+    def _ctor(*args: Any, **kwargs: Any) -> Any:
+        cls = _resolve_symbol(module_name, symbol)
+        return cls(*args, **kwargs)
+
+    _ctor.__name__ = symbol
+    return _ctor
+
+
+AudioSenseNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "AudioSenseNode")
+BeatTrackNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "BeatTrackNode")
+CVSenseNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "CVSenseNode")
+DirectorIntentNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "DirectorIntentNode")
+DMXOutputNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "DMXOutputNode")
+FeatureExtractNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "FeatureExtractNode")
+FusionNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "FusionNode")
+ILDADACOutputNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "ILDADACOutputNode")
+ILDAExportNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "ILDAExportNode")
+ILDAOutputNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "ILDAOutputNode")
+InterpreterNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "InterpreterNode")
+LaserControlNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "LaserControlNode")
+LaserVectorInterlockNode = _lazy_ctor(
+    "photonic_synesthesia.graph.nodes", "LaserVectorInterlockNode"
+)
+MidiSenseNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "MidiSenseNode")
+MovingHeadControlNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "MovingHeadControlNode")
+PanelControlNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "PanelControlNode")
+SafetyInterlockNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "SafetyInterlockNode")
+SafetyMonitor = _lazy_ctor("photonic_synesthesia.graph.nodes", "SafetyMonitor")
+SceneSelectNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "SceneSelectNode")
+StructureDetectNode = _lazy_ctor("photonic_synesthesia.graph.nodes", "StructureDetectNode")
+LaserZoneRuntimeNode = _lazy_ctor(
+    "photonic_synesthesia.graph.nodes.laser_zone_runtime", "LaserZoneRuntimeNode"
+)
+PrepositionNode = _lazy_ctor("photonic_synesthesia.graph.nodes.preposition", "PrepositionNode")
+SurfaceCompositorNode = _lazy_ctor(
+    "photonic_synesthesia.graph.nodes.surface_compositor", "SurfaceCompositorNode"
+)
+TriggerRouterNode = _lazy_ctor(
+    "photonic_synesthesia.graph.nodes.trigger_router", "TriggerRouterNode"
+)
 
 
 class _SequentialPipeline:
@@ -77,7 +100,7 @@ class PhotonicGraph:
         settings: Settings,
         nodes: dict[str, Any],
         control_plane_service: ControlPlaneStateService | None = None,
-        safety_monitor: SafetyMonitor | None = None,
+        safety_monitor: Any | None = None,
         enable_out_of_process_watchdog: bool | None = None,
     ):
         self.graph = graph

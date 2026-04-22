@@ -15,6 +15,7 @@ import time
 import pytest
 
 from photonic_synesthesia.core.threadhygiene import (
+    DaemonThreadPoolExecutor,
     StopSignal,
     join_or_raise,
     shutdown_executor,
@@ -128,6 +129,20 @@ def test_shutdown_executor_shuts_thread_pool() -> None:
     # After shutdown the pool must refuse new work.
     with pytest.raises(RuntimeError):
         pool.submit(_work)
+
+
+def test_daemon_thread_pool_executor_spawns_worker_on_current_python() -> None:
+    pool = DaemonThreadPoolExecutor(max_workers=1, thread_name_prefix="daemon-test")
+
+    try:
+        worker_name, is_daemon = pool.submit(
+            lambda: (threading.current_thread().name, threading.current_thread().daemon)
+        ).result(timeout=1.0)
+    finally:
+        shutdown_executor(pool, timeout=1.0, name="daemon-test")
+
+    assert worker_name.startswith("daemon-test")
+    assert is_daemon is True
 
 
 def test_shutdown_executor_cancels_pending_futures() -> None:

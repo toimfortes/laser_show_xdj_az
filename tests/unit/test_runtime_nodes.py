@@ -18,6 +18,9 @@ from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.core.config import FixtureConfig
 from photonic_synesthesia.graph.nodes.section_dynamics import (
     _bool_or_default,
+    resolve_laser_pattern_override,
+    resolve_mover_pattern_family,
+    resolve_panel_render_mode,
     resolve_active_section_dynamics,
 )
 from photonic_synesthesia.graph.nodes.laser_zone_runtime import (
@@ -229,6 +232,77 @@ def test_resolve_active_section_dynamics_requires_dict_fixture_role_entries_for_
     assert dynamics["washes_enabled"] is False
     assert dynamics["leds_enabled"] is True
     assert dynamics["panel_family"] is None
+
+
+def test_resolve_active_section_dynamics_exposes_scene_mode_and_pattern_fields() -> None:
+    state = create_initial_state()
+    state["playback_snapshot"] = {
+        "playhead_seconds": 4.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": "drop_intense",
+                "fixture_mode": "peak_return",
+                "laser_pattern": "fan_burst",
+                "mover_pattern": "pan_sweep",
+                "wash_pattern": "bloom",
+                "led_pattern": "chase",
+            }
+        ],
+    }
+
+    dynamics = resolve_active_section_dynamics(state)
+
+    assert dynamics["scene_id"] == "drop_intense"
+    assert dynamics["fixture_mode"] == "peak_return"
+    assert dynamics["laser_pattern"] == "fan_burst"
+    assert dynamics["mover_pattern"] == "pan_sweep"
+    assert dynamics["wash_pattern"] == "bloom"
+    assert dynamics["led_pattern"] == "chase"
+
+
+def test_resolve_active_section_dynamics_coerces_non_string_overrides_to_defaults() -> None:
+    state = create_initial_state()
+    state["playback_snapshot"] = {
+        "playhead_seconds": 4.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": 123,
+                "fixture_mode": None,
+                "laser_pattern": ["fan"],
+                "mover_pattern": {"mode": "hold"},
+                "wash_pattern": False,
+                "led_pattern": 7.5,
+            }
+        ],
+    }
+
+    dynamics = resolve_active_section_dynamics(state)
+
+    assert dynamics["scene_id"] == "123"
+    assert dynamics["fixture_mode"] == ""
+    assert dynamics["laser_pattern"] == ""
+    assert dynamics["mover_pattern"] == ""
+    assert dynamics["wash_pattern"] == ""
+    assert dynamics["led_pattern"] == ""
+
+
+def test_pattern_mapping_helpers_resolve_authored_names_consistently() -> None:
+    dmx_pattern, geometry_family = resolve_laser_pattern_override("fan_burst")
+    mover_family = resolve_mover_pattern_family("hold")
+    wash_render = resolve_panel_render_mode("bloom", "wash")
+    led_render = resolve_panel_render_mode("chase", "led")
+
+    assert dmx_pattern is not None
+    assert geometry_family == "burst"
+    assert mover_family == "hold"
+    assert wash_render == "bloom"
+    assert led_render == "chase"
 
 
 def test_trigger_router_fires_zero_at_seconds_flag_on_first_tick() -> None:

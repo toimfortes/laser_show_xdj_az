@@ -37,6 +37,8 @@ class ProDJLinkConfig(BaseModel):
     """PRO DJ LINK network telemetry configuration."""
 
     enabled: bool = False
+    ingest_mode: str = "tcnet"
+    freshness_threshold_seconds: float = 0.5
     listen_host: str = "127.0.0.1"
     keepalive_port: int = 50000
     status_port: int = 50001

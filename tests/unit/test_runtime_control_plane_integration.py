@@ -3,6 +3,8 @@ from unittest import mock
 from photonic_synesthesia.core.state import create_initial_state
 from photonic_synesthesia.platform import (
     ControlPlaneStateService,
+    LiveDeckFact,
+    LiveDeckIngestService,
     PlaybackContext,
     clear_shared_control_plane_service,
     clear_shared_playback_context,
@@ -10,6 +12,11 @@ from photonic_synesthesia.platform import (
     get_shared_playback_context,
     set_shared_control_plane_service,
     set_shared_playback_context,
+)
+from photonic_synesthesia.platform.live_deck_binding import (
+    LiveDeckAutoBindEngine,
+    apply_live_deck_binding_snapshot,
+    evaluate_and_apply_live_binding,
 )
 from photonic_synesthesia.ui.web_panel import create_app
 
@@ -144,6 +151,535 @@ def test_playback_context_apply_live_binding_reclamps_playhead_when_duration_sho
     assert snapshot["playhead_seconds"] == 183.2
     assert snapshot["finished"] is True
     assert snapshot["metadata_source"] == "pro_dj_link"
+
+
+def test_playback_context_apply_live_binding_ignores_blank_numeric_fields() -> None:
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Live Track",
+        duration_seconds=445.4,
+        track_title="Live Track",
+    )
+    ctx.update_transport(
+        playhead_seconds=120.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    snapshot = ctx.apply_live_binding(
+        {
+            "state": "bound",
+            "duration_seconds": "",
+            "playhead_seconds": "",
+            "metadata_source": "pro_dj_link",
+        }
+    )
+
+    assert snapshot["duration_seconds"] == 445.4
+    assert snapshot["playhead_seconds"] == 120.0
+    assert snapshot["finished"] is False
+    assert snapshot["metadata_source"] == "pro_dj_link"
+
+
+def test_playback_context_apply_live_binding_ignores_non_finite_numeric_fields() -> None:
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Live Track",
+        duration_seconds=445.4,
+        track_title="Live Track",
+    )
+    ctx.update_transport(
+        playhead_seconds=120.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+
+    snapshot = ctx.apply_live_binding(
+        {
+            "state": "bound",
+            "duration_seconds": "nan",
+            "playhead_seconds": "inf",
+            "speed": "inf",
+            "metadata_source": "pro_dj_link",
+        }
+    )
+
+    assert snapshot["duration_seconds"] == 445.4
+    assert snapshot["playhead_seconds"] == 120.0
+    assert snapshot["speed"] == 1.0
+    assert snapshot["finished"] is False
+    assert snapshot["metadata_source"] == "pro_dj_link"
+
+
+def test_apply_live_deck_binding_snapshot_updates_playback_from_authoritative_deck() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Fallback Track",
+        duration_seconds=0.0,
+        track_title="Fallback Track",
+    )
+
+    status = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                speed=1.01,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            }
+        ],
+        now=100.1,
+        engine=engine,
+    )
+
+    assert status.state == "bound"
+    assert status.authority_player == 3
+    assert status.resolved_track_key == "ARTBAT / Pete Tong|Age of Love"
+    assert status.match_confidence == 1.0
+    assert ctx.snapshot()["track_title"] == "Age of Love"
+    assert ctx.snapshot()["playhead_seconds"] == 183.2
+
+
+def test_evaluate_and_apply_live_binding_reads_from_ingest_service_snapshot() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ingest = LiveDeckIngestService()
+    ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                speed=1.01,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Fallback Track",
+        duration_seconds=0.0,
+        track_title="Fallback Track",
+    )
+
+    status = evaluate_and_apply_live_binding(
+        playback_context=ctx,
+        ingest_service=ingest,
+        now=100.1,
+        candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            }
+        ],
+        engine=engine,
+    )
+
+    assert status.state == "bound"
+    assert status.authority_player == 3
+    assert ctx.snapshot()["track_title"] == "Age of Love"
+    assert ctx.snapshot()["playhead_seconds"] == 183.2
+
+
+def test_apply_live_deck_binding_snapshot_fails_closed_when_authority_metadata_is_missing() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Original Track",
+        duration_seconds=300.0,
+        track_title="Original Track",
+        track_artist="Original Artist",
+    )
+    ctx.update_transport(
+        playhead_seconds=42.0,
+        playing=True,
+        finished=False,
+        realtime=True,
+        speed=1.0,
+    )
+    before = ctx.snapshot()
+
+    status = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=None,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            }
+        ],
+        now=100.1,
+        engine=engine,
+    )
+
+    assert status.state == "unbound"
+    assert status.authority_player == 3
+    assert status.reason == "authority deck metadata incomplete for track resolution"
+    assert ctx.snapshot() == before
+
+
+def test_apply_live_deck_binding_snapshot_preserves_ambiguous_resolution_state() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Original Track",
+        duration_seconds=300.0,
+        track_title="Original Track",
+    )
+    before = ctx.snapshot()
+
+    status = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#1",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#2",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+        ],
+        now=100.1,
+        engine=engine,
+    )
+
+    assert status.state == "ambiguous"
+    assert status.authority_player == 3
+    assert status.reason == "authority deck track matched multiple candidates"
+    assert ctx.snapshot() == before
+
+
+def test_apply_live_deck_binding_snapshot_does_not_rewind_on_older_same_player_snapshot() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Fallback Track",
+        duration_seconds=0.0,
+        track_title="Fallback Track",
+    )
+    candidates = [
+        {
+            "track_key": "ARTBAT / Pete Tong|Age of Love",
+            "track_title": "Age of Love",
+            "track_artist": "ARTBAT / Pete Tong",
+            "duration_seconds": 445.4,
+        }
+    ]
+
+    first = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=candidates,
+        now=100.1,
+        engine=engine,
+    )
+    second = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=99.0,
+                playhead_seconds=170.0,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=candidates,
+        now=100.2,
+        engine=engine,
+        previous_status=first,
+    )
+
+    assert first.state == "bound"
+    assert second.state == "bound"
+    assert second.resolved_track_key == "ARTBAT / Pete Tong|Age of Love"
+    assert ctx.snapshot()["playhead_seconds"] == 183.2
+
+
+def test_apply_live_deck_binding_snapshot_preserves_ambiguous_status_for_older_same_player_snapshot() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Original Track",
+        duration_seconds=300.0,
+        track_title="Original Track",
+    )
+    first = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#1",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love#2",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            },
+        ],
+        now=100.1,
+        engine=engine,
+    )
+    second = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=99.0,
+                playhead_seconds=170.0,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[],
+        now=100.2,
+        engine=engine,
+        previous_status=first,
+    )
+
+    assert first.state == "ambiguous"
+    assert second.state == "ambiguous"
+    assert second.reason == "authority deck track matched multiple candidates"
+
+
+def test_apply_live_deck_binding_snapshot_preserves_engine_memory_across_calls() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(file_path="", file_name="Live Track", duration_seconds=0.0)
+
+    first = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[],
+        now=100.1,
+        engine=engine,
+    )
+    second = apply_live_deck_binding_snapshot(
+        decks=[],
+        playback_context=ctx,
+        track_candidates=[],
+        now=100.8,
+        engine=engine,
+    )
+
+    assert first.authority_player == 3
+    assert second.state == "stale"
+    assert second.authority_player == 3
+
+
+def test_apply_live_deck_binding_snapshot_clears_prior_bound_playback_when_new_authority_is_unresolved() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Fallback Track",
+        duration_seconds=0.0,
+        track_title="Fallback Track",
+    )
+    first = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[
+            {
+                "track_key": "ARTBAT / Pete Tong|Age of Love",
+                "track_title": "Age of Love",
+                "track_artist": "ARTBAT / Pete Tong",
+                "duration_seconds": 445.4,
+            }
+        ],
+        now=100.1,
+        engine=engine,
+    )
+    second = apply_live_deck_binding_snapshot(
+        decks=[
+            LiveDeckFact(
+                player_number=4,
+                master=True,
+                on_air=True,
+                updated_at=101.0,
+                playhead_seconds=33.0,
+                playing=True,
+                track_title="Another Track",
+                track_artist="Yotto",
+                duration_seconds=390.5,
+                source_type="pro_dj_link",
+            )
+        ],
+        playback_context=ctx,
+        track_candidates=[],
+        now=101.1,
+        engine=engine,
+        previous_status=first,
+    )
+
+    assert first.state == "bound"
+    assert second.state == "unbound"
+    assert second.authority_player == 4
+    assert ctx.snapshot()["track_key"] == ""
+    assert ctx.snapshot()["track_title"] == "Another Track"
+    assert ctx.snapshot()["track_artist"] == "Yotto"
+    assert ctx.snapshot()["playing"] is False
+    assert ctx.snapshot()["realtime"] is False
+    assert ctx.snapshot()["playhead_seconds"] == 0.0
+
+
+def test_evaluate_and_apply_live_binding_ignores_invalid_authority_timestamps() -> None:
+    engine = LiveDeckAutoBindEngine(stale_after_seconds=0.5)
+    ingest = LiveDeckIngestService()
+    ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at="bad",  # type: ignore[arg-type]
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    ctx = PlaybackContext(
+        file_path="",
+        file_name="Fallback Track",
+        duration_seconds=0.0,
+        track_title="Fallback Track",
+    )
+
+    status = evaluate_and_apply_live_binding(
+        playback_context=ctx,
+        ingest_service=ingest,
+        now=100.1,
+        candidates=[],
+        engine=engine,
+    )
+
+    assert status.state == "unbound"
+    assert status.reason == "authoritative deck timestamp is invalid"
 
 
 def test_playback_snapshot_deep_copies_nested_show_sections() -> None:

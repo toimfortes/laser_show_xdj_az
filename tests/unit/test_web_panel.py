@@ -1,18 +1,26 @@
 import asyncio
+import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from fastapi.testclient import TestClient
 
 from photonic_synesthesia.core.state import create_initial_state
+from photonic_synesthesia.integrations.show_catalog import save_show_catalog
 from photonic_synesthesia.platform import (
+    BindingStatus,
     ControlPlaneStateService,
+    LiveDeckFact,
+    LiveDeckIngestService,
+    ManualTestIngestAdapter,
     PlaybackContext,
     clear_shared_playback_context,
     get_shared_playback_context,
     set_shared_playback_context,
 )
-from photonic_synesthesia.ui.web_panel import create_app
+from photonic_synesthesia.platform.live_deck_binding import LiveDeckAutoBindEngine
+from photonic_synesthesia.ui.web_panel import _catalog_live_binding_candidates, create_app
 
 
 def test_create_app_exposes_core_control_plane_routes() -> None:
@@ -23,6 +31,8 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/healthz" in routes
     assert "/api/live/health" in routes
     assert "/api/live/state" in routes
+    assert "/api/live/binding" in routes
+    assert "/api/live/binding/test-mode" in routes
     assert "/api/control/lease/acquire" in routes
     assert "/api/control/blackout" in routes
     assert "/api/control/scenes/launch" in routes
@@ -41,6 +51,468 @@ def test_create_app_exposes_core_control_plane_routes() -> None:
     assert "/api/mock/fixtures" in routes
     assert "/api/mock/scene" in routes
     assert "/api/mock/masters" in routes
+
+
+def test_live_binding_endpoint_fails_closed_when_cached_status_exists_but_ingest_is_missing() -> None:
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Fallback Track",
+            duration_seconds=0.0,
+            track_title="Fallback Track",
+        )
+    )
+    app = create_app()
+    app.state.live_deck_ingest = None
+    app.state.live_binding_status = BindingStatus(
+        state="bound",
+        reason="resolved",
+        authority_player=3,
+        resolved_track_key="artist|track",
+        match_confidence=1.0,
+        last_update_at=12.5,
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["binding_status"]["state"] == "unbound"
+    assert body["binding_status"]["reason"] == "live deck ingest source unavailable"
+    assert body["test_mode_enabled"] is False
+
+    clear_shared_playback_context()
+
+
+def test_create_app_initializes_default_live_binding_state() -> None:
+    clear_shared_playback_context()
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "binding_status": {
+            "state": "unbound",
+            "reason": "no playback session is active",
+            "authority_player": None,
+            "resolved_track_key": None,
+            "match_confidence": None,
+            "last_update_at": None,
+        },
+        "test_mode_enabled": False,
+    }
+    assert isinstance(app.state.live_deck_ingest, LiveDeckIngestService)
+    assert callable(app.state.live_binding_candidates)
+
+    clear_shared_playback_context()
+
+
+def test_live_binding_endpoint_accepts_manual_test_ingest_adapter() -> None:
+    app = create_app()
+    app.state.live_deck_ingest = ManualTestIngestAdapter(LiveDeckIngestService())
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    assert response.json()["binding_status"]["state"] == "unbound"
+
+
+def test_live_binding_endpoint_evaluates_ingest_and_updates_playback_context() -> None:
+    now = time.time()
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Fallback Track",
+            duration_seconds=0.0,
+            track_title="Fallback Track",
+        )
+    )
+    ingest = LiveDeckIngestService()
+    ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=now,
+                playhead_seconds=183.2,
+                speed=1.01,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+
+    app = create_app()
+    app.state.live_deck_ingest = ingest
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=5.0)
+    app.state.live_binding_candidates = [
+        {
+            "track_key": "ARTBAT / Pete Tong|Age of Love",
+            "track_title": "Age of Love",
+            "track_artist": "ARTBAT / Pete Tong",
+            "duration_seconds": 445.4,
+        }
+    ]
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["binding_status"]["state"] == "bound"
+    assert body["binding_status"]["authority_player"] == 3
+    assert body["binding_status"]["resolved_track_key"] == "ARTBAT / Pete Tong|Age of Love"
+    assert playback.snapshot()["track_title"] == "Age of Love"
+    assert playback.snapshot()["playhead_seconds"] == 183.2
+
+    clear_shared_playback_context()
+
+
+def test_live_binding_endpoint_fails_closed_when_playback_context_clears() -> None:
+    now = time.time()
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Age of Love.mp3",
+            duration_seconds=445.4,
+            track_title="Age of Love",
+            track_artist="ARTBAT / Pete Tong",
+            track_key="ARTBAT / Pete Tong|Age of Love",
+        )
+    )
+    app = create_app()
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=5.0)
+    app.state.live_deck_ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=now,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/live/binding")
+    assert first.status_code == 200
+    assert first.json()["binding_status"]["state"] == "bound"
+    assert playback.snapshot()["playhead_seconds"] == 183.2
+
+    clear_shared_playback_context()
+    second = client.get("/api/live/binding")
+
+    assert second.status_code == 200
+    assert second.json()["binding_status"]["state"] == "unbound"
+    assert second.json()["binding_status"]["reason"] == "no playback session is active"
+
+
+def test_live_binding_endpoint_fails_closed_when_ingest_wiring_clears() -> None:
+    now = time.time()
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Age of Love.mp3",
+            duration_seconds=445.4,
+            track_title="Age of Love",
+            track_artist="ARTBAT / Pete Tong",
+            track_key="ARTBAT / Pete Tong|Age of Love",
+        )
+    )
+    app = create_app()
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=5.0)
+    app.state.live_deck_ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=now,
+                playhead_seconds=183.2,
+                playing=True,
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/live/binding")
+    assert first.status_code == 200
+    assert first.json()["binding_status"]["state"] == "bound"
+    assert playback.snapshot()["playhead_seconds"] == 183.2
+
+    app.state.live_deck_ingest = None
+    second = client.get("/api/live/binding")
+
+    assert second.status_code == 200
+    assert second.json()["binding_status"]["state"] == "unbound"
+    assert second.json()["binding_status"]["reason"] == "live deck ingest source unavailable"
+
+    clear_shared_playback_context()
+
+
+def test_live_binding_endpoint_uses_catalog_backed_default_candidates(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    save_show_catalog(
+        "Yotto|Another Track",
+        {
+            "track_key": "Yotto|Another Track",
+            "track_title": "Another Track",
+            "track_artist": "Yotto",
+            "duration_seconds": 390.5,
+        },
+    )
+
+    now = time.time()
+    clear_shared_playback_context()
+    playback = set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Fallback Track",
+            duration_seconds=0.0,
+            track_title="Fallback Track",
+        )
+    )
+    app = create_app()
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=5.0)
+    app.state.live_deck_ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=now,
+                playhead_seconds=120.0,
+                playing=True,
+                track_title="Another Track",
+                track_artist="Yotto",
+                duration_seconds=390.5,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["binding_status"]["state"] == "bound"
+    assert body["binding_status"]["resolved_track_key"] == "Yotto|Another Track"
+    assert playback.snapshot()["track_title"] == "Another Track"
+    assert playback.snapshot()["playhead_seconds"] == 120.0
+
+    clear_shared_playback_context()
+
+
+def test_catalog_live_binding_candidates_reuses_cache_until_catalog_changes(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    save_show_catalog(
+        "Yotto|Another Track",
+        {
+            "track_key": "Yotto|Another Track",
+            "track_title": "Another Track",
+            "track_artist": "Yotto",
+            "duration_seconds": 390.5,
+        },
+    )
+
+    target_path = next((tmp_path / "xdg-data" / "photonic_synesthesia" / "show_catalog").glob("*.json"))
+    original_read_text = Path.read_text
+    read_count = 0
+
+    def counted_read_text(self: Path, *args, **kwargs):
+        nonlocal read_count
+        if self == target_path:
+            read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted_read_text)
+
+    first = _catalog_live_binding_candidates()
+    second = _catalog_live_binding_candidates()
+
+    assert first == second
+    assert read_count == 1
+
+    save_show_catalog(
+        "Yotto|Another Track",
+        {
+            "track_key": "Yotto|Another Track",
+            "track_title": "Another Track",
+            "track_artist": "Yotto",
+            "duration_seconds": 391.0,
+        },
+    )
+    third = _catalog_live_binding_candidates()
+
+    assert third[0]["duration_seconds"] == 391.0
+    assert read_count == 2
+
+
+def test_live_binding_endpoint_fails_closed_for_invalid_authority_timestamp() -> None:
+    clear_shared_playback_context()
+    set_shared_playback_context(
+        PlaybackContext(
+            file_path="",
+            file_name="Fallback Track",
+            duration_seconds=0.0,
+            track_title="Fallback Track",
+        )
+    )
+    app = create_app()
+    app.state.live_binding_engine = LiveDeckAutoBindEngine(stale_after_seconds=5.0)
+    app.state.live_deck_ingest.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at="bad",  # type: ignore[arg-type]
+                track_title="Age of Love",
+                track_artist="ARTBAT / Pete Tong",
+                duration_seconds=445.4,
+                source_type="pro_dj_link",
+            )
+        ]
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/live/binding")
+
+    assert response.status_code == 200
+    assert response.json()["binding_status"]["state"] == "unbound"
+    assert response.json()["binding_status"]["reason"] == "authoritative deck timestamp is invalid"
+
+    clear_shared_playback_context()
+
+
+def test_live_binding_test_mode_endpoint_publishes_manual_decks() -> None:
+    service = LiveDeckIngestService()
+    service.publish_live_snapshot(
+        [
+            LiveDeckFact(
+                player_number=3,
+                master=True,
+                on_air=True,
+                updated_at=100.0,
+            )
+        ]
+    )
+
+    app = create_app()
+    app.state.live_deck_ingest = service
+    app.state.live_binding_status = {
+        "state": "unbound",
+        "reason": "manual test mode",
+        "authority_player": None,
+    }
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/live/binding/test-mode",
+        json={
+            "enabled": True,
+            "decks": [
+                {
+                    "player_number": 4,
+                    "master": True,
+                    "on_air": True,
+                    "updated_at": 101.0,
+                    "track_title": "Live Deck",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["binding_status"]["state"] == "unbound"
+    assert body["test_mode_enabled"] is True
+    assert [deck.player_number for deck in service.current_snapshot().decks] == [4]
+
+
+def test_live_binding_test_mode_endpoint_rejects_invalid_deck_payload() -> None:
+    app = create_app()
+    app.state.live_deck_ingest = LiveDeckIngestService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/live/binding/test-mode",
+        json={
+            "enabled": True,
+            "decks": [
+                {
+                    "track_title": "Missing Required Fields",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid deck payload" in response.json()["detail"]
+    assert client.get("/api/live/binding").json()["test_mode_enabled"] is False
+
+
+def test_live_binding_test_mode_endpoint_rejects_invalid_deck_field_types() -> None:
+    app = create_app()
+    app.state.live_deck_ingest = LiveDeckIngestService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/live/binding/test-mode",
+        json={
+            "enabled": True,
+            "decks": [
+                {
+                    "player_number": "abc",
+                    "master": "yes",
+                    "on_air": "yes",
+                    "updated_at": "not-a-float",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Invalid deck payload" in response.json()["detail"]
+    assert client.get("/api/live/binding").json()["test_mode_enabled"] is False
+
+
+def test_mock_control_plane_script_includes_live_binding_banner_and_refresh() -> None:
+    js_src = Path(__file__).resolve().parents[2] / "src/photonic_synesthesia/ui/static/mock_control_plane.js"
+    source = js_src.read_text(encoding="utf-8")
+
+    assert '/api/live/binding' in source
+    assert 'playback-binding-banner' in source
+    assert 'LIVE MODE' in source
+    assert 'TEST MODE' in source
+    assert 'binding endpoint unavailable' in source
 
 
 def test_live_state_endpoint_reflects_runtime_ingest() -> None:

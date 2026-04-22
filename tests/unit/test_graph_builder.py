@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
 from unittest.mock import patch
 
 from photonic_synesthesia.core.config import Settings
@@ -237,3 +241,25 @@ def test_full_graph_pipeline_order_is_linear() -> None:
         "dmx_output",
     ]
     assert node_names == expected_prefix + expected_suffix  # type: ignore[comparison-overlap]
+
+
+def test_builder_import_does_not_eagerly_import_audio_backend(tmp_path) -> None:
+    fake_sounddevice = tmp_path / "sounddevice.py"
+    fake_sounddevice.write_text("raise RuntimeError('sounddevice import should stay lazy')\n")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = f"{tmp_path}:{Path(__file__).resolve().parents[2] / 'src'}"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import photonic_synesthesia.graph.builder; print('ok')",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
