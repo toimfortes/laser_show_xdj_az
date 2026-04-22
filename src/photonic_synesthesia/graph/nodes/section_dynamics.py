@@ -30,6 +30,14 @@ class SectionDynamics(TypedDict):
     panel_family: Literal["wash", "led"] | None
 
 
+class FixtureModeBias(TypedDict):
+    """Cross-family appetite multipliers derived from authored fixture_mode."""
+
+    motion: float
+    intensity: float
+    strobe: float
+
+
 LASER_PATTERN_GEOMETRY_FAMILY_MAP: dict[str, str] = {
     "fan": "fan",
     "beam_fan_narrow": "fan",
@@ -149,6 +157,20 @@ LED_PATTERN_RENDER_MODE_MAP: dict[str, str] = {
     "horizontal_ramp": "ramp",
     "horizontal_lines": "ramp",
     "fade": "fade",
+}
+
+DEFAULT_FIXTURE_MODE_BIAS: FixtureModeBias = {
+    "motion": 1.0,
+    "intensity": 1.0,
+    "strobe": 1.0,
+}
+
+FIXTURE_MODE_BIAS_MAP: dict[str, FixtureModeBias] = {
+    "intro": {"motion": 0.75, "intensity": 0.9, "strobe": 0.5},
+    "breakdown": {"motion": 0.65, "intensity": 0.85, "strobe": 0.35},
+    "rebuild": {"motion": 1.15, "intensity": 1.0, "strobe": 0.8},
+    "peak_return": {"motion": 1.25, "intensity": 1.1, "strobe": 1.0},
+    "outro": {"motion": 0.6, "intensity": 0.75, "strobe": 0.25},
 }
 
 
@@ -277,6 +299,11 @@ def resolve_panel_render_mode(
     if family == "led":
         return LED_PATTERN_RENDER_MODE_MAP.get(pattern)
     return LED_PATTERN_RENDER_MODE_MAP.get(pattern) or WASH_PATTERN_RENDER_MODE_MAP.get(pattern)
+
+
+def resolve_fixture_mode_bias(fixture_mode: str) -> FixtureModeBias:
+    normalized = (fixture_mode or "").strip().lower()
+    return FIXTURE_MODE_BIAS_MAP.get(normalized, DEFAULT_FIXTURE_MODE_BIAS)
 
 
 def resolve_active_section_dynamics(state: PhotonicState) -> SectionDynamics:

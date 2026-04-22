@@ -130,6 +130,46 @@ def _laser_state_with_section(
     return state
 
 
+def _panel_state_with_section(
+    *,
+    section_overrides: dict[str, object],
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.05,
+    bar_position: int = 2,
+    energy: float = 0.45,
+    timestamp: float = 1.37,
+) -> PhotonicState:
+    state = create_initial_state()
+    state["timestamp"] = timestamp
+    state["current_structure"] = structure
+    state["beat_info"]["beat_phase"] = beat_phase
+    state["beat_info"]["bar_position"] = bar_position
+    state["audio_features"]["rms_energy"] = energy
+    state["playback_snapshot"] = {
+        "playhead_seconds": 1.0,
+        "show_sections": [
+            {
+                "id": "section_000",
+                "start_seconds": 0.0,
+                "end_seconds": 8.0,
+                **section_overrides,
+            }
+        ],
+    }
+    return state
+
+
+def _panel_rgb(
+    channel_values: dict[int, int],
+    node: PanelControlNode,
+) -> tuple[int, int, int]:
+    return (
+        channel_values[1 + node.channel_map["red"]],
+        channel_values[1 + node.channel_map["green"]],
+        channel_values[1 + node.channel_map["blue"]],
+    )
+
+
 def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
     node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
     playback = set_shared_playback_context(
@@ -454,6 +494,108 @@ def test_mover_pattern_override_forces_motion_family_and_gobo() -> None:
     assert override_command[1 + node.channel_map["pan_tilt_speed"]] == 96
     assert override_command[1 + node.channel_map["strobe"]] == 0
     assert override_command[1 + node.channel_map["gobo"]] == 64
+
+
+def test_panel_prefers_led_pattern_when_panel_family_is_unknown() -> None:
+    node = PanelControlNode([_panel_fixture()])
+
+    unknown_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "mover",
+                "fixture_role_map": {},
+                "wash_pattern": "fade",
+                "led_pattern": "chase",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+    led_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "led",
+                "wash_pattern": "fade",
+                "led_pattern": "chase",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+    wash_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "wash",
+                "wash_pattern": "fade",
+                "led_pattern": "chase",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+
+    assert _panel_rgb(unknown_command, node) == _panel_rgb(led_command, node)
+    assert _panel_rgb(unknown_command, node) != _panel_rgb(wash_command, node)
+
+
+def test_panel_uses_wash_pattern_when_panel_family_is_wash() -> None:
+    node = PanelControlNode([_panel_fixture()])
+
+    wash_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "wash",
+                "wash_pattern": "fade",
+                "led_pattern": "chase",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+    wash_reference_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "wash",
+                "wash_pattern": "fade",
+                "led_pattern": "",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+    led_command = node(
+        _panel_state_with_section(
+            section_overrides={
+                "lead_family": "led",
+                "wash_pattern": "fade",
+                "led_pattern": "chase",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+
+    assert _panel_rgb(wash_command, node) == _panel_rgb(wash_reference_command, node)
+    assert _panel_rgb(wash_command, node) != _panel_rgb(led_command, node)
+
+
+def test_fixture_mode_peak_return_vs_intro_biases_panel_dimmer_and_mover_speed() -> None:
+    panel_node = PanelControlNode([_panel_fixture()])
+    mover_node = MovingHeadControlNode([_moving_head_fixture()], MovingHeadSafetyConfig())
+
+    peak_panel = panel_node(
+        _panel_state_with_section(section_overrides={"fixture_mode": "peak_return"})
+    )["fixture_commands"][0]["channel_values"]
+    intro_panel = panel_node(
+        _panel_state_with_section(section_overrides={"fixture_mode": "intro"})
+    )["fixture_commands"][0]["channel_values"]
+    peak_mover = mover_node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "fixture_mode": "peak_return",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+    intro_mover = mover_node(
+        _moving_head_state_with_section(
+            section_overrides={
+                "movers_enabled": True,
+                "fixture_mode": "intro",
+            }
+        )
+    )["fixture_commands"][0]["channel_values"]
+
+    assert peak_panel[1 + panel_node.channel_map["dimmer"]] > intro_panel[1 + panel_node.channel_map["dimmer"]]
+    assert peak_mover[1 + mover_node.channel_map["pan_tilt_speed"]] > intro_mover[1 + mover_node.channel_map["pan_tilt_speed"]]
 
 
 def test_panel_family_for_enable_gate_clears_panel_dmx_output() -> None:

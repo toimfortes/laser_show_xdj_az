@@ -22,8 +22,10 @@ from photonic_synesthesia.core.state import FixtureCommand, MusicStructure, Phot
 from photonic_synesthesia.director.palettes import Palette, render_rgb, resolve_palette
 from photonic_synesthesia.graph.nodes.section_dynamics import (
     resolve_active_section_dynamics,
+    resolve_fixture_mode_bias,
     resolve_laser_pattern_override,
     resolve_mover_pattern_family,
+    resolve_panel_render_mode,
 )
 from photonic_synesthesia.laser import build_laser_profiles
 from photonic_synesthesia.platform.runtime_context import get_shared_playback_context
@@ -307,6 +309,7 @@ class MovingHeadControlNode:
         director_state = state["director_state"]
         palette = resolve_palette(str(director_state.get("color_theme") or "neutral"))
         color_drive = float(director_state.get("color_drive") or 0.5)
+        mode_bias = resolve_fixture_mode_bias(dynamics["fixture_mode"])
 
         for i, fixture in enumerate(self.fixtures):
             if not fixture.enabled:
@@ -329,9 +332,11 @@ class MovingHeadControlNode:
                 palette=palette,
                 color_drive=color_drive,
                 mover_pattern=dynamics["mover_pattern"],
-                intensity_multiplier=dynamics["intensity_multiplier"],
-                motion_multiplier=dynamics["motion_multiplier"],
-                strobe_level=dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0,
+                intensity_multiplier=dynamics["intensity_multiplier"] * mode_bias["intensity"],
+                motion_multiplier=dynamics["motion_multiplier"] * mode_bias["motion"],
+                strobe_level=(
+                    dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0
+                ) * mode_bias["strobe"],
             )
 
             state["fixture_commands"].append(commands)
@@ -788,6 +793,15 @@ class PanelControlNode:
         color_drive = float(director_state.get("color_drive") or 0.5)
         strobe_budget_hz = float(director_state.get("strobe_budget_hz") or 0.0)
         subphrase_role = str(director_state.get("subphrase_role") or "")
+        panel_family = dynamics.get("panel_family")
+        panel_pattern = (
+            dynamics["wash_pattern"]
+            if panel_family == "wash"
+            else dynamics["led_pattern"]
+            if panel_family == "led"
+            else dynamics["led_pattern"] or dynamics["wash_pattern"]
+        )
+        mode_bias = resolve_fixture_mode_bias(dynamics["fixture_mode"])
 
         for fixture in self.fixtures:
             if not fixture.enabled:
@@ -805,9 +819,12 @@ class PanelControlNode:
                 color_drive=color_drive,
                 strobe_budget_hz=strobe_budget_hz,
                 subphrase_role=subphrase_role,
-                intensity_multiplier=dynamics["intensity_multiplier"],
-                motion_multiplier=dynamics["motion_multiplier"],
-                strobe_level=dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0,
+                intensity_multiplier=dynamics["intensity_multiplier"] * mode_bias["intensity"],
+                motion_multiplier=dynamics["motion_multiplier"] * mode_bias["motion"],
+                strobe_level=(
+                    dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0
+                ) * mode_bias["strobe"],
+                panel_render_mode=resolve_panel_render_mode(panel_pattern, panel_family),
             )
 
             state["fixture_commands"].append(commands)
@@ -842,6 +859,7 @@ class PanelControlNode:
         intensity_multiplier: float,
         motion_multiplier: float,
         strobe_level: float,
+        panel_render_mode: str | None,
     ) -> FixtureCommand:
         """Generate DMX values for a single LED panel / bar.
 
@@ -864,7 +882,15 @@ class PanelControlNode:
         beat_clock = bar_position + beat_phase
         phase = (beat_clock / beats_per_cycle) * 2.0 * math.pi
         beat_hit = beat_phase < 0.15
-        if structure in (MusicStructure.DROP, MusicStructure.BUILDUP):
+        if panel_render_mode in {"chase", "pulse"}:
+            render_mode = "dual_cycle"
+        elif panel_render_mode in {"sparkle", "punch"}:
+            render_mode = "white_hits"
+        elif panel_render_mode in {"fade", "ambient"}:
+            render_mode = "static"
+        elif panel_render_mode in {"bloom", "breath", "ramp"}:
+            render_mode = "morph"
+        elif structure in (MusicStructure.DROP, MusicStructure.BUILDUP):
             render_mode = "dual_cycle"
         elif structure == MusicStructure.BREAKDOWN:
             render_mode = "morph"

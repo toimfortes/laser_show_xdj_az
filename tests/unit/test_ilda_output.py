@@ -54,6 +54,57 @@ def _ilda_state_with_section(
     return state
 
 
+def _ilda_node() -> ILDAOutputNode:
+    fixture = FixtureConfig(
+        id="laser-main",
+        name="Main Laser",
+        type="laser",
+        profile="laser_aucd_cx338b_hybrid",
+        start_address=1,
+        enabled=True,
+    )
+    return ILDAOutputNode(
+        ILDAConfig(enabled=True, points_per_frame=32),
+        [fixture],
+        LaserSafetyConfig(y_axis_max=96),
+        fixtures_dir=Path("config/fixtures"),
+    )
+
+
+def _ilda_state_for_single_section(
+    *,
+    section_overrides: dict[str, object],
+    structure: MusicStructure = MusicStructure.DROP,
+    beat_phase: float = 0.05,
+    bar_position: int = 2,
+    bpm: float = 128.0,
+    timestamp: float = 1.0,
+) -> dict[str, object]:
+    state = _ilda_state_with_section(
+        show_sections=[
+            {
+                "id": "section_000",
+                "start_seconds": 0.0,
+                "end_seconds": 8.0,
+                **section_overrides,
+            }
+        ],
+        playhead_seconds=1.0,
+        structure=structure,
+        beat_phase=beat_phase,
+        bar_position=bar_position,
+        bpm=bpm,
+    )
+    state["timestamp"] = timestamp
+    state["director_state"]["laser_aggression"] = 0.9
+    state["director_state"]["laser_motion_energy"] = 0.8
+    state["director_state"]["color_drive"] = 0.7
+    state["audio_features"]["harmonic_change"] = 0.41
+    state["audio_features"]["pitch_height"] = 0.58
+    state["audio_features"]["timbral_harshness"] = 0.42
+    return state
+
+
 def _synthetic_ilda_frame(
     fixture_id: str = "laser-main",
     point_count: int = 24,
@@ -281,6 +332,34 @@ def test_ilda_output_uses_section_laser_pattern_geometry_override() -> None:
     assert frame["geometry_family"] == "scan"
     assert frame["color_mode"] == "dual_cycle"
     assert frame["target_bias"] == "ceiling"
+
+
+def test_ilda_fixture_mode_intro_reduces_motion_posture_relative_to_peak_return() -> None:
+    node = _ilda_node()
+
+    peak_result = node(
+        _ilda_state_for_single_section(
+            section_overrides={
+                "fixture_mode": "peak_return",
+                "laser_enabled": True,
+            }
+        )
+    )
+    intro_result = node(
+        _ilda_state_for_single_section(
+            section_overrides={
+                "fixture_mode": "intro",
+                "laser_enabled": True,
+            }
+        )
+    )
+
+    peak_frame = peak_result["ilda_frames"][0]
+    intro_frame = intro_result["ilda_frames"][0]
+    peak_span = max(point["x"] for point in peak_frame["points"]) - min(point["x"] for point in peak_frame["points"])
+    intro_span = max(point["x"] for point in intro_frame["points"]) - min(point["x"] for point in intro_frame["points"])
+
+    assert peak_span > intro_span
 
 
 def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:

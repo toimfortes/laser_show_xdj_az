@@ -21,6 +21,7 @@ from photonic_synesthesia.director.palettes import (
 )
 from photonic_synesthesia.graph.nodes.section_dynamics import (
     resolve_active_section_dynamics,
+    resolve_fixture_mode_bias,
     resolve_laser_pattern_override,
 )
 from photonic_synesthesia.laser import build_laser_profiles
@@ -241,6 +242,7 @@ class ILDAOutputNode:
         current_section = dynamics.get("current_section")
         program_look = self._current_program_look(current_section, state)
         _, geometry_override = resolve_laser_pattern_override(dynamics.get("laser_pattern", ""))
+        mode_bias = resolve_fixture_mode_bias(dynamics.get("fixture_mode", ""))
 
         geometry_family = geometry_override or (
             str(program_look.get("geometry_family"))
@@ -262,7 +264,9 @@ class ILDAOutputNode:
             )
         )
         palette = resolve_palette(str(director.get("color_theme") or "neutral"))
-        strobe_level = dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0
+        strobe_level = (
+            dynamics["strobe_level"] if dynamics.get("current_section") is not None else 1.0
+        ) * mode_bias["strobe"]
         points = self._build_points(
             point_count=max(24, self.config.points_per_frame),
             geometry_family=geometry_family,
@@ -283,8 +287,8 @@ class ILDAOutputNode:
             melodic_smoothness=director["melodic_smoothness"],
             motion_energy=director["laser_motion_energy"],
             color_energy=director["laser_color_energy"],
-            intensity_multiplier=dynamics["intensity_multiplier"],
-            motion_multiplier=dynamics["motion_multiplier"],
+            intensity_multiplier=dynamics["intensity_multiplier"] * mode_bias["intensity"],
+            motion_multiplier=dynamics["motion_multiplier"] * mode_bias["motion"],
             strobe_level=strobe_level,
             program_look=program_look,
             palette=palette,
