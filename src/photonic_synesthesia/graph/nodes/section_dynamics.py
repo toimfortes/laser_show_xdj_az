@@ -173,6 +173,8 @@ def _bool_or_default(value: Any, default: bool) -> bool:
             return False
         return default
     if isinstance(value, (int, float)):
+        if not math.isfinite(float(value)):
+            return default
         return bool(value)
     return default
 

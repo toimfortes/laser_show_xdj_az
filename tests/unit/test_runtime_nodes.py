@@ -220,6 +220,9 @@ def test_section_dynamics_bool_or_default_falls_back_to_default_for_malformed_no
     assert _bool_or_default([], False) is False
     assert _bool_or_default(("unexpected",), True) is True
     assert _bool_or_default(object(), False) is False
+    assert _bool_or_default(float("nan"), False) is False
+    assert _bool_or_default(float("inf"), False) is False
+    assert _bool_or_default(float("-inf"), True) is True
 
 
 def test_resolve_active_section_dynamics_uses_last_section_and_coerces_invalid_values() -> None:
@@ -351,8 +354,9 @@ def test_pattern_mapping_helpers_resolve_authored_names_consistently() -> None:
     led_render = resolve_panel_render_mode("chase", "led")
     wash_fallback = resolve_panel_render_mode("bloom", None)
     shared_fallback = resolve_panel_render_mode("fade", None)
+    static_fallback = resolve_panel_render_mode("static", None)
 
-    assert dmx_pattern is not None
+    assert dmx_pattern == 24
     assert geometry_family == "burst"
     assert mover_family == "hold"
     assert pan_sweep_family == "cross"
@@ -360,6 +364,7 @@ def test_pattern_mapping_helpers_resolve_authored_names_consistently() -> None:
     assert led_render == "chase"
     assert wash_fallback == "bloom"
     assert shared_fallback == "fade"
+    assert static_fallback == "pulse"
 
 
 def test_trigger_router_fires_zero_at_seconds_flag_on_first_tick() -> None:
