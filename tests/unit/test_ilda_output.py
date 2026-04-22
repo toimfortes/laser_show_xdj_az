@@ -248,6 +248,7 @@ def test_ilda_output_uses_active_laser_program_when_playback_context_exists() ->
     state["current_structure"] = MusicStructure.DROP
     state["beat_info"]["downbeat"] = False
     state["beat_info"]["bar_position"] = 2
+    state["playback_snapshot"] = playback.snapshot()
 
     try:
         result = node(state)
@@ -417,6 +418,7 @@ def test_ilda_output_honors_fill_bar_windows_in_laser_program() -> None:
     state = _armed_state()
     state["current_structure"] = MusicStructure.DROP
     state["director_state"]["subphrase_role"] = "fill"
+    state["playback_snapshot"] = playback.snapshot()
 
     try:
         result = node(state)
@@ -503,6 +505,7 @@ def test_ilda_output_uses_section_intensity_motion_and_strobe() -> None:
         state["director_state"]["laser_aggression"] = 0.9
         state["director_state"]["laser_motion_energy"] = 0.8
         state["director_state"]["color_drive"] = 0.7
+        state["playback_snapshot"] = playback.snapshot()
 
         try:
             return copy.deepcopy(node(state)["ilda_frames"][0])

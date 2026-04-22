@@ -234,6 +234,7 @@ def test_moving_head_control_uses_active_fill_look_from_laser_program() -> None:
     state["fused_bpm"] = 128.0
     state["audio_features"]["rms_energy"] = 0.82
     state["director_state"]["subphrase_role"] = "fill"
+    state["playback_snapshot"] = playback.snapshot()
 
     try:
         result = node(state)
@@ -308,6 +309,7 @@ def test_moving_head_control_uses_release_look_to_relax_motion() -> None:
     state["beat_info"]["bar_position"] = 4
     state["fused_bpm"] = 122.0
     state["audio_features"]["rms_energy"] = 0.4
+    state["playback_snapshot"] = playback.snapshot()
 
     try:
         result = node(state)
@@ -867,6 +869,7 @@ def test_panel_control_applies_section_dynamics_after_operator_intents() -> None
     state["beat_info"]["bar_position"] = 1
     state["audio_features"]["rms_energy"] = 0.8
     state["director_state"]["strobe_budget_hz"] = 8.0
+    state["playback_snapshot"] = playback.snapshot()
 
     try:
         mutated_command = node(state)["fixture_commands"][0]["channel_values"]
@@ -956,6 +959,7 @@ def test_laser_control_clears_dmx_universe_when_active_section_disables_lasers()
     active_state["fused_bpm"] = 128.0
     active_state["audio_features"]["rms_energy"] = 0.75
     active_state["control_state"]["armed_live"] = True
+    active_state["playback_snapshot"] = playback.snapshot()
 
     try:
         active_result = dmx_output(laser_node(active_state))
@@ -975,6 +979,7 @@ def test_laser_control_clears_dmx_universe_when_active_section_disables_lasers()
         disabled_state["fused_bpm"] = 128.0
         disabled_state["audio_features"]["rms_energy"] = 0.75
         disabled_state["control_state"]["armed_live"] = True
+        disabled_state["playback_snapshot"] = playback.snapshot()
         disabled_result = dmx_output(laser_node(disabled_state))
     finally:
         clear_shared_playback_context()
