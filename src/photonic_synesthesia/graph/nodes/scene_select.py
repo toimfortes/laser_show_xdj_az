@@ -12,6 +12,7 @@ from typing import Any
 from photonic_synesthesia.core.config import SceneConfig
 from photonic_synesthesia.core.logging import get_logger
 from photonic_synesthesia.core.state import MusicStructure, PhotonicState, SceneState
+from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
 
 logger = get_logger(__name__)
 
@@ -98,7 +99,22 @@ class SceneSelectNode:
                     break
 
         # =================================================================
-        # Priority 2: Director-directed transition (single source of target scene)
+        # Priority 2: Authored active-section scene override
+        # =================================================================
+        if pending_scene is None:
+            dynamics = resolve_active_section_dynamics(state)
+            section_scene_id = dynamics.get("scene_id")
+            if section_scene_id and self._is_valid_scene_name(section_scene_id):
+                pending_scene = section_scene_id
+            elif section_scene_id:
+                logger.debug(
+                    "Active section scene not found in catalog",
+                    scene_id=section_scene_id,
+                    section_id=dynamics.get("section_id"),
+                )
+
+        # =================================================================
+        # Priority 3: Director-directed transition (single source of target scene)
         # =================================================================
         if pending_scene is None:
             director = state.get("director_state")
@@ -125,7 +141,7 @@ class SceneSelectNode:
                     pending_scene = current_scene
 
         # =================================================================
-        # Priority 3: Structure-based fallback
+        # Priority 4: Structure-based fallback
         # =================================================================
         if pending_scene is None:
             pending_scene = self.structure_scenes.get(
@@ -138,7 +154,7 @@ class SceneSelectNode:
             pending_scene = self._resolve_fallback_scene(state["current_structure"])
 
         # =================================================================
-        # Priority 4: Energy-based adjustment
+        # Priority 5: Energy-based adjustment
         # =================================================================
         energy = state["audio_features"]["rms_energy"]
         if pending_scene and pending_scene in self.scenes:

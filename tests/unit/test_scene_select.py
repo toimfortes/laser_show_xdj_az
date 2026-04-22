@@ -67,6 +67,122 @@ def test_scene_select_falls_back_when_director_is_unknown(tmp_path: Path) -> Non
     assert result["scene_state"]["pending_scene"] == "drop_intense"
 
 
+def test_scene_select_uses_active_section_scene_id_after_manual_and_pad_overrides(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "drop_intense")
+    _write_scene(tmp_path, "intro_ambient")
+
+    state = create_initial_state()
+    state["scene_state"]["current_scene"] = "idle"
+    state["playback_snapshot"] = {
+        "playhead_seconds": 5.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": "drop_intense",
+            }
+        ],
+    }
+    state["director_state"]["target_scene"] = "intro_ambient"
+    state["director_state"]["allow_scene_transition"] = True
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
+    result = node(state)
+
+    assert result["scene_state"]["pending_scene"] == "drop_intense"
+    assert result["scene_state"]["current_scene"] == "idle"
+
+
+def test_scene_select_pad_override_still_beats_section_scene_id(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "drop_intense")
+    (tmp_path / "intro_ambient.json").write_text(
+        json.dumps(
+            {
+                "name": "intro_ambient",
+                "pad_trigger": 1,
+                "triggers": {"energy_threshold": 0.25},
+            }
+        )
+    )
+
+    state = create_initial_state()
+    state["scene_state"]["current_scene"] = "idle"
+    state["midi_state"]["pad_triggers"] = [1]
+    state["playback_snapshot"] = {
+        "playhead_seconds": 5.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": "drop_intense",
+            }
+        ],
+    }
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
+    result = node(state)
+
+    assert result["scene_state"]["pending_scene"] == "intro_ambient"
+    assert result["scene_state"]["current_scene"] == "idle"
+
+
+def test_scene_select_falls_back_safely_when_active_section_scene_id_is_invalid(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "intro_ambient")
+
+    state = create_initial_state()
+    state["scene_state"]["current_scene"] = "idle"
+    state["playback_snapshot"] = {
+        "playhead_seconds": 5.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": "not_a_scene",
+            }
+        ],
+    }
+    state["director_state"]["target_scene"] = "intro_ambient"
+    state["director_state"]["allow_scene_transition"] = True
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
+    result = node(state)
+
+    assert result["scene_state"]["pending_scene"] == "intro_ambient"
+    assert result["scene_state"]["current_scene"] == "idle"
+
+
+def test_scene_select_short_section_scene_id_only_updates_pending_scene(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "drop_intense")
+
+    state = create_initial_state()
+    state["timestamp"] = 10.0
+    state["scene_state"]["current_scene"] = "idle"
+    state["playback_snapshot"] = {
+        "playhead_seconds": 0.1,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 0.2,
+                "scene_id": "drop_intense",
+            }
+        ],
+    }
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path, transition_time_s=1.0))
+    result = node(state)
+
+    assert result["scene_state"]["pending_scene"] == "drop_intense"
+    assert result["scene_state"]["current_scene"] == "idle"
+
+
 def test_scene_select_prefers_scene_hold_over_director_target(tmp_path: Path) -> None:
     _write_scene(tmp_path, "idle")
     _write_scene(tmp_path, "drop_intense")
@@ -76,6 +192,17 @@ def test_scene_select_prefers_scene_hold_over_director_target(tmp_path: Path) ->
     state["scene_state"]["current_scene"] = "drop_intense"
     state["control_state"]["scene_hold"] = "intro_ambient"
     state["director_state"]["target_scene"] = "drop_intense"
+    state["playback_snapshot"] = {
+        "playhead_seconds": 5.0,
+        "show_sections": [
+            {
+                "id": "sec-1",
+                "start_seconds": 0.0,
+                "end_seconds": 10.0,
+                "scene_id": "drop_intense",
+            }
+        ],
+    }
 
     node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
     result = node(state)
