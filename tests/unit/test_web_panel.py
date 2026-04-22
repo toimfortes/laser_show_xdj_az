@@ -689,6 +689,10 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
                     "end_seconds": 4.0,
                     "scene_id": "intro_ambient",
                     "fixture_mode": "intro",
+                    "laser_pattern": "fan",
+                    "mover_pattern": "drift",
+                    "wash_pattern": "ambient",
+                    "led_pattern": "pulse",
                     "intensity_multiplier": 0.75,
                     "motion_multiplier": 0.6,
                     "strobe_level": 0.0,
@@ -729,6 +733,11 @@ def test_playback_endpoint_exposes_shared_audio_metadata(tmp_path) -> None:
     assert metadata["hardware_warnings"] == ["Laser 'laser-main' is using inferred adapter data."]
     assert len(metadata["structure_markers"]) == 2
     assert metadata["show_sections"][0]["scene_id"] == "intro_ambient"
+    assert metadata["show_sections"][0]["fixture_mode"] == "intro"
+    assert metadata["show_sections"][0]["laser_pattern"] == "fan"
+    assert metadata["show_sections"][0]["mover_pattern"] == "drift"
+    assert metadata["show_sections"][0]["wash_pattern"] == "ambient"
+    assert metadata["show_sections"][0]["led_pattern"] == "pulse"
     assert metadata["selection_mode"] == "procedural"
     assert metadata["selection_variance"] == 0.0
     assert metadata["playhead_seconds"] == 3.25

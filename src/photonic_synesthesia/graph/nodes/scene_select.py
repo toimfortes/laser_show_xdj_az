@@ -6,6 +6,7 @@ Maps musical structure, energy levels, and DJ intent to lighting scenes.
 from __future__ import annotations
 
 import json
+import math
 import time
 from typing import Any
 
@@ -15,6 +16,27 @@ from photonic_synesthesia.core.state import MusicStructure, PhotonicState, Scene
 from photonic_synesthesia.graph.nodes.section_dynamics import resolve_active_section_dynamics
 
 logger = get_logger(__name__)
+
+
+def _coerce_transition_gate(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+        return default
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return default
+        return bool(value)
+    return default
 
 
 class SceneSelectNode:
@@ -104,7 +126,7 @@ class SceneSelectNode:
         if pending_scene is None:
             dynamics = resolve_active_section_dynamics(state)
             section_scene_id = dynamics.get("scene_id")
-            allow_transition = bool(
+            allow_transition = _coerce_transition_gate(
                 state.get("director_state", {}).get("allow_scene_transition", True)
             )
             if section_scene_id and self._is_valid_scene_name(section_scene_id):
@@ -131,7 +153,9 @@ class SceneSelectNode:
             director = state.get("director_state")
             if director:
                 proposed = str(director["target_scene"])
-                allow_transition = bool(director.get("allow_scene_transition", True))
+                allow_transition = _coerce_transition_gate(
+                    director.get("allow_scene_transition", True)
+                )
                 if proposed in self.scenes and (
                     allow_transition or proposed == current_scene
                 ):

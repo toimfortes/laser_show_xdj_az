@@ -50,6 +50,24 @@ def test_scene_select_honors_director_transition_gate(tmp_path: Path) -> None:
     assert result["scene_state"]["pending_scene"] is None
 
 
+def test_scene_select_director_gate_treats_falsey_string_values_as_closed(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "drop_intense")
+    _write_scene(tmp_path, "intro_ambient")
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
+    for raw_gate in ("false", "0"):
+        state = create_initial_state()
+        state["current_structure"] = MusicStructure.DROP
+        state["scene_state"]["current_scene"] = "drop_intense"
+        state["director_state"]["target_scene"] = "intro_ambient"
+        state["director_state"]["allow_scene_transition"] = raw_gate
+
+        result = node(state)
+
+        assert result["scene_state"]["current_scene"] == "drop_intense"
+        assert result["scene_state"]["pending_scene"] is None
+
+
 def test_scene_select_falls_back_when_director_is_unknown(tmp_path: Path) -> None:
     _write_scene(tmp_path, "drop_intense")
     _write_scene(tmp_path, "intro_ambient")
@@ -211,6 +229,34 @@ def test_scene_select_active_section_scene_id_respects_transition_gate(tmp_path:
 
     assert result["scene_state"]["current_scene"] == "idle"
     assert result["scene_state"]["pending_scene"] is None
+
+
+def test_scene_select_active_section_gate_treats_falsey_string_values_as_closed(tmp_path: Path) -> None:
+    _write_scene(tmp_path, "idle")
+    _write_scene(tmp_path, "drop_intense")
+
+    node = SceneSelectNode(SceneConfig(scenes_dir=tmp_path))
+    for raw_gate in ("false", "0"):
+        state = create_initial_state()
+        state["scene_state"]["current_scene"] = "idle"
+        state["playback_snapshot"] = {
+            "playhead_seconds": 5.0,
+            "show_sections": [
+                {
+                    "id": "sec-1",
+                    "start_seconds": 0.0,
+                    "end_seconds": 10.0,
+                    "scene_id": "drop_intense",
+                }
+            ],
+        }
+        state["director_state"]["target_scene"] = "idle"
+        state["director_state"]["allow_scene_transition"] = raw_gate
+
+        result = node(state)
+
+        assert result["scene_state"]["current_scene"] == "idle"
+        assert result["scene_state"]["pending_scene"] is None
 
 
 def test_scene_select_short_section_scene_id_only_retargets_pending_scene(tmp_path: Path) -> None:
